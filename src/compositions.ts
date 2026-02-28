@@ -27,7 +27,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
   },
   towerAndBase: {
     name: "Tower + Base",
-    layers: () => [
+    layers: (): LayerConfig[] => [
       {
         surface: "canopy",
         params: { radius: 2.2, sag: 0.6, sharpness: 4, yOffset: 1.8 },
@@ -54,7 +54,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
   },
   doubleRing: {
     name: "Double Ring",
-    layers: () => [
+    layers: (): LayerConfig[] => [
       {
         surface: "torus",
         params: { majorR: 2, minorR: 0.15, ySquish: 0.3 },
