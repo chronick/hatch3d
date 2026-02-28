@@ -20,7 +20,57 @@ const BORDER_STYLES: Record<string, string> = {
   cropmarks: "Crop marks",
 };
 
-const EXPORT_STORAGE_KEY = "hatch3d-export";
+const STORAGE_KEY = "hatch3d-state";
+
+const DEFAULTS = {
+  surfaceKey: "hyperboloid",
+  compositionKey: "single",
+  paramA: 0.5,
+  paramB: 0.5,
+  paramC: 0.5,
+  paramD: 0.5,
+  hatchFamily: "u" as "u" | "v" | "diagonal",
+  hatchCount: 30,
+  hatchSamples: 50,
+  hatchAngle: 0.7,
+  useOcclusion: false,
+  depthRes: 512,
+  depthBias: 0.01,
+  camTheta: 0.6,
+  camPhi: 0.35,
+  camDist: 8,
+  panX: 0,
+  panY: 0,
+  strokeWidth: 0.5,
+  showMesh: false,
+  pageSize: "a3",
+  orientation: "landscape" as "landscape" | "portrait",
+  margin: 15,
+  borderEnabled: false,
+  borderStyle: "simple" as "simple" | "double" | "ticked" | "cropmarks",
+};
+
+/** Load saved state, keeping only keys that exist in DEFAULTS with matching type. */
+function loadState(): typeof DEFAULTS {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return DEFAULTS;
+    const saved = JSON.parse(raw);
+    if (typeof saved !== "object" || saved === null) throw 0;
+    const out = { ...DEFAULTS };
+    for (const k of Object.keys(DEFAULTS) as (keyof typeof DEFAULTS)[]) {
+      if (k in saved && typeof saved[k] === typeof DEFAULTS[k]) {
+        (out as Record<string, unknown>)[k] = saved[k];
+      }
+    }
+    return out;
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
+    return DEFAULTS;
+  }
+}
+
+const INITIAL = loadState();
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,67 +78,71 @@ export default function App() {
   const [height] = useState(800);
 
   // Shape
-  const [surfaceKey, setSurfaceKey] = useState("hyperboloid");
-  const [compositionKey, setCompositionKey] = useState("single");
+  const [surfaceKey, setSurfaceKey] = useState(INITIAL.surfaceKey);
+  const [compositionKey, setCompositionKey] = useState(INITIAL.compositionKey);
 
   // Surface params (generic sliders mapped to surface)
-  const [paramA, setParamA] = useState(0.5);
-  const [paramB, setParamB] = useState(0.5);
-  const [paramC, setParamC] = useState(0.5);
-  const [paramD, setParamD] = useState(0.5);
+  const [paramA, setParamA] = useState(INITIAL.paramA);
+  const [paramB, setParamB] = useState(INITIAL.paramB);
+  const [paramC, setParamC] = useState(INITIAL.paramC);
+  const [paramD, setParamD] = useState(INITIAL.paramD);
 
   // Hatch
-  const [hatchFamily, setHatchFamily] = useState<"u" | "v" | "diagonal">("u");
-  const [hatchCount, setHatchCount] = useState(30);
-  const [hatchSamples, setHatchSamples] = useState(50);
-  const [hatchAngle, setHatchAngle] = useState(0.7);
+  const [hatchFamily, setHatchFamily] = useState(INITIAL.hatchFamily);
+  const [hatchCount, setHatchCount] = useState(INITIAL.hatchCount);
+  const [hatchSamples, setHatchSamples] = useState(INITIAL.hatchSamples);
+  const [hatchAngle, setHatchAngle] = useState(INITIAL.hatchAngle);
 
   // Occlusion
-  const [useOcclusion, setUseOcclusion] = useState(false);
-  const [depthRes, setDepthRes] = useState(512);
-  const [depthBias, setDepthBias] = useState(0.01);
+  const [useOcclusion, setUseOcclusion] = useState(INITIAL.useOcclusion);
+  const [depthRes, setDepthRes] = useState(INITIAL.depthRes);
+  const [depthBias, setDepthBias] = useState(INITIAL.depthBias);
 
   // Camera
-  const [camTheta, setCamTheta] = useState(0.6);
-  const [camPhi, setCamPhi] = useState(0.35);
-  const [camDist, setCamDist] = useState(8);
-  const [panX, setPanX] = useState(0);
-  const [panY, setPanY] = useState(0);
+  const [camTheta, setCamTheta] = useState(INITIAL.camTheta);
+  const [camPhi, setCamPhi] = useState(INITIAL.camPhi);
+  const [camDist, setCamDist] = useState(INITIAL.camDist);
+  const [panX, setPanX] = useState(INITIAL.panX);
+  const [panY, setPanY] = useState(INITIAL.panY);
 
   // Display
-  const [strokeWidth, setStrokeWidth] = useState(0.5);
-  const [showMesh, setShowMesh] = useState(false);
+  const [strokeWidth, setStrokeWidth] = useState(INITIAL.strokeWidth);
+  const [showMesh, setShowMesh] = useState(INITIAL.showMesh);
 
   // Export settings
-  const [pageSize, setPageSize] = useState("a3");
-  const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
-  const [margin, setMargin] = useState(15);
-  const [borderEnabled, setBorderEnabled] = useState(false);
-  const [borderStyle, setBorderStyle] = useState<"simple" | "double" | "ticked" | "cropmarks">("simple");
+  const [pageSize, setPageSize] = useState(INITIAL.pageSize);
+  const [orientation, setOrientation] = useState(INITIAL.orientation);
+  const [margin, setMargin] = useState(INITIAL.margin);
+  const [borderEnabled, setBorderEnabled] = useState(INITIAL.borderEnabled);
+  const [borderStyle, setBorderStyle] = useState(INITIAL.borderStyle);
 
-  // Load export prefs from localStorage on mount
+  // Persist all controls to localStorage on change
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem(EXPORT_STORAGE_KEY);
-      if (saved) {
-        const prefs = JSON.parse(saved);
-        if (prefs.pageSize && prefs.pageSize in PAGE_SIZES) setPageSize(prefs.pageSize);
-        if (prefs.orientation === "landscape" || prefs.orientation === "portrait") setOrientation(prefs.orientation);
-        if (typeof prefs.margin === "number") setMargin(prefs.margin);
-        if (typeof prefs.borderEnabled === "boolean") setBorderEnabled(prefs.borderEnabled);
-        if (prefs.borderStyle && prefs.borderStyle in BORDER_STYLES) setBorderStyle(prefs.borderStyle);
-      }
-    } catch { /* ignore corrupt localStorage */ }
-  }, []);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      surfaceKey, compositionKey,
+      paramA, paramB, paramC, paramD,
+      hatchFamily, hatchCount, hatchSamples, hatchAngle,
+      useOcclusion, depthRes, depthBias,
+      camTheta, camPhi, camDist, panX, panY,
+      strokeWidth, showMesh,
+      pageSize, orientation, margin, borderEnabled, borderStyle,
+    }));
+  }, [
+    surfaceKey, compositionKey,
+    paramA, paramB, paramC, paramD,
+    hatchFamily, hatchCount, hatchSamples, hatchAngle,
+    useOcclusion, depthRes, depthBias,
+    camTheta, camPhi, camDist, panX, panY,
+    strokeWidth, showMesh,
+    pageSize, orientation, margin, borderEnabled, borderStyle,
+  ]);
 
-  // Save export prefs to localStorage on change
-  useEffect(() => {
-    localStorage.setItem(EXPORT_STORAGE_KEY, JSON.stringify({ pageSize, orientation, margin, borderEnabled, borderStyle }));
-  }, [pageSize, orientation, margin, borderEnabled, borderStyle]);
-
-  // Orbit drag
+  // Preview pan/zoom (ephemeral, not persisted)
+  const [viewZoom, setViewZoom] = useState(1);
+  const [viewPanX, setViewPanX] = useState(0);
+  const [viewPanY, setViewPanY] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0, theta: 0, phi: 0 });
+  const viewDragRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
   // Build Three.js camera
   const threeCamera = useMemo(() => {
@@ -312,33 +366,51 @@ export default function App() {
     showMesh,
   ]);
 
-  // Orbit controls
-  const handleMouseDown = useCallback(
+  // Preview viewport controls (pan/zoom the SVG view, not the 3D scene)
+  const handleViewMouseDown = useCallback(
     (e: React.MouseEvent) => {
       setIsDragging(true);
-      setDragStart({ x: e.clientX, y: e.clientY, theta: camTheta, phi: camPhi });
+      viewDragRef.current = { x: e.clientX, y: e.clientY, panX: viewPanX, panY: viewPanY };
     },
-    [camTheta, camPhi]
+    [viewPanX, viewPanY]
   );
 
-  const handleMouseMove = useCallback(
+  const handleViewMouseMove = useCallback(
     (e: React.MouseEvent) => {
       if (!isDragging) return;
-      setCamTheta(dragStart.theta + (e.clientX - dragStart.x) * 0.008);
-      setCamPhi(
-        Math.max(
-          -1.4,
-          Math.min(1.4, dragStart.phi + (e.clientY - dragStart.y) * 0.008)
-        )
-      );
+      const s = viewDragRef.current;
+      setViewPanX(s.panX + (e.clientX - s.x));
+      setViewPanY(s.panY + (e.clientY - s.y));
     },
-    [isDragging, dragStart]
+    [isDragging]
   );
 
-  const handleMouseUp = useCallback(() => setIsDragging(false), []);
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    setCamDist((d) => Math.max(3, Math.min(25, d + e.deltaY * 0.01)));
+  const handleViewMouseUp = useCallback(() => setIsDragging(false), []);
+
+  // Pinch-to-zoom via touch events
+  const pinchRef = useRef<{ dist: number; zoom: number } | null>(null);
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      pinchRef.current = { dist: Math.hypot(dx, dy), zoom: viewZoom };
+    }
+  }, [viewZoom]);
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchRef.current) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const scale = dist / pinchRef.current.dist;
+      setViewZoom(Math.max(0.25, Math.min(10, pinchRef.current.zoom * scale)));
+    }
+  }, []);
+  const handleTouchEnd = useCallback(() => { pinchRef.current = null; }, []);
+
+  const handleViewDoubleClick = useCallback(() => {
+    setViewZoom(1);
+    setViewPanX(0);
+    setViewPanY(0);
   }, []);
 
   // Export
@@ -401,9 +473,34 @@ export default function App() {
             UV-SPACE PARAMETRIC HATCHING → SVG
           </span>
         </div>
-        <button onClick={exportSVG} style={{ ...btnStyle, background: "var(--fg)", color: "var(--bg-canvas)" }}>
-          EXPORT SVG
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10 }}>
+            <button
+              onClick={() => { setViewZoom(1); setViewPanX(0); setViewPanY(0); }}
+              style={{ ...tagStyle, fontSize: 9, padding: "2px 6px" }}
+            >
+              Fit
+            </button>
+            <button
+              onClick={() => setViewZoom((z) => Math.min(10, z * 1.5))}
+              style={{ ...tagStyle, fontSize: 9, padding: "2px 6px", width: 22, textAlign: "center" }}
+            >
+              +
+            </button>
+            <span style={{ color: "var(--fg-dim)", width: 36, textAlign: "center" }}>
+              {Math.round(viewZoom * 100)}%
+            </span>
+            <button
+              onClick={() => setViewZoom((z) => Math.max(0.25, z / 1.5))}
+              style={{ ...tagStyle, fontSize: 9, padding: "2px 6px", width: 22, textAlign: "center" }}
+            >
+              &minus;
+            </button>
+          </div>
+          <button onClick={exportSVG} style={{ ...btnStyle, background: "var(--fg)", color: "var(--bg-canvas)" }}>
+            EXPORT SVG
+          </button>
+        </div>
       </div>
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
@@ -580,7 +677,7 @@ export default function App() {
             <Slider label="Orbit θ" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
             <Slider label="Orbit φ" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
             <div style={{ color: "var(--fg-faint)", fontSize: 10, marginTop: 2 }}>
-              Drag to orbit · Scroll to zoom
+              Preview: drag to pan · pinch to zoom · dbl-click fit
             </div>
           </Section>
 
@@ -610,19 +707,24 @@ export default function App() {
             cursor: isDragging ? "grabbing" : "grab",
             overflow: "hidden",
           }}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          onWheel={handleWheel}
+          onMouseDown={handleViewMouseDown}
+          onMouseMove={handleViewMouseMove}
+          onMouseUp={handleViewMouseUp}
+          onMouseLeave={handleViewMouseUp}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onDoubleClick={handleViewDoubleClick}
         >
           <svg
             viewBox={`0 0 ${exportLayout.pageW} ${exportLayout.pageH}`}
             style={{
-              maxWidth: "calc(100% - 40px)",
-              maxHeight: "calc(100vh - 80px)",
+              maxWidth: "calc(100% - 24px)",
+              maxHeight: "calc(100vh - 60px)",
               background: "var(--bg-canvas)",
               boxShadow: "0 1px 16px var(--shadow)",
+              transform: `translate(${viewPanX}px, ${viewPanY}px) scale(${viewZoom})`,
+              transformOrigin: "center center",
             }}
           >
             <defs>
