@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import { useHistory } from "./hooks/useHistory";
 import * as THREE from "three";
 import { SURFACES } from "./surfaces";
 import { generateUVHatchLines, type HatchParams } from "./hatch";
@@ -296,6 +297,78 @@ export default function App() {
     }, 300);
     return () => clearTimeout(persistTimer.current);
   }, [stateSnapshot, compValues, macroValues, hatchGroupValues]);
+
+  // ── Undo / Redo ──
+  const undoableSnapshot = useMemo(() => ({
+    surfaceKey, compositionKey,
+    paramA, paramB, paramC, paramD,
+    hatchFamily, hatchCount, hatchSamples, hatchAngle,
+    useOcclusion, depthRes, depthBias,
+    camTheta, camPhi, camDist, camOrtho, panX, panY,
+    strokeWidth, showMesh,
+    pageSize, orientation, margin, borderEnabled, borderStyle,
+    compValues, macroValues, hatchGroupValues,
+  }), [
+    surfaceKey, compositionKey,
+    paramA, paramB, paramC, paramD,
+    hatchFamily, hatchCount, hatchSamples, hatchAngle,
+    useOcclusion, depthRes, depthBias,
+    camTheta, camPhi, camDist, camOrtho, panX, panY,
+    strokeWidth, showMesh,
+    pageSize, orientation, margin, borderEnabled, borderStyle,
+    compValues, macroValues, hatchGroupValues,
+  ]);
+
+  const restoreSnapshot = useCallback((snap: typeof undoableSnapshot) => {
+    setSurfaceKey(snap.surfaceKey);
+    setCompositionKey(snap.compositionKey);
+    setParamA(snap.paramA);
+    setParamB(snap.paramB);
+    setParamC(snap.paramC);
+    setParamD(snap.paramD);
+    setHatchFamily(snap.hatchFamily);
+    setHatchCount(snap.hatchCount);
+    setHatchSamples(snap.hatchSamples);
+    setHatchAngle(snap.hatchAngle);
+    setUseOcclusion(snap.useOcclusion);
+    setDepthRes(snap.depthRes);
+    setDepthBias(snap.depthBias);
+    setCamTheta(snap.camTheta);
+    setCamPhi(snap.camPhi);
+    setCamDist(snap.camDist);
+    setCamOrtho(snap.camOrtho);
+    setPanX(snap.panX);
+    setPanY(snap.panY);
+    setStrokeWidth(snap.strokeWidth);
+    setShowMesh(snap.showMesh);
+    setPageSize(snap.pageSize);
+    setOrientation(snap.orientation);
+    setMargin(snap.margin);
+    setBorderEnabled(snap.borderEnabled);
+    setBorderStyle(snap.borderStyle);
+    setCompValues(snap.compValues);
+    setMacroValues(snap.macroValues);
+    setHatchGroupValues(snap.hatchGroupValues);
+  }, []);
+
+  const { undo, redo, canUndo, canRedo } = useHistory(undoableSnapshot, restoreSnapshot);
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((e.key === "z" && e.shiftKey) || e.key === "y") {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [undo, redo]);
 
   // Preview pan/zoom (ephemeral, not persisted)
   const [viewZoom, setViewZoom] = useState(1);
@@ -721,6 +794,36 @@ export default function App() {
             flexShrink: 0,
           }}
         >
+          {/* Undo / Redo */}
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              onClick={undo}
+              disabled={!canUndo}
+              style={{
+                ...btnStyle,
+                flex: 1,
+                opacity: canUndo ? 1 : 0.3,
+                cursor: canUndo ? "pointer" : "default",
+              }}
+              title="Undo (Cmd+Z)"
+            >
+              Undo
+            </button>
+            <button
+              onClick={redo}
+              disabled={!canRedo}
+              style={{
+                ...btnStyle,
+                flex: 1,
+                opacity: canRedo ? 1 : 0.3,
+                cursor: canRedo ? "pointer" : "default",
+              }}
+              title="Redo (Cmd+Shift+Z)"
+            >
+              Redo
+            </button>
+          </div>
+
           <Section title="COMPOSITION" preview={comp.name}>
             <CompositionBrowser
               currentKey={compositionKey}
