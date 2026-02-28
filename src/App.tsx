@@ -1,10 +1,26 @@
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import * as THREE from "three";
 import { SURFACES } from "./surfaces";
 import { generateUVHatchLines, type HatchParams } from "./hatch";
 import { projectPolylines, polylinesToSVGPaths, buildSurfaceMesh } from "./projection";
 import { renderDepthBuffer, clipPolylineByDepth } from "./occlusion";
 import { COMPOSITIONS, type LayerConfig } from "./compositions";
+
+const PAGE_SIZES: Record<string, { label: string; w: number; h: number }> = {
+  a3: { label: "A3", w: 420, h: 297 },
+  a4: { label: "A4", w: 297, h: 210 },
+  a5: { label: "A5", w: 210, h: 148 },
+  letter: { label: '8.5\u00d711"', w: 279.4, h: 215.9 },
+};
+
+const BORDER_STYLES: Record<string, string> = {
+  simple: "Simple",
+  double: "Double",
+  ticked: "Ticked",
+  cropmarks: "Crop marks",
+};
+
+const EXPORT_STORAGE_KEY = "hatch3d-export";
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -36,10 +52,39 @@ export default function App() {
   const [camTheta, setCamTheta] = useState(0.6);
   const [camPhi, setCamPhi] = useState(0.35);
   const [camDist, setCamDist] = useState(8);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
 
   // Display
   const [strokeWidth, setStrokeWidth] = useState(0.5);
   const [showMesh, setShowMesh] = useState(false);
+
+  // Export settings
+  const [pageSize, setPageSize] = useState("a3");
+  const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
+  const [margin, setMargin] = useState(15);
+  const [borderEnabled, setBorderEnabled] = useState(false);
+  const [borderStyle, setBorderStyle] = useState<"simple" | "double" | "ticked" | "cropmarks">("simple");
+
+  // Load export prefs from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(EXPORT_STORAGE_KEY);
+      if (saved) {
+        const prefs = JSON.parse(saved);
+        if (prefs.pageSize && prefs.pageSize in PAGE_SIZES) setPageSize(prefs.pageSize);
+        if (prefs.orientation === "landscape" || prefs.orientation === "portrait") setOrientation(prefs.orientation);
+        if (typeof prefs.margin === "number") setMargin(prefs.margin);
+        if (typeof prefs.borderEnabled === "boolean") setBorderEnabled(prefs.borderEnabled);
+        if (prefs.borderStyle && prefs.borderStyle in BORDER_STYLES) setBorderStyle(prefs.borderStyle);
+      }
+    } catch { /* ignore corrupt localStorage */ }
+  }, []);
+
+  // Save export prefs to localStorage on change
+  useEffect(() => {
+    localStorage.setItem(EXPORT_STORAGE_KEY, JSON.stringify({ pageSize, orientation, margin, borderEnabled, borderStyle }));
+  }, [pageSize, orientation, margin, borderEnabled, borderStyle]);
 
   // Orbit drag
   const [isDragging, setIsDragging] = useState(false);
@@ -53,11 +98,30 @@ export default function App() {
       camDist * Math.sin(camPhi),
       camDist * Math.cos(camTheta) * Math.cos(camPhi)
     );
-    cam.lookAt(0, 0, 0);
+    cam.lookAt(panX, panY, 0);
     cam.updateMatrixWorld();
     cam.updateProjectionMatrix();
     return cam;
-  }, [camTheta, camPhi, camDist, width, height]);
+  }, [camTheta, camPhi, camDist, panX, panY, width, height]);
+
+  // Export layout geometry (shared by preview and export)
+  const exportLayout = useMemo(() => {
+    const page = PAGE_SIZES[pageSize];
+    const pageW = orientation === "portrait" ? page.h : page.w;
+    const pageH = orientation === "portrait" ? page.w : page.h;
+    const contentW = pageW - margin * 2;
+    const contentH = pageH - margin * 2;
+    const scale = Math.min(contentW / width, contentH / height);
+    const cx = margin + (contentW - width * scale) / 2;
+    const cy = margin + (contentH - height * scale) / 2;
+    return { pageW, pageH, contentW, contentH, scale, cx, cy };
+  }, [pageSize, orientation, margin, width, height]);
+
+  // Live border preview paths
+  const previewBorderPaths = useMemo(() => {
+    if (!borderEnabled) return [];
+    return generateBorderPaths(borderStyle, exportLayout.pageW, exportLayout.pageH, margin, strokeWidth);
+  }, [borderEnabled, borderStyle, exportLayout, margin, strokeWidth]);
 
   // Map generic sliders to surface-specific params
   const surfaceParams = useMemo(() => {
@@ -279,11 +343,20 @@ export default function App() {
 
   // Export
   const exportSVG = useCallback(() => {
+    const { pageW, pageH, contentW, contentH, scale, cx, cy } = exportLayout;
+
     const content = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">
-    ${svgPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
+  <defs>
+    <clipPath id="margin-clip">
+      <rect x="${margin}" y="${margin}" width="${contentW}" height="${contentH}"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#margin-clip)">
+    <g transform="translate(${cx},${cy}) scale(${scale})" fill="none" stroke="black" stroke-width="${strokeWidth / scale}" stroke-linecap="round" stroke-linejoin="round">
+      ${svgPaths.map((d) => `<path d="${d}"/>`).join("\n      ")}
+    </g>
+  </g>${previewBorderPaths.length > 0 ? `\n  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">\n    ${previewBorderPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}\n  </g>` : ""}
 </svg>`;
     const blob = new Blob([content], { type: "image/svg+xml" });
     const url = URL.createObjectURL(blob);
@@ -292,7 +365,7 @@ export default function App() {
     a.download = `hatch3d_${compositionKey}_${surfaceKey}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [svgPaths, width, height, strokeWidth, compositionKey, surfaceKey]);
+  }, [svgPaths, exportLayout, margin, strokeWidth, previewBorderPaths, compositionKey, surfaceKey]);
 
   const surfaceInfo = SURFACES[surfaceKey];
   const paramKeys = Object.keys(surfaceInfo.defaults);
@@ -344,7 +417,7 @@ export default function App() {
             fontSize: 11,
             display: "flex",
             flexDirection: "column",
-            gap: 14,
+            gap: 18,
           }}
         >
           <Section title="COMPOSITION">
@@ -438,8 +511,72 @@ export default function App() {
             <Toggle label="Show mesh" value={showMesh} onChange={setShowMesh} />
           </Section>
 
+          <Section title="EXPORT">
+            <div style={{ display: "flex", gap: 3 }}>
+              {(["landscape", "portrait"] as const).map((o) => (
+                <button
+                  key={o}
+                  onClick={() => setOrientation(o)}
+                  style={{
+                    ...tagStyle,
+                    background: orientation === o ? "var(--fg)" : "transparent",
+                    color: orientation === o ? "var(--bg-canvas)" : "var(--fg)",
+                  }}
+                >
+                  {o === "landscape" ? "Landscape" : "Portrait"}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+              {Object.entries(PAGE_SIZES).map(([key, val]) => (
+                <button
+                  key={key}
+                  onClick={() => setPageSize(key)}
+                  style={{
+                    ...tagStyle,
+                    background: pageSize === key ? "var(--fg)" : "transparent",
+                    color: pageSize === key ? "var(--bg-canvas)" : "var(--fg)",
+                  }}
+                >
+                  {val.label}
+                </button>
+              ))}
+            </div>
+            <Slider label="Margin" value={margin} onChange={(v) => setMargin(Math.round(v))} min={5} max={40} step={1} />
+            <Toggle label="Border" value={borderEnabled} onChange={setBorderEnabled} />
+            {borderEnabled && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+                {Object.entries(BORDER_STYLES).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setBorderStyle(key as typeof borderStyle)}
+                    style={{
+                      ...tagStyle,
+                      background: borderStyle === key ? "var(--fg)" : "transparent",
+                      color: borderStyle === key ? "var(--bg-canvas)" : "var(--fg)",
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </Section>
+
           <Section title="CAMERA">
             <Slider label="Distance" value={camDist} onChange={setCamDist} min={3} max={25} step={0.1} />
+            <div style={{ display: "flex", gap: 8, marginTop: 4, marginBottom: 4 }}>
+              <XYPad valueX={panX} valueY={panY} onChangeX={setPanX} onChangeY={setPanY} size={100} />
+              <OrbitCube theta={camTheta} phi={camPhi} onChangeTheta={setCamTheta} onChangePhi={setCamPhi} size={100} />
+            </div>
+            <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--fg-muted)" }}>
+              <HoverReset label="Pan" onReset={() => { setPanX(0); setPanY(0); }}>
+                X {panX.toFixed(2)} Y {panY.toFixed(2)}
+              </HoverReset>
+              <HoverReset label="Orbit" onReset={() => { setCamTheta(0.6); setCamPhi(0.35); }}>
+                &theta; {camTheta.toFixed(2)} &phi; {camPhi.toFixed(2)}
+              </HoverReset>
+            </div>
             <Slider label="Orbit θ" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
             <Slider label="Orbit φ" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
             <div style={{ color: "var(--fg-faint)", fontSize: 10, marginTop: 2 }}>
@@ -480,9 +617,7 @@ export default function App() {
           onWheel={handleWheel}
         >
           <svg
-            width={width}
-            height={height}
-            viewBox={`0 0 ${width} ${height}`}
+            viewBox={`0 0 ${exportLayout.pageW} ${exportLayout.pageH}`}
             style={{
               maxWidth: "calc(100% - 40px)",
               maxHeight: "calc(100vh - 80px)",
@@ -490,24 +625,51 @@ export default function App() {
               boxShadow: "0 1px 16px var(--shadow)",
             }}
           >
-            {showMesh && (
-              <g fill="none" stroke="var(--mesh-stroke)" strokeWidth={0.3}>
-                {meshPaths.map((d, i) => (
-                  <path key={`m${i}`} d={d} />
+            <defs>
+              <clipPath id="preview-margin-clip">
+                <rect x={margin} y={margin} width={exportLayout.contentW} height={exportLayout.contentH} />
+              </clipPath>
+            </defs>
+            {/* Margin guide (preview only) */}
+            <rect
+              x={margin}
+              y={margin}
+              width={exportLayout.contentW}
+              height={exportLayout.contentH}
+              fill="none"
+              stroke="var(--border-light)"
+              strokeWidth={0.5}
+              strokeDasharray="2 2"
+            />
+            <g clipPath="url(#preview-margin-clip)">
+              <g transform={`translate(${exportLayout.cx},${exportLayout.cy}) scale(${exportLayout.scale})`}>
+                {showMesh && (
+                  <g fill="none" stroke="var(--mesh-stroke)" strokeWidth={0.3 / exportLayout.scale}>
+                    {meshPaths.map((d, i) => (
+                      <path key={`m${i}`} d={d} />
+                    ))}
+                  </g>
+                )}
+                <g
+                  fill="none"
+                  stroke="var(--fg)"
+                  strokeWidth={strokeWidth / exportLayout.scale}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  {svgPaths.map((d, i) => (
+                    <path key={i} d={d} />
+                  ))}
+                </g>
+              </g>
+            </g>
+            {previewBorderPaths.length > 0 && (
+              <g fill="none" stroke="var(--fg)" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+                {previewBorderPaths.map((d, i) => (
+                  <path key={`b${i}`} d={d} />
                 ))}
               </g>
             )}
-            <g
-              fill="none"
-              stroke="var(--fg)"
-              strokeWidth={strokeWidth}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              {svgPaths.map((d, i) => (
-                <path key={i} d={d} />
-              ))}
-            </g>
           </svg>
         </div>
       </div>
@@ -615,6 +777,416 @@ function Toggle({
       <span style={{ color: "var(--fg-muted)" }}>{label}</span>
     </div>
   );
+}
+
+function HoverReset({
+  label,
+  onReset,
+  children,
+}: {
+  label: string;
+  onReset: () => void;
+  children: React.ReactNode;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ display: "inline-flex", alignItems: "baseline", gap: 4 }}
+    >
+      {hovered ? (
+        <span
+          onClick={onReset}
+          style={{
+            color: "var(--fg-dim)",
+            fontWeight: 600,
+            cursor: "pointer",
+            textDecoration: "underline",
+            textDecorationStyle: "dotted",
+            textUnderlineOffset: 2,
+          }}
+        >
+          reset
+        </span>
+      ) : (
+        <span style={{ color: "var(--fg-dim)", fontWeight: 600 }}>{label}</span>
+      )}
+      {" "}{children}
+    </div>
+  );
+}
+
+function OrbitCube({
+  theta,
+  phi,
+  onChangeTheta,
+  onChangePhi,
+  size = 120,
+}: {
+  theta: number;
+  phi: number;
+  onChangeTheta: (v: number) => void;
+  onChangePhi: (v: number) => void;
+  size?: number;
+}) {
+  const draggingRef = useRef(false);
+  const startRef = useRef({ x: 0, y: 0, theta: 0, phi: 0 });
+
+  // 8 cube vertices at ±1
+  const verts: [number, number, number][] = [
+    [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
+    [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
+  ];
+  // 12 edges
+  const edges: [number, number][] = [
+    [0, 1], [1, 2], [2, 3], [3, 0],
+    [4, 5], [5, 6], [6, 7], [7, 4],
+    [0, 4], [1, 5], [2, 6], [3, 7],
+  ];
+  // Axis tips and labels
+  const axisTips: { label: string; pos: [number, number, number] }[] = [
+    { label: "X", pos: [1.4, 0, 0] },
+    { label: "Y", pos: [0, 1.4, 0] },
+    { label: "Z", pos: [0, 0, 1.4] },
+  ];
+
+  // Rotate point: phi around X, then theta around Y
+  const rotatePoint = (x: number, y: number, z: number): [number, number, number] => {
+    // Rotate around X by phi
+    const cosP = Math.cos(phi);
+    const sinP = Math.sin(phi);
+    const y1 = y * cosP - z * sinP;
+    const z1 = y * sinP + z * cosP;
+    // Rotate around Y by theta
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    const x2 = x * cosT + z1 * sinT;
+    const z2 = -x * sinT + z1 * cosT;
+    return [x2, y1, z2];
+  };
+
+  const half = size / 2;
+  const scale = size * 0.28;
+
+  // Project vertices
+  const projected = verts.map(([x, y, z]) => {
+    const [rx, ry, rz] = rotatePoint(x, y, z);
+    return { x: half + rx * scale, y: half - ry * scale, z: rz };
+  });
+
+  // Project axis tips
+  const projectedAxes = axisTips.map(({ label, pos: [x, y, z] }) => {
+    const [rx, ry, rz] = rotatePoint(x, y, z);
+    return { label, x: half + rx * scale, y: half - ry * scale, z: rz };
+  });
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      draggingRef.current = true;
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      startRef.current = { x: e.clientX, y: e.clientY, theta, phi };
+    },
+    [theta, phi],
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!draggingRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const dx = e.clientX - startRef.current.x;
+      const dy = e.clientY - startRef.current.y;
+      onChangeTheta(startRef.current.theta + dx * 0.008);
+      onChangePhi(Math.max(-1.4, Math.min(1.4, startRef.current.phi + dy * 0.008)));
+    },
+    [onChangeTheta, onChangePhi],
+  );
+
+  const handlePointerUp = useCallback(() => {
+    draggingRef.current = false;
+  }, []);
+
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onChangeTheta(0.6);
+      onChangePhi(0.35);
+    },
+    [onChangeTheta, onChangePhi],
+  );
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onDoubleClick={handleDoubleClick}
+      style={{
+        border: "1px solid var(--fg)",
+        cursor: "grab",
+        touchAction: "none",
+        flexShrink: 0,
+      }}
+    >
+      {edges.map(([a, b], i) => {
+        const avgZ = (projected[a].z + projected[b].z) / 2;
+        const opacity = 0.25 + 0.75 * Math.max(0, Math.min(1, (avgZ + 1.5) / 3));
+        return (
+          <line
+            key={i}
+            x1={projected[a].x}
+            y1={projected[a].y}
+            x2={projected[b].x}
+            y2={projected[b].y}
+            stroke="var(--fg)"
+            strokeWidth={1}
+            opacity={opacity}
+          />
+        );
+      })}
+      {projectedAxes.map((ax) => (
+        <text
+          key={ax.label}
+          x={ax.x}
+          y={ax.y}
+          fill="var(--fg)"
+          fontSize={9}
+          fontFamily="inherit"
+          fontWeight={600}
+          textAnchor="middle"
+          dominantBaseline="central"
+          opacity={0.3 + 0.7 * Math.max(0, Math.min(1, (ax.z + 1.5) / 3))}
+          style={{ pointerEvents: "none" }}
+        >
+          {ax.label}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+function XYPad({
+  valueX,
+  valueY,
+  onChangeX,
+  onChangeY,
+  min = -3,
+  max = 3,
+  size = 120,
+}: {
+  valueX: number;
+  valueY: number;
+  onChangeX: (v: number) => void;
+  onChangeY: (v: number) => void;
+  min?: number;
+  max?: number;
+  size?: number;
+}) {
+  const padRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const range = max - min;
+  const normX = (valueX - min) / range;
+  const normY = 1 - (valueY - min) / range; // invert Y so up = positive
+
+  const updateFromEvent = useCallback(
+    (clientX: number, clientY: number) => {
+      const el = padRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+      onChangeX(+(min + nx * range).toFixed(2));
+      onChangeY(+(max - ny * range).toFixed(2)); // invert Y
+    },
+    [min, max, range, onChangeX, onChangeY],
+  );
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      draggingRef.current = true;
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      updateFromEvent(e.clientX, e.clientY);
+    },
+    [updateFromEvent],
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!draggingRef.current) return;
+      e.preventDefault();
+      updateFromEvent(e.clientX, e.clientY);
+    },
+    [updateFromEvent],
+  );
+
+  const handlePointerUp = useCallback(() => {
+    draggingRef.current = false;
+  }, []);
+
+  const handleDoubleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onChangeX(0);
+      onChangeY(0);
+    },
+    [onChangeX, onChangeY],
+  );
+
+  return (
+    <div
+      ref={padRef}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onDoubleClick={handleDoubleClick}
+      style={{
+        width: size,
+        height: size,
+        border: "1px solid var(--fg)",
+        position: "relative",
+        cursor: "crosshair",
+        touchAction: "none",
+        flexShrink: 0,
+      }}
+    >
+      {/* Crosshair lines */}
+      <div
+        style={{
+          position: "absolute",
+          left: `${normX * 100}%`,
+          top: 0,
+          bottom: 0,
+          width: 1,
+          background: "var(--border-light)",
+          pointerEvents: "none",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          top: `${normY * 100}%`,
+          left: 0,
+          right: 0,
+          height: 1,
+          background: "var(--border-light)",
+          pointerEvents: "none",
+        }}
+      />
+      {/* Center crosshair (origin) */}
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: 0,
+          bottom: 0,
+          width: 1,
+          background: "var(--border-light)",
+          opacity: 0.3,
+          pointerEvents: "none",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          top: "50%",
+          left: 0,
+          right: 0,
+          height: 1,
+          background: "var(--border-light)",
+          opacity: 0.3,
+          pointerEvents: "none",
+        }}
+      />
+      {/* Position dot */}
+      <div
+        style={{
+          position: "absolute",
+          left: `${normX * 100}%`,
+          top: `${normY * 100}%`,
+          width: 8,
+          height: 8,
+          borderRadius: 4,
+          background: "var(--fg)",
+          transform: "translate(-50%, -50%)",
+          pointerEvents: "none",
+        }}
+      />
+    </div>
+  );
+}
+
+function generateBorderPaths(
+  style: string,
+  pageW: number,
+  pageH: number,
+  margin: number,
+  _strokeWidth: number,
+): string[] {
+  const x = margin;
+  const y = margin;
+  const w = pageW - margin * 2;
+  const h = pageH - margin * 2;
+
+  const rect = (rx: number, ry: number, rw: number, rh: number) =>
+    `M${rx},${ry}H${rx + rw}V${ry + rh}H${rx}Z`;
+
+  switch (style) {
+    case "simple":
+      return [rect(x, y, w, h)];
+
+    case "double": {
+      const inset = 2;
+      return [
+        rect(x, y, w, h),
+        rect(x + inset, y + inset, w - inset * 2, h - inset * 2),
+      ];
+    }
+
+    case "ticked": {
+      const paths = [rect(x, y, w, h)];
+      const tickLen = 2;
+      const spacing = 10;
+      // Top and bottom ticks
+      for (let tx = x + spacing; tx < x + w; tx += spacing) {
+        paths.push(`M${tx},${y}V${y - tickLen}`);
+        paths.push(`M${tx},${y + h}V${y + h + tickLen}`);
+      }
+      // Left and right ticks
+      for (let ty = y + spacing; ty < y + h; ty += spacing) {
+        paths.push(`M${x},${ty}H${x - tickLen}`);
+        paths.push(`M${x + w},${ty}H${x + w + tickLen}`);
+      }
+      return paths;
+    }
+
+    case "cropmarks": {
+      const markLen = 8;
+      const gap = 2;
+      const corners = [
+        // Top-left
+        [`M${x - gap},${y}H${x - gap - markLen}`, `M${x},${y - gap}V${y - gap - markLen}`],
+        // Top-right
+        [`M${x + w + gap},${y}H${x + w + gap + markLen}`, `M${x + w},${y - gap}V${y - gap - markLen}`],
+        // Bottom-left
+        [`M${x - gap},${y + h}H${x - gap - markLen}`, `M${x},${y + h + gap}V${y + h + gap + markLen}`],
+        // Bottom-right
+        [`M${x + w + gap},${y + h}H${x + w + gap + markLen}`, `M${x + w},${y + h + gap}V${y + h + gap + markLen}`],
+      ];
+      return corners.flat();
+    }
+
+    default:
+      return [];
+  }
 }
 
 const btnStyle: React.CSSProperties = {
