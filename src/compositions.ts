@@ -1,4 +1,4 @@
-import { HatchParams } from "./hatch";
+import type { HatchParams } from "./hatch";
 
 export interface LayerConfig {
   surface: string;

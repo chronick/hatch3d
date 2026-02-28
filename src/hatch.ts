@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { SurfaceFn } from "./surfaces";
+import type { SurfaceFn } from "./surfaces";
 
 export interface HatchParams {
   family?: "u" | "v" | "diagonal";

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ProjectedPoint } from "./projection";
+import type { ProjectedPoint } from "./projection";
 
 interface DepthBuffer {
   depthData: Uint8Array;
