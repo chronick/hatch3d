@@ -1,10 +1,19 @@
-import { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect, memo } from "react";
 import * as THREE from "three";
 import { SURFACES } from "./surfaces";
 import { generateUVHatchLines, type HatchParams } from "./hatch";
 import { projectPolylines, polylinesToSVGPaths, buildSurfaceMesh } from "./projection";
 import { renderDepthBuffer, clipPolylineByDepth } from "./occlusion";
-import { COMPOSITIONS, type LayerConfig } from "./compositions";
+import {
+  COMPOSITIONS,
+  type LayerConfig,
+  type ControlDef,
+  type MacroDef,
+  getControlDefaults,
+  getMacroDefaults,
+  resolveValues,
+  getControlGroups,
+} from "./compositions";
 
 const PAGE_SIZES: Record<string, { label: string; w: number; h: number }> = {
   a3: { label: "A3", w: 420, h: 297 },
@@ -21,10 +30,13 @@ const BORDER_STYLES: Record<string, string> = {
 };
 
 const STORAGE_KEY = "hatch3d-state";
+const COMP_VALUES_KEY = "hatch3d-comp-values";
+const MACRO_VALUES_KEY = "hatch3d-macro-values";
 
 const DEFAULTS = {
   surfaceKey: "hyperboloid",
   compositionKey: "single",
+  controlsPanel: "inline" as "inline" | "side",
   paramA: 0.5,
   paramB: 0.5,
   paramC: 0.5,
@@ -118,26 +130,134 @@ export default function App() {
   const [borderEnabled, setBorderEnabled] = useState(INITIAL.borderEnabled);
   const [borderStyle, setBorderStyle] = useState(INITIAL.borderStyle);
 
-  // Persist all controls to localStorage on change
+  // Layout: controls panel mode
+  const [controlsPanel, setControlsPanel] = useState(INITIAL.controlsPanel);
+
+  // Per-composition control values
+  const [compValues, setCompValues] = useState<Record<string, Record<string, unknown>>>(() => {
+    try {
+      const raw = localStorage.getItem(COMP_VALUES_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  });
+  const [macroValues, setMacroValues] = useState<Record<string, Record<string, number>>>(() => {
+    try {
+      const raw = localStorage.getItem(MACRO_VALUES_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  });
+
+  // Responsive: detect narrow viewport (debounced)
+  const [isNarrow, setIsNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 1200);
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      surfaceKey, compositionKey,
-      paramA, paramB, paramC, paramD,
-      hatchFamily, hatchCount, hatchSamples, hatchAngle,
-      useOcclusion, depthRes, depthBias,
-      camTheta, camPhi, camDist, camOrtho, panX, panY,
-      strokeWidth, showMesh,
-      pageSize, orientation, margin, borderEnabled, borderStyle,
-    }));
-  }, [
-    surfaceKey, compositionKey,
+    let timer: ReturnType<typeof setTimeout>;
+    const handler = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => setIsNarrow(window.innerWidth < 1200), 150);
+    };
+    window.addEventListener("resize", handler);
+    return () => { window.removeEventListener("resize", handler); clearTimeout(timer); };
+  }, []);
+
+  // Current composition helpers — cache defaults per composition key to avoid recomputing
+  const comp = COMPOSITIONS[compositionKey];
+  const controlDefaults = useMemo(() => getControlDefaults(comp.controls), [comp.controls]);
+  const macroDefaults = useMemo(() => getMacroDefaults(comp.macros), [comp.macros]);
+
+  const compSlice = compValues[compositionKey];
+  const macroSlice = macroValues[compositionKey];
+  const currentValues = useMemo(
+    () => ({ ...controlDefaults, ...compSlice }),
+    [controlDefaults, compSlice],
+  );
+  const currentMacros = useMemo(
+    () => ({ ...macroDefaults, ...macroSlice }),
+    [macroDefaults, macroSlice],
+  );
+
+  const setCompValue = useCallback((key: string, val: unknown) => {
+    setCompValues(prev => {
+      const existing = prev[compositionKey];
+      // Skip update if value hasn't changed
+      if (existing && existing[key] === val) return prev;
+      return { ...prev, [compositionKey]: { ...existing, [key]: val } };
+    });
+  }, [compositionKey]);
+
+  const setMacroValue = useCallback((key: string, val: number) => {
+    setMacroValues(prev => {
+      const existing = prev[compositionKey];
+      if (existing && existing[key] === val) return prev;
+      return { ...prev, [compositionKey]: { ...existing, [key]: val } };
+    });
+  }, [compositionKey]);
+
+  // Reset all macros to their defaults (0.5 center)
+  const resetMacros = useCallback(() => {
+    setMacroValues(prev => {
+      const { [compositionKey]: _, ...rest } = prev;
+      return rest;
+    });
+  }, [compositionKey]);
+
+  // Reset a specific control group to defaults
+  const resetControlGroup = useCallback((group: string) => {
+    if (!comp.controls) return;
+    setCompValues(prev => {
+      const existing = { ...prev[compositionKey] };
+      for (const [key, ctrl] of Object.entries(comp.controls!)) {
+        if (ctrl.group === group) delete existing[key];
+      }
+      return { ...prev, [compositionKey]: existing };
+    });
+  }, [compositionKey, comp.controls]);
+
+  // Reset all controls + macros for current composition
+  const resetAllControls = useCallback(() => {
+    setCompValues(prev => {
+      const { [compositionKey]: _, ...rest } = prev;
+      return rest;
+    });
+    setMacroValues(prev => {
+      const { [compositionKey]: _, ...rest } = prev;
+      return rest;
+    });
+  }, [compositionKey]);
+
+  // Macro resolver
+  const resolvedValues = useMemo(
+    () => resolveValues(comp.controls, comp.macros, currentValues, currentMacros),
+    [comp.controls, comp.macros, currentValues, currentMacros],
+  );
+
+  // Persist all controls to localStorage (debounced to avoid thrashing during slider drags)
+  const persistTimer = useRef<ReturnType<typeof setTimeout>>();
+  const stateSnapshot = useMemo(() => ({
+    surfaceKey, compositionKey, controlsPanel,
     paramA, paramB, paramC, paramD,
     hatchFamily, hatchCount, hatchSamples, hatchAngle,
     useOcclusion, depthRes, depthBias,
-    camTheta, camPhi, camDist, panX, panY,
+    camTheta, camPhi, camDist, camOrtho, panX, panY,
+    strokeWidth, showMesh,
+    pageSize, orientation, margin, borderEnabled, borderStyle,
+  }), [
+    surfaceKey, compositionKey, controlsPanel,
+    paramA, paramB, paramC, paramD,
+    hatchFamily, hatchCount, hatchSamples, hatchAngle,
+    useOcclusion, depthRes, depthBias,
+    camTheta, camPhi, camDist, camOrtho, panX, panY,
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
   ]);
+  useEffect(() => {
+    clearTimeout(persistTimer.current);
+    persistTimer.current = setTimeout(() => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateSnapshot));
+      localStorage.setItem(COMP_VALUES_KEY, JSON.stringify(compValues));
+      localStorage.setItem(MACRO_VALUES_KEY, JSON.stringify(macroValues));
+    }, 300);
+    return () => clearTimeout(persistTimer.current);
+  }, [stateSnapshot, compValues, macroValues]);
 
   // Preview pan/zoom (ephemeral, not persisted)
   const [viewZoom, setViewZoom] = useState(1);
@@ -223,6 +343,7 @@ export default function App() {
         surface: surfaceKey,
         surfaceParams,
         hatchParams,
+        values: resolvedValues,
       });
     } else {
       layers = [
@@ -367,6 +488,7 @@ export default function App() {
     surfaceKey,
     surfaceParams,
     compositionKey,
+    resolvedValues,
     hatchFamily,
     hatchCount,
     hatchSamples,
@@ -518,7 +640,7 @@ export default function App() {
       </div>
 
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Controls panel */}
+        {/* Main controls sidebar */}
         <div
           style={{
             width: 280,
@@ -529,9 +651,10 @@ export default function App() {
             display: "flex",
             flexDirection: "column",
             gap: 18,
+            flexShrink: 0,
           }}
         >
-          <Section title="COMPOSITION">
+          <Section title="COMPOSITION" preview={comp.name}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
               {Object.entries(COMPOSITIONS).map(([key, val]) => (
                 <button
@@ -547,10 +670,19 @@ export default function App() {
                 </button>
               ))}
             </div>
+            {compositionKey !== "single" && !isNarrow && controlsPanel === "inline" && (
+              <button
+                onClick={() => setControlsPanel("side")}
+                title="Undock composition controls to side panel"
+                style={{ ...tagStyle, fontSize: 9, padding: "2px 6px", alignSelf: "flex-start" }}
+              >
+                Undock controls &rarr;
+              </button>
+            )}
           </Section>
 
           {compositionKey === "single" && (
-            <Section title="SURFACE">
+            <Section title="SURFACE" preview={surfaceInfo.name}>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                 {Object.entries(SURFACES).map(([key, val]) => (
                   <button
@@ -577,7 +709,23 @@ export default function App() {
             </Section>
           )}
 
-          <Section title="HATCHING">
+          {/* Inline composition controls (when not using side panel) */}
+          {compositionKey !== "single" && (isNarrow || controlsPanel === "inline") && comp.controls && (
+            <CompositionControls
+              controls={comp.controls}
+              macros={comp.macros}
+              currentValues={currentValues}
+              currentMacros={currentMacros}
+              resolvedValues={resolvedValues}
+              onControlChange={setCompValue}
+              onMacroChange={setMacroValue}
+              onResetMacros={resetMacros}
+              onResetGroup={resetControlGroup}
+              onResetAll={resetAllControls}
+            />
+          )}
+
+          <Section title="HATCHING" preview={`${hatchFamily} \u00b7 ${hatchCount} lines`}>
             <div style={{ display: "flex", gap: 3 }}>
               {(["u", "v", "diagonal"] as const).map((f) => (
                 <button
@@ -600,7 +748,7 @@ export default function App() {
             )}
           </Section>
 
-          <Section title="OCCLUSION">
+          <Section title="OCCLUSION" preview={useOcclusion ? `${depthRes}px` : "off"}>
             <Toggle label="Depth-buffer HLR" value={useOcclusion} onChange={setUseOcclusion} />
             {useOcclusion && (
               <>
@@ -617,12 +765,12 @@ export default function App() {
             )}
           </Section>
 
-          <Section title="DISPLAY">
+          <Section title="DISPLAY" preview={`sw ${strokeWidth.toFixed(1)}`}>
             <Slider label="Stroke W" value={strokeWidth} onChange={setStrokeWidth} min={0.1} max={2} step={0.05} />
             <Toggle label="Show mesh" value={showMesh} onChange={setShowMesh} />
           </Section>
 
-          <Section title="EXPORT">
+          <Section title="EXPORT" preview={`${PAGE_SIZES[pageSize].label} ${orientation}`}>
             <div style={{ display: "flex", gap: 3 }}>
               {(["landscape", "portrait"] as const).map((o) => (
                 <button
@@ -674,7 +822,7 @@ export default function App() {
             )}
           </Section>
 
-          <Section title="CAMERA">
+          <Section title="CAMERA" preview={`\u03B8${camTheta.toFixed(2)} \u03C6${camPhi.toFixed(2)} d${camDist.toFixed(0)}`}>
             <div style={{ display: "flex", gap: 3 }}>
               {(["perspective", "orthographic"] as const).map((m) => (
                 <button
@@ -703,8 +851,8 @@ export default function App() {
                 &theta; {camTheta.toFixed(2)} &phi; {camPhi.toFixed(2)}
               </HoverReset>
             </div>
-            <Slider label="Orbit θ" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
-            <Slider label="Orbit φ" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
+            <Slider label="Orbit \u03B8" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
+            <Slider label="Orbit \u03C6" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
             <div style={{ color: "var(--fg-faint)", fontSize: 10, marginTop: 2 }}>
               Preview: drag to pan · pinch to zoom · dbl-click fit
             </div>
@@ -721,9 +869,60 @@ export default function App() {
           >
             {stats.paths} SVG paths · {stats.lines} hatch lines · {stats.verts} vertices
             <br />
-            Pipeline: UV hatch → 3D surface → project{useOcclusion ? " → depth clip" : ""} → SVG
+            Pipeline: UV hatch &rarr; 3D surface &rarr; project{useOcclusion ? " \u2192 depth clip" : ""} &rarr; SVG
           </div>
         </div>
+
+        {/* Side panel for composition controls (wide viewports, opt-in) */}
+        {compositionKey !== "single" && !isNarrow && controlsPanel === "side" && comp.controls && (
+          <div
+            style={{
+              width: 280,
+              padding: "14px 18px",
+              overflowY: "auto",
+              borderRight: "1px solid var(--border)",
+              fontSize: 11,
+              display: "flex",
+              flexDirection: "column",
+              gap: 18,
+              flexShrink: 0,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--fg-dim)" }}>
+                {comp.name.toUpperCase()}
+              </span>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  onClick={resetAllControls}
+                  title="Reset all controls and macros to defaults"
+                  style={{ ...tagStyle, fontSize: 9, padding: "2px 6px" }}
+                >
+                  Reset all
+                </button>
+                <button
+                  onClick={() => setControlsPanel("inline")}
+                  title="Dock composition controls back to main sidebar"
+                  style={{ ...tagStyle, fontSize: 9, padding: "2px 6px" }}
+                >
+                  &larr; Dock
+                </button>
+              </div>
+            </div>
+            <CompositionControls
+              controls={comp.controls}
+              macros={comp.macros}
+              currentValues={currentValues}
+              currentMacros={currentMacros}
+              resolvedValues={resolvedValues}
+              onControlChange={setCompValue}
+              onMacroChange={setMacroValue}
+              onResetMacros={resetMacros}
+              onResetGroup={resetControlGroup}
+              onResetAll={resetAllControls}
+            />
+          </div>
+        )}
 
         {/* SVG viewport */}
         <div
@@ -812,28 +1011,336 @@ export default function App() {
 
 // ── UI primitives ──
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  preview,
+  defaultOpen = true,
+  onReset,
+  children,
+}: {
+  title: string;
+  preview?: string;
+  defaultOpen?: boolean;
+  onReset?: () => void;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [resetHover, setResetHover] = useState(false);
   return (
     <div>
       <div
+        onClick={() => setOpen(!open)}
         style={{
           fontSize: 10,
           fontWeight: 700,
           letterSpacing: "0.1em",
           color: "var(--fg-dim)",
-          marginBottom: 7,
+          marginBottom: open ? 7 : 0,
           borderBottom: "1px solid var(--border-light)",
           paddingBottom: 4,
+          cursor: "pointer",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          userSelect: "none",
         }}
       >
-        {title}
+        <span>{title}</span>
+        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {open && onReset && (
+            <span
+              onClick={(e) => { e.stopPropagation(); onReset(); }}
+              onMouseEnter={() => setResetHover(true)}
+              onMouseLeave={() => setResetHover(false)}
+              style={{
+                fontSize: 9,
+                fontWeight: 400,
+                color: resetHover ? "var(--fg)" : "var(--fg-hint)",
+                cursor: "pointer",
+                textDecoration: "underline",
+                textDecorationStyle: "dotted",
+                textUnderlineOffset: 2,
+              }}
+            >
+              reset
+            </span>
+          )}
+          {!open && preview && (
+            <span style={{ color: "var(--fg-hint)", fontSize: 9, fontWeight: 400 }}>{preview}</span>
+          )}
+          <span style={{ fontSize: 9 }}>{open ? "\u25BE" : "\u25B8"}</span>
+        </span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>{children}</div>
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>{children}</div>
+      )}
     </div>
   );
 }
 
-function Slider({
+// ── Composition control renderer ──
+
+const MacroSlider = memo(function MacroSlider({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ width: 70, color: "var(--fg)", flexShrink: 0, fontSize: 11, fontWeight: 600 }}>{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.01}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ flex: 1, accentColor: "var(--accent-color)", height: 2 }}
+      />
+      <span style={{ width: 44, textAlign: "right", color: "var(--fg-dim)", fontSize: 10 }}>
+        {value.toFixed(2)}
+      </span>
+    </div>
+  );
+});
+
+function ControlXYPad({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: [number, number];
+  min: number;
+  max: number;
+  onChange: (v: [number, number]) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+      <span style={{ color: "var(--fg-muted)", fontSize: 10 }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <XYPad
+          valueX={value[0]}
+          valueY={value[1]}
+          onChangeX={(x) => onChange([x, value[1]])}
+          onChangeY={(y) => onChange([value[0], y])}
+          min={min}
+          max={max}
+          size={100}
+        />
+        <span style={{ color: "var(--fg-dim)", fontSize: 10 }}>
+          {value[0].toFixed(2)}, {value[1].toFixed(2)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const SelectButtons = memo(function SelectButtons({
+  options,
+  value,
+  onChange,
+}: {
+  options: { label: string; value: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(opt.value)}
+          style={{
+            ...tagStyle,
+            background: value === opt.value ? "var(--fg)" : "transparent",
+            color: value === opt.value ? "var(--bg-canvas)" : "var(--fg)",
+          }}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+});
+
+const ControlRenderer = memo(function ControlRenderer({
+  controlKey,
+  control,
+  value,
+  onChange,
+}: {
+  controlKey: string;
+  control: ControlDef;
+  value: unknown;
+  onChange: (key: string, val: unknown) => void;
+}) {
+  // Stable per-key callback so children don't re-render from new closure refs
+  const handleChange = useCallback(
+    (v: unknown) => onChange(controlKey, v),
+    [onChange, controlKey],
+  );
+
+  switch (control.type) {
+    case "slider":
+      return (
+        <Slider
+          label={control.label}
+          value={value as number}
+          onChange={handleChange as (v: number) => void}
+          min={control.min}
+          max={control.max}
+          step={control.step ?? (control.max - control.min > 10 ? 1 : 0.01)}
+        />
+      );
+    case "toggle":
+      return (
+        <Toggle
+          label={control.label}
+          value={value as boolean}
+          onChange={handleChange as (v: boolean) => void}
+        />
+      );
+    case "select":
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <span style={{ color: "var(--fg-muted)", fontSize: 10 }}>{control.label}</span>
+          <SelectButtons
+            options={control.options}
+            value={value as string}
+            onChange={handleChange as (v: string) => void}
+          />
+        </div>
+      );
+    case "xy":
+      return (
+        <ControlXYPad
+          label={control.label}
+          value={value as [number, number]}
+          min={control.min}
+          max={control.max}
+          onChange={handleChange as (v: [number, number]) => void}
+        />
+      );
+    default:
+      return null;
+  }
+});
+
+const CompositionControls = memo(function CompositionControls({
+  controls,
+  macros,
+  currentValues,
+  currentMacros,
+  resolvedValues,
+  onControlChange,
+  onMacroChange,
+  onResetMacros,
+  onResetGroup,
+  onResetAll,
+}: {
+  controls?: Record<string, ControlDef>;
+  macros?: Record<string, MacroDef>;
+  currentValues: Record<string, unknown>;
+  currentMacros: Record<string, number>;
+  resolvedValues: Record<string, unknown>;
+  onControlChange: (key: string, val: unknown) => void;
+  onMacroChange: (key: string, val: number) => void;
+  onResetMacros: () => void;
+  onResetGroup: (group: string) => void;
+  onResetAll: () => void;
+}) {
+  // Memoize groups so they don't recompute on every value change
+  const groups = useMemo(() => getControlGroups(controls), [controls]);
+
+  // Stable per-macro callbacks via a ref to avoid re-rendering all MacroSliders when one changes
+  const onMacroChangeRef = useRef(onMacroChange);
+  onMacroChangeRef.current = onMacroChange;
+  const macroHandlers = useMemo(() => {
+    if (!macros) return {} as Record<string, (v: number) => void>;
+    const handlers: Record<string, (v: number) => void> = {};
+    for (const key of Object.keys(macros)) {
+      handlers[key] = (v: number) => onMacroChangeRef.current(key, v);
+    }
+    return handlers;
+  }, [macros]);
+
+  const macroPreview = macros
+    ? Object.values(currentMacros).map((v) => v.toFixed(1)).join(" \u00b7 ")
+    : undefined;
+
+  // Pre-compute grouped controls so we don't filter on every render
+  const groupedControls = useMemo(() => {
+    if (!controls) return new Map<string, [string, ControlDef][]>();
+    const map = new Map<string, [string, ControlDef][]>();
+    for (const [key, ctrl] of Object.entries(controls)) {
+      let arr = map.get(ctrl.group);
+      if (!arr) { arr = []; map.set(ctrl.group, arr); }
+      arr.push([key, ctrl]);
+    }
+    return map;
+  }, [controls]);
+
+  // Stable per-group reset handlers
+  const onResetGroupRef = useRef(onResetGroup);
+  onResetGroupRef.current = onResetGroup;
+  const groupResetHandlers = useMemo(() => {
+    const handlers: Record<string, () => void> = {};
+    for (const g of groups) {
+      handlers[g] = () => onResetGroupRef.current(g);
+    }
+    return handlers;
+  }, [groups]);
+
+  return (
+    <>
+      {macros && Object.keys(macros).length > 0 && (
+        <Section title="MACROS" preview={macroPreview} onReset={onResetMacros}>
+          {Object.entries(macros).map(([key, macro]) => (
+            <MacroSlider
+              key={key}
+              label={macro.label}
+              value={currentMacros[key] ?? macro.default}
+              onChange={macroHandlers[key]}
+            />
+          ))}
+        </Section>
+      )}
+      {groups.map((group) => {
+        const groupControls = groupedControls.get(group) ?? [];
+        const previewParts = groupControls
+          .slice(0, 2)
+          .map(([k, c]) => {
+            const v = resolvedValues[k];
+            if (c.type === "slider") return `${(v as number).toFixed(1)}`;
+            if (c.type === "toggle") return (v as boolean) ? "on" : "off";
+            return String(v);
+          });
+        return (
+          <Section key={group} title={group.toUpperCase()} preview={previewParts.join(" \u00b7 ")} defaultOpen={group !== "Visibility" && group !== "Position" && group !== "Style"} onReset={groupResetHandlers[group]}>
+            {groupControls.map(([key, ctrl]) => (
+              <ControlRenderer
+                key={key}
+                controlKey={key}
+                control={ctrl}
+                value={currentValues[key] ?? ctrl.default}
+                onChange={onControlChange}
+              />
+            ))}
+          </Section>
+        );
+      })}
+    </>
+  );
+});
+
+const Slider = memo(function Slider({
   label,
   value,
   onChange,
@@ -865,9 +1372,9 @@ function Slider({
       </span>
     </div>
   );
-}
+});
 
-function Toggle({
+const Toggle = memo(function Toggle({
   label,
   value,
   onChange,
@@ -908,7 +1415,7 @@ function Toggle({
       <span style={{ color: "var(--fg-muted)" }}>{label}</span>
     </div>
   );
-}
+});
 
 function HoverReset({
   label,
