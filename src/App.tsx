@@ -1,10 +1,10 @@
 import { useState, useRef, useCallback, useMemo } from "react";
 import * as THREE from "three";
 import { SURFACES } from "./surfaces";
-import { generateUVHatchLines, HatchParams } from "./hatch";
+import { generateUVHatchLines, type HatchParams } from "./hatch";
 import { projectPolylines, polylinesToSVGPaths, buildSurfaceMesh } from "./projection";
 import { renderDepthBuffer, clipPolylineByDepth } from "./occlusion";
-import { COMPOSITIONS, LayerConfig } from "./compositions";
+import { COMPOSITIONS, type LayerConfig } from "./compositions";
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -301,9 +301,9 @@ export default function App() {
     <div
       style={{
         minHeight: "100vh",
-        background: "#f7f5f2",
+        background: "var(--bg)",
         fontFamily: "'IBM Plex Mono', 'SF Mono', monospace",
-        color: "#1a1a1a",
+        color: "var(--fg)",
         display: "flex",
         flexDirection: "column",
         userSelect: "none",
@@ -313,22 +313,22 @@ export default function App() {
       <div
         style={{
           padding: "14px 22px",
-          borderBottom: "1px solid #d4d0ca",
+          borderBottom: "1px solid var(--border)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          background: "#edebe7",
+          background: "var(--bg-panel)",
         }}
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
           <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: "0.06em" }}>
             HATCH3D
           </span>
-          <span style={{ fontSize: 10, color: "#888", letterSpacing: "0.08em" }}>
+          <span style={{ fontSize: 10, color: "var(--fg-hint)", letterSpacing: "0.08em" }}>
             UV-SPACE PARAMETRIC HATCHING → SVG
           </span>
         </div>
-        <button onClick={exportSVG} style={{ ...btnStyle, background: "#1a1a1a", color: "#f5f3f0" }}>
+        <button onClick={exportSVG} style={{ ...btnStyle, background: "var(--fg)", color: "var(--bg-canvas)" }}>
           EXPORT SVG
         </button>
       </div>
@@ -340,7 +340,7 @@ export default function App() {
             width: 280,
             padding: "14px 18px",
             overflowY: "auto",
-            borderRight: "1px solid #d4d0ca",
+            borderRight: "1px solid var(--border)",
             fontSize: 11,
             display: "flex",
             flexDirection: "column",
@@ -355,8 +355,8 @@ export default function App() {
                   onClick={() => setCompositionKey(key)}
                   style={{
                     ...tagStyle,
-                    background: compositionKey === key ? "#1a1a1a" : "transparent",
-                    color: compositionKey === key ? "#f5f3f0" : "#1a1a1a",
+                    background: compositionKey === key ? "var(--fg)" : "transparent",
+                    color: compositionKey === key ? "var(--bg-canvas)" : "var(--fg)",
                   }}
                 >
                   {val.name}
@@ -374,8 +374,8 @@ export default function App() {
                     onClick={() => setSurfaceKey(key)}
                     style={{
                       ...tagStyle,
-                      background: surfaceKey === key ? "#1a1a1a" : "transparent",
-                      color: surfaceKey === key ? "#f5f3f0" : "#1a1a1a",
+                      background: surfaceKey === key ? "var(--fg)" : "transparent",
+                      color: surfaceKey === key ? "var(--bg-canvas)" : "var(--fg)",
                     }}
                   >
                     {val.name}
@@ -401,8 +401,8 @@ export default function App() {
                   onClick={() => setHatchFamily(f)}
                   style={{
                     ...tagStyle,
-                    background: hatchFamily === f ? "#1a1a1a" : "transparent",
-                    color: hatchFamily === f ? "#f5f3f0" : "#1a1a1a",
+                    background: hatchFamily === f ? "var(--fg)" : "transparent",
+                    color: hatchFamily === f ? "var(--bg-canvas)" : "var(--fg)",
                   }}
                 >
                   {f === "u" ? "U-const" : f === "v" ? "V-const" : "Diagonal"}
@@ -442,14 +442,14 @@ export default function App() {
             <Slider label="Distance" value={camDist} onChange={setCamDist} min={3} max={25} step={0.1} />
             <Slider label="Orbit θ" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
             <Slider label="Orbit φ" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
-            <div style={{ color: "#aaa", fontSize: 10, marginTop: 2 }}>
+            <div style={{ color: "var(--fg-faint)", fontSize: 10, marginTop: 2 }}>
               Drag to orbit · Scroll to zoom
             </div>
           </Section>
 
           <div
             style={{
-              color: "#aaa",
+              color: "var(--fg-faint)",
               fontSize: 10,
               marginTop: "auto",
               paddingTop: 12,
@@ -469,7 +469,7 @@ export default function App() {
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            background: "#f7f5f2",
+            background: "var(--bg)",
             cursor: isDragging ? "grabbing" : "grab",
             overflow: "hidden",
           }}
@@ -486,12 +486,12 @@ export default function App() {
             style={{
               maxWidth: "calc(100% - 40px)",
               maxHeight: "calc(100vh - 80px)",
-              background: "white",
-              boxShadow: "0 1px 16px rgba(0,0,0,0.06)",
+              background: "var(--bg-canvas)",
+              boxShadow: "0 1px 16px var(--shadow)",
             }}
           >
             {showMesh && (
-              <g fill="none" stroke="#ddd" strokeWidth={0.3}>
+              <g fill="none" stroke="var(--mesh-stroke)" strokeWidth={0.3}>
                 {meshPaths.map((d, i) => (
                   <path key={`m${i}`} d={d} />
                 ))}
@@ -499,7 +499,7 @@ export default function App() {
             )}
             <g
               fill="none"
-              stroke="#1a1a1a"
+              stroke="var(--fg)"
               strokeWidth={strokeWidth}
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -527,9 +527,9 @@ function Section({ title, children }: { title: string; children: React.ReactNode
           fontSize: 10,
           fontWeight: 700,
           letterSpacing: "0.1em",
-          color: "#999",
+          color: "var(--fg-dim)",
           marginBottom: 7,
-          borderBottom: "1px solid #e2dfd9",
+          borderBottom: "1px solid var(--border-light)",
           paddingBottom: 4,
         }}
       >
@@ -557,7 +557,7 @@ function Slider({
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ width: 70, color: "#666", flexShrink: 0, fontSize: 11 }}>{label}</span>
+      <span style={{ width: 70, color: "var(--fg-muted)", flexShrink: 0, fontSize: 11 }}>{label}</span>
       <input
         type="range"
         min={min}
@@ -565,9 +565,9 @@ function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ flex: 1, accentColor: "#1a1a1a", height: 2 }}
+        style={{ flex: 1, accentColor: "var(--accent-color)", height: 2 }}
       />
-      <span style={{ width: 44, textAlign: "right", color: "#999", fontSize: 10 }}>
+      <span style={{ width: 44, textAlign: "right", color: "var(--fg-dim)", fontSize: 10 }}>
         {typeof value === "number" && value % 1 !== 0 ? value.toFixed(2) : value}
       </span>
     </div>
@@ -593,7 +593,7 @@ function Toggle({
           width: 28,
           height: 14,
           borderRadius: 7,
-          background: value ? "#1a1a1a" : "#ccc",
+          background: value ? "var(--fg)" : "var(--toggle-off)",
           position: "relative",
           transition: "background 0.15s",
           flexShrink: 0,
@@ -604,7 +604,7 @@ function Toggle({
             width: 10,
             height: 10,
             borderRadius: 5,
-            background: "white",
+            background: "var(--bg-canvas)",
             position: "absolute",
             top: 2,
             left: value ? 16 : 2,
@@ -612,7 +612,7 @@ function Toggle({
           }}
         />
       </div>
-      <span style={{ color: "#666" }}>{label}</span>
+      <span style={{ color: "var(--fg-muted)" }}>{label}</span>
     </div>
   );
 }
@@ -623,8 +623,9 @@ const btnStyle: React.CSSProperties = {
   fontFamily: "inherit",
   fontWeight: 600,
   letterSpacing: "0.05em",
-  border: "1px solid #1a1a1a",
+  border: "1px solid var(--fg)",
   background: "transparent",
+  color: "var(--fg)",
   cursor: "pointer",
   borderRadius: 0,
 };
@@ -635,7 +636,7 @@ const tagStyle: React.CSSProperties = {
   fontFamily: "inherit",
   fontWeight: 600,
   letterSpacing: "0.02em",
-  border: "1px solid #1a1a1a",
+  border: "1px solid var(--fg)",
   cursor: "pointer",
   borderRadius: 0,
 };
