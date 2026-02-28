@@ -153,9 +153,31 @@ export function getControlGroups(controls?: Record<string, ControlDef>): string[
   return groups;
 }
 
+// ── 2D Composition types ──
+
+export interface Composition2DInput {
+  width: number;
+  height: number;
+  values: Record<string, unknown>;
+}
+
+export interface Composition2D {
+  type: "2d";
+  name: string;
+  macros?: Record<string, MacroDef>;
+  controls?: Record<string, ControlDef>;
+  generate: (input: Composition2DInput) => { x: number; y: number }[][];
+}
+
+export type AnyComposition = Composition | Composition2D;
+
+export function is2DComposition(comp: AnyComposition): comp is Composition2D {
+  return (comp as Composition2D).type === "2d";
+}
+
 // ── Compositions ──
 
-export const COMPOSITIONS: Record<string, Composition> = {
+export const COMPOSITIONS: Record<string, AnyComposition> = {
   single: {
     name: "Single Surface",
     layers: (p) => [

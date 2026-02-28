@@ -6,6 +6,7 @@ import { projectPolylines, polylinesToSVGPaths, buildSurfaceMesh } from "./proje
 import { renderDepthBuffer, clipPolylineByDepth } from "./occlusion";
 import {
   COMPOSITIONS,
+  type Composition,
   type LayerConfig,
   type ControlDef,
   type MacroDef,
@@ -13,7 +14,12 @@ import {
   getMacroDefaults,
   resolveValues,
   getControlGroups,
+  is2DComposition,
 } from "./compositions";
+import { COMPOSITIONS_2D } from "./compositions2d";
+
+// Merge 2D compositions into the shared registry
+Object.assign(COMPOSITIONS, COMPOSITIONS_2D);
 
 const PAGE_SIZES: Record<string, { label: string; w: number; h: number }> = {
   a3: { label: "A3", w: 420, h: 297 },
@@ -196,6 +202,7 @@ export default function App() {
 
   // Current composition helpers — cache defaults per composition key to avoid recomputing
   const comp = COMPOSITIONS[compositionKey];
+  const is2d = is2DComposition(comp);
   const controlDefaults = useMemo(() => getControlDefaults(comp.controls), [comp.controls]);
   const macroDefaults = useMemo(() => getMacroDefaults(comp.macros), [comp.macros]);
 
@@ -381,6 +388,17 @@ export default function App() {
 
   // Generate everything
   const { svgPaths, meshPaths, stats } = useMemo(() => {
+    // 2D pipeline: generate polylines directly, skip surfaces/camera/occlusion
+    if (is2DComposition(comp)) {
+      const polylines2D = comp.generate({ width, height, values: resolvedValues });
+      const paths = polylinesToSVGPaths(polylines2D);
+      return {
+        svgPaths: paths,
+        meshPaths: [],
+        stats: { lines: polylines2D.length, verts: polylines2D.reduce((s, p) => s + p.length, 0), paths: paths.length },
+      };
+    }
+
     let layers: LayerConfig[];
 
     const hatchParams: HatchParams = {
@@ -391,7 +409,8 @@ export default function App() {
     };
 
     if (compositionKey !== "single") {
-      layers = COMPOSITIONS[compositionKey].layers({
+      const comp3d = COMPOSITIONS[compositionKey] as Composition;
+      layers = comp3d.layers({
         surface: surfaceKey,
         surfaceParams,
         hatchParams,
@@ -552,6 +571,7 @@ export default function App() {
       stats: { lines: totalLines, verts: totalVerts, paths: allPaths.length },
     };
   }, [
+    comp,
     surfaceKey,
     surfaceParams,
     compositionKey,
@@ -638,10 +658,10 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `hatch3d_${compositionKey}_${surfaceKey}.svg`;
+    a.download = is2d ? `hatch2d_${compositionKey}.svg` : `hatch3d_${compositionKey}_${surfaceKey}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [svgPaths, exportLayout, margin, strokeWidth, previewBorderPaths, compositionKey, surfaceKey]);
+  }, [svgPaths, exportLayout, margin, strokeWidth, previewBorderPaths, compositionKey, surfaceKey, is2d]);
 
   const surfaceInfo = SURFACES[surfaceKey];
   const paramKeys = Object.keys(surfaceInfo.defaults);
@@ -735,6 +755,9 @@ export default function App() {
                   }}
                 >
                   {val.name}
+                  <span style={{ fontSize: 8, marginLeft: 4, opacity: 0.5 }}>
+                    {is2DComposition(val) ? "2D" : "3D"}
+                  </span>
                 </button>
               ))}
             </div>
@@ -782,7 +805,7 @@ export default function App() {
             <CompositionControls
               controls={comp.controls}
               macros={comp.macros}
-              hatchGroups={comp.hatchGroups}
+              hatchGroups={"hatchGroups" in comp ? comp.hatchGroups : undefined}
               currentValues={currentValues}
               currentMacros={currentMacros}
               resolvedValues={resolvedValues}
@@ -796,38 +819,42 @@ export default function App() {
             />
           )}
 
-          <Section title="HATCHING" preview={`${hatchFamily} \u00b7 ${hatchCount} lines`}>
-            <HatchFamilySelect
-              value={hatchFamily}
-              onChange={(f) => setHatchFamily(f as HatchFamily)}
-            />
-            <Slider label="Count" value={hatchCount} onChange={setHatchCount} min={5} max={80} step={1} />
-            <Slider label="Samples" value={hatchSamples} onChange={setHatchSamples} min={10} max={120} step={1} />
-            {(hatchFamily === "diagonal" || hatchFamily === "crosshatch") && (
-              <Slider label="Angle" value={hatchAngle} onChange={setHatchAngle} min={0} max={Math.PI} step={0.01} />
-            )}
-          </Section>
+          {!is2d && (
+            <Section title="HATCHING" preview={`${hatchFamily} \u00b7 ${hatchCount} lines`}>
+              <HatchFamilySelect
+                value={hatchFamily}
+                onChange={(f) => setHatchFamily(f as HatchFamily)}
+              />
+              <Slider label="Count" value={hatchCount} onChange={setHatchCount} min={5} max={80} step={1} />
+              <Slider label="Samples" value={hatchSamples} onChange={setHatchSamples} min={10} max={120} step={1} />
+              {(hatchFamily === "diagonal" || hatchFamily === "crosshatch") && (
+                <Slider label="Angle" value={hatchAngle} onChange={setHatchAngle} min={0} max={Math.PI} step={0.01} />
+              )}
+            </Section>
+          )}
 
-          <Section title="OCCLUSION" preview={useOcclusion ? `${depthRes}px` : "off"}>
-            <Toggle label="Depth-buffer HLR" value={useOcclusion} onChange={setUseOcclusion} />
-            {useOcclusion && (
-              <>
-                <Slider
-                  label="Resolution"
-                  value={depthRes}
-                  onChange={(v) => setDepthRes(Math.round(v))}
-                  min={128}
-                  max={1024}
-                  step={64}
-                />
-                <Slider label="Bias" value={depthBias} onChange={setDepthBias} min={0.001} max={0.05} step={0.001} />
-              </>
-            )}
-          </Section>
+          {!is2d && (
+            <Section title="OCCLUSION" preview={useOcclusion ? `${depthRes}px` : "off"}>
+              <Toggle label="Depth-buffer HLR" value={useOcclusion} onChange={setUseOcclusion} />
+              {useOcclusion && (
+                <>
+                  <Slider
+                    label="Resolution"
+                    value={depthRes}
+                    onChange={(v) => setDepthRes(Math.round(v))}
+                    min={128}
+                    max={1024}
+                    step={64}
+                  />
+                  <Slider label="Bias" value={depthBias} onChange={setDepthBias} min={0.001} max={0.05} step={0.001} />
+                </>
+              )}
+            </Section>
+          )}
 
           <Section title="DISPLAY" preview={`sw ${strokeWidth.toFixed(1)}`}>
             <Slider label="Stroke W" value={strokeWidth} onChange={setStrokeWidth} min={0.1} max={2} step={0.05} />
-            <Toggle label="Show mesh" value={showMesh} onChange={setShowMesh} />
+            {!is2d && <Toggle label="Show mesh" value={showMesh} onChange={setShowMesh} />}
           </Section>
 
           <Section title="EXPORT" preview={`${PAGE_SIZES[pageSize].label} ${orientation}`}>
@@ -882,41 +909,43 @@ export default function App() {
             )}
           </Section>
 
-          <Section title="CAMERA" preview={`\u03B8${camTheta.toFixed(2)} \u03C6${camPhi.toFixed(2)} d${camDist.toFixed(0)}`}>
-            <div style={{ display: "flex", gap: 3 }}>
-              {(["perspective", "orthographic"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setCamOrtho(m === "orthographic")}
-                  style={{
-                    ...tagStyle,
-                    background: (m === "orthographic") === camOrtho ? "var(--fg)" : "transparent",
-                    color: (m === "orthographic") === camOrtho ? "var(--bg-canvas)" : "var(--fg)",
-                  }}
-                >
-                  {m === "perspective" ? "Perspective" : "Ortho"}
-                </button>
-              ))}
-            </div>
-            <Slider label="Distance" value={camDist} onChange={setCamDist} min={1} max={25} step={0.1} />
-            <div style={{ display: "flex", gap: 8, marginTop: 4, marginBottom: 4 }}>
-              <XYPad valueX={panX} valueY={panY} onChangeX={setPanX} onChangeY={setPanY} size={100} />
-              <OrbitCube theta={camTheta} phi={camPhi} onChangeTheta={setCamTheta} onChangePhi={setCamPhi} size={100} />
-            </div>
-            <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--fg-muted)" }}>
-              <HoverReset label="Pan" onReset={() => { setPanX(0); setPanY(0); }}>
-                X {panX.toFixed(2)} Y {panY.toFixed(2)}
-              </HoverReset>
-              <HoverReset label="Orbit" onReset={() => { setCamTheta(0.6); setCamPhi(0.35); }}>
-                &theta; {camTheta.toFixed(2)} &phi; {camPhi.toFixed(2)}
-              </HoverReset>
-            </div>
-            <Slider label="Orbit \u03B8" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
-            <Slider label="Orbit \u03C6" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
-            <div style={{ color: "var(--fg-faint)", fontSize: 10, marginTop: 2 }}>
-              Preview: drag to pan · pinch to zoom · dbl-click fit
-            </div>
-          </Section>
+          {!is2d && (
+            <Section title="CAMERA" preview={`\u03B8${camTheta.toFixed(2)} \u03C6${camPhi.toFixed(2)} d${camDist.toFixed(0)}`}>
+              <div style={{ display: "flex", gap: 3 }}>
+                {(["perspective", "orthographic"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setCamOrtho(m === "orthographic")}
+                    style={{
+                      ...tagStyle,
+                      background: (m === "orthographic") === camOrtho ? "var(--fg)" : "transparent",
+                      color: (m === "orthographic") === camOrtho ? "var(--bg-canvas)" : "var(--fg)",
+                    }}
+                  >
+                    {m === "perspective" ? "Perspective" : "Ortho"}
+                  </button>
+                ))}
+              </div>
+              <Slider label="Distance" value={camDist} onChange={setCamDist} min={1} max={25} step={0.1} />
+              <div style={{ display: "flex", gap: 8, marginTop: 4, marginBottom: 4 }}>
+                <XYPad valueX={panX} valueY={panY} onChangeX={setPanX} onChangeY={setPanY} size={100} />
+                <OrbitCube theta={camTheta} phi={camPhi} onChangeTheta={setCamTheta} onChangePhi={setCamPhi} size={100} />
+              </div>
+              <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--fg-muted)" }}>
+                <HoverReset label="Pan" onReset={() => { setPanX(0); setPanY(0); }}>
+                  X {panX.toFixed(2)} Y {panY.toFixed(2)}
+                </HoverReset>
+                <HoverReset label="Orbit" onReset={() => { setCamTheta(0.6); setCamPhi(0.35); }}>
+                  &theta; {camTheta.toFixed(2)} &phi; {camPhi.toFixed(2)}
+                </HoverReset>
+              </div>
+              <Slider label="Orbit \u03B8" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
+              <Slider label="Orbit \u03C6" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
+              <div style={{ color: "var(--fg-faint)", fontSize: 10, marginTop: 2 }}>
+                Preview: drag to pan · pinch to zoom · dbl-click fit
+              </div>
+            </Section>
+          )}
 
           <div
             style={{
@@ -927,9 +956,12 @@ export default function App() {
               lineHeight: 1.6,
             }}
           >
-            {stats.paths} SVG paths · {stats.lines} hatch lines · {stats.verts} vertices
+            {stats.paths} SVG paths · {stats.lines} {is2d ? "polylines" : "hatch lines"} · {stats.verts} vertices
             <br />
-            Pipeline: UV hatch &rarr; 3D surface &rarr; project{useOcclusion ? " \u2192 depth clip" : ""} &rarr; SVG
+            Pipeline: {is2d
+              ? "generate 2D \u2192 SVG"
+              : <>UV hatch &rarr; 3D surface &rarr; project{useOcclusion ? " \u2192 depth clip" : ""} &rarr; SVG</>
+            }
           </div>
         </div>
 
@@ -972,7 +1004,7 @@ export default function App() {
             <CompositionControls
               controls={comp.controls}
               macros={comp.macros}
-              hatchGroups={comp.hatchGroups}
+              hatchGroups={"hatchGroups" in comp ? comp.hatchGroups : undefined}
               currentValues={currentValues}
               currentMacros={currentMacros}
               resolvedValues={resolvedValues}
