@@ -1,11 +1,11 @@
-import type { Composition2DDefinition } from "../types";
+import type { Composition2DDefinition } from "../../types";
 
 const lissajous: Composition2DDefinition = {
   id: "lissajous",
   name: "Lissajous",
   description: "Lissajous curves with phase-shifted layers and optional damping",
   tags: ["mathematical", "lissajous", "waves"],
-  category: "2D/Patterns",
+  category: "2d",
   type: "2d",
   controls: {
     freqX: { type: "slider", label: "Freq X", default: 3, min: 1, max: 12, step: 1, group: "Shape" },

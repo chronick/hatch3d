@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const dnaHelix: Composition3DDefinition = {
   id: "dnaHelix",
   name: "DNA Helix",
   description: "Double helix strands connected by torus rungs",
   tags: ["scientific", "helix", "biological"],
-  category: "3D/Scientific",
+  category: "3d",
   hatchGroups: ["Strands", "Rungs"],
   macros: {
     twist: {

@@ -6,7 +6,7 @@ function make3D(id: string, name: string): Composition3DDefinition {
   return {
     id,
     name,
-    category: "3D/Test",
+    category: "3d",
     layers: (p) => [{ surface: p.surface, params: p.surfaceParams, hatch: p.hatchParams }],
   };
 }
@@ -16,7 +16,7 @@ function make2D(id: string, name: string): Composition2DDefinition {
     id,
     name,
     type: "2d",
-    category: "2D/Test",
+    category: "2d",
     generate: () => [],
   };
 }

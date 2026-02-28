@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const starburst: Composition3DDefinition = {
   id: "starburst",
   name: "Starburst",
   description: "Radial conoid arms emanating from a central torus hub",
   tags: ["geometric", "radial"],
-  category: "3D/Geometric",
+  category: "3d",
   hatchGroups: ["Hub", "Arms"],
   macros: {
     density: {

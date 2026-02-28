@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const mushroomColony: Composition3DDefinition = {
   id: "mushroomColony",
   name: "Mushroom Colony",
   description: "Cluster of mushrooms with hyperboloid stems and canopy caps",
   tags: ["organic", "natural", "colony"],
-  category: "3D/Organic",
+  category: "3d",
   hatchGroups: ["Stems", "Caps"],
   macros: {
     scale: {

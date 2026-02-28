@@ -4,10 +4,17 @@ type Listener = () => void;
 
 export class CompositionRegistry {
   private _map = new Map<string, CompositionDefinition>();
+  private _pathMap = new Map<string, string>();
   private _listeners = new Set<Listener>();
 
   register(comp: CompositionDefinition): void {
     this._map.set(comp.id, comp);
+    this._notify();
+  }
+
+  registerWithPath(comp: CompositionDefinition, dirPath: string): void {
+    this._map.set(comp.id, comp);
+    this._pathMap.set(comp.id, dirPath);
     this._notify();
   }
 
@@ -16,6 +23,10 @@ export class CompositionRegistry {
       this._map.set(comp.id, comp);
     }
     this._notify();
+  }
+
+  getPathMap(): Map<string, string> {
+    return this._pathMap;
   }
 
   get(id: string): CompositionDefinition | undefined {

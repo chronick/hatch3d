@@ -1,11 +1,11 @@
-import type { Composition3DDefinition } from "../types";
+import type { Composition3DDefinition } from "../../types";
 
 const crystalSpire: Composition3DDefinition = {
   id: "crystalSpire",
   name: "Crystal Spire",
   description: "Intertwined twisted ribbons forming a crystal spire",
   tags: ["organic", "twisted", "ribbons"],
-  category: "3D/Organic",
+  category: "3d",
   hatchGroups: ["Primary", "Secondary"],
   macros: {
     twist: {

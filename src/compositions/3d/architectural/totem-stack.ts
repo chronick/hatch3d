@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const totemStack: Composition3DDefinition = {
   id: "totemStack",
   name: "Totem Stack",
   description: "Stacked tiers of alternating hyperboloids and tori with canopy caps",
   tags: ["architectural", "stacked"],
-  category: "3D/Architectural",
+  category: "3d",
   hatchGroups: ["Tiers", "Caps"],
   macros: {
     density: {

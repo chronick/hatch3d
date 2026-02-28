@@ -94,7 +94,7 @@ export interface CompositionMetadata {
   name: string;
   description?: string;
   tags?: string[];
-  category: string;
+  category: "2d" | "3d";
   author?: string;
   thumbnail?: string;
   suggestedPresets?: Record<string, CompositionPreset>;

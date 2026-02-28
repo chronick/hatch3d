@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const nestedShells: Composition3DDefinition = {
   id: "nestedShells",
   name: "Nested Shells",
   description: "Concentric hyperboloid shells with canopy caps",
   tags: ["geometric", "concentric", "shells"],
-  category: "3D/Geometric",
+  category: "3d",
   hatchGroups: ["Shells", "Caps"],
   macros: {
     density: {

@@ -20,6 +20,19 @@ describe("Composition registry completeness", () => {
   });
 });
 
+describe("Composition path map", () => {
+  it("every registered composition has a path in the path map", () => {
+    const pathMap = compositionRegistry.getPathMap();
+    for (const [id] of compositionRegistry.getAll()) {
+      expect(pathMap.has(id), `composition "${id}" missing from path map`).toBe(true);
+      const dirPath = pathMap.get(id)!;
+      expect(dirPath.length).toBeGreaterThan(0);
+      // Path should start with 2d or 3d
+      expect(dirPath).toMatch(/^(2d|3d)\//);
+    }
+  });
+});
+
 describe("All compositions have valid metadata", () => {
   for (const [id, comp] of compositionRegistry.getAll()) {
     describe(`${id}`, () => {
@@ -37,9 +50,8 @@ describe("All compositions have valid metadata", () => {
         expect(comp.category.length).toBeGreaterThan(0);
       });
 
-      it("has valid category format", () => {
-        // Category should be like "3D/Basic" or "2D/Patterns"
-        expect(comp.category).toMatch(/^(2D|3D)\/.+$/);
+      it("has valid category matching directory", () => {
+        expect(comp.category).toMatch(/^(2d|3d)$/);
       });
 
       if (is2DComposition(comp)) {

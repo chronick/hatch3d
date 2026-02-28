@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const ribbonCage: Composition3DDefinition = {
   id: "ribbonCage",
   name: "Ribbon Cage",
   description: "Multiple twisted ribbons arranged in a cylindrical cage",
   tags: ["organic", "cage", "ribbons"],
-  category: "3D/Organic",
+  category: "3d",
   hatchGroups: ["Ribbons"],
   macros: {
     density: {

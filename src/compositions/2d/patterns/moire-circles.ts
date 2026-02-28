@@ -1,11 +1,11 @@
-import type { Composition2DDefinition } from "../types";
+import type { Composition2DDefinition } from "../../types";
 
 const moireCircles: Composition2DDefinition = {
   id: "moireCircles",
   name: "Moire Circles",
   description: "Overlapping concentric circle sets creating optical moire patterns",
   tags: ["optical", "moire", "circles"],
-  category: "2D/Patterns",
+  category: "2d",
   type: "2d",
   controls: {
     rings: { type: "slider", label: "Rings", default: 40, min: 10, max: 80, step: 1, group: "Structure" },

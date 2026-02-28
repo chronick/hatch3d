@@ -4,6 +4,7 @@ import { is2DComposition, type CompositionDefinition } from "../compositions/typ
 import { tagStyle } from "./styles";
 
 const FAVORITES_KEY = "hatch3d-favorites";
+const TREE_STATE_KEY = "hatch3d-tree-state";
 
 function loadFavorites(): Set<string> {
   try {
@@ -18,6 +19,154 @@ function saveFavorites(favs: Set<string>) {
   localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favs]));
 }
 
+function loadTreeState(): Set<string> {
+  try {
+    const raw = localStorage.getItem(TREE_STATE_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveTreeState(expanded: Set<string>) {
+  localStorage.setItem(TREE_STATE_KEY, JSON.stringify([...expanded]));
+}
+
+interface TreeNode {
+  children: Map<string, TreeNode>;
+  compositions: [string, CompositionDefinition][];
+}
+
+function countCompositions(node: TreeNode): number {
+  let count = node.compositions.length;
+  for (const child of node.children.values()) {
+    count += countCompositions(child);
+  }
+  return count;
+}
+
+function TreeView({
+  node,
+  path,
+  depth,
+  currentKey,
+  onSelect,
+  favorites,
+  toggleFavorite,
+  isDirExpanded,
+  toggleDir,
+  hasActiveFilter,
+}: {
+  node: TreeNode;
+  path: string;
+  depth: number;
+  currentKey: string;
+  onSelect: (key: string) => void;
+  favorites: Set<string>;
+  toggleFavorite: (id: string) => void;
+  isDirExpanded: (dirKey: string) => boolean;
+  toggleDir: (dirKey: string) => void;
+  hasActiveFilter: boolean;
+}) {
+  const sortedDirs = [...node.children.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const sortedComps = [...node.compositions].sort(([, a], [, b]) => a.name.localeCompare(b.name));
+
+  return (
+    <>
+      {sortedDirs.map(([dirName, child]) => {
+        const dirKey = path ? `${path}/${dirName}` : dirName;
+        const expanded = isDirExpanded(dirKey);
+        const itemCount = countCompositions(child);
+        return (
+          <div key={dirKey}>
+            <div
+              onClick={() => toggleDir(dirKey)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "3px 4px",
+                paddingLeft: depth * 12 + 4,
+                cursor: "pointer",
+                fontSize: 10,
+                fontWeight: 600,
+                opacity: 0.8,
+                userSelect: "none",
+              }}
+            >
+              <span style={{ fontSize: 8, width: 8, textAlign: "center", flexShrink: 0 }}>
+                {expanded ? "\u25BE" : "\u25B8"}
+              </span>
+              <span style={{ flex: 1 }}>{dirName}</span>
+              <span style={{
+                fontSize: 8,
+                opacity: 0.4,
+                flexShrink: 0,
+              }}>
+                {itemCount}
+              </span>
+            </div>
+            {expanded && (
+              <TreeView
+                node={child}
+                path={dirKey}
+                depth={depth + 1}
+                currentKey={currentKey}
+                onSelect={onSelect}
+                favorites={favorites}
+                toggleFavorite={toggleFavorite}
+                isDirExpanded={isDirExpanded}
+                toggleDir={toggleDir}
+                hasActiveFilter={hasActiveFilter}
+              />
+            )}
+          </div>
+        );
+      })}
+      {sortedComps.map(([id, comp]) => (
+        <div
+          key={id}
+          onClick={() => onSelect(id)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "3px 4px",
+            paddingLeft: depth * 12 + 4,
+            cursor: "pointer",
+            background: currentKey === id ? "var(--fg)" : "transparent",
+            color: currentKey === id ? "var(--bg-canvas)" : "var(--fg)",
+            fontSize: 10,
+          }}
+        >
+          <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {comp.name}
+          </span>
+          <span style={{
+            fontSize: 8,
+            opacity: 0.5,
+            flexShrink: 0,
+          }}>
+            {is2DComposition(comp) ? "2D" : "3D"}
+          </span>
+          <span
+            onClick={(e) => { e.stopPropagation(); toggleFavorite(id); }}
+            style={{
+              cursor: "pointer",
+              fontSize: 10,
+              opacity: favorites.has(id) ? 1 : 0.2,
+              flexShrink: 0,
+              color: currentKey === id ? "var(--bg-canvas)" : "var(--fg)",
+            }}
+          >
+            {"\u2605"}
+          </span>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function CompositionBrowser({
   currentKey,
   onSelect,
@@ -26,10 +175,11 @@ export function CompositionBrowser({
   onSelect: (key: string) => void;
 }) {
   const [search, setSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [favorites, setFavorites] = useState(loadFavorites);
+  const [expandedDirs, setExpandedDirs] = useState(loadTreeState);
 
   const allComps = useMemo(() => {
     const entries: [string, CompositionDefinition][] = [];
@@ -39,22 +189,34 @@ export function CompositionBrowser({
     return entries;
   }, []);
 
-  const categories = useMemo(() => {
-    const cats = new Set<string>();
+  // Collect all unique tags across compositions, sorted alphabetically
+  const allTags = useMemo(() => {
+    const tags = new Set<string>();
+    // Add dimension tags
+    tags.add("3d");
+    tags.add("2d");
     for (const [, comp] of allComps) {
-      cats.add(comp.category);
+      for (const tag of comp.tags || []) {
+        tags.add(tag);
+      }
     }
-    return ["all", ...Array.from(cats).sort()];
+    return [...tags].sort();
   }, [allComps]);
 
   const filtered = useMemo(() => {
     const q = search.toLowerCase().trim();
     return allComps.filter(([id, comp]) => {
-      // Favorites filter
       if (showFavoritesOnly && !favorites.has(id)) return false;
-      // Category filter
-      if (categoryFilter !== "all" && comp.category !== categoryFilter) return false;
-      // Search filter
+      // AND filter: composition must have ALL selected tags
+      if (selectedTags.size > 0) {
+        const compTags = new Set([
+          ...(comp.tags || []),
+          comp.category, // "3d" or "2d" as implicit tag
+        ]);
+        for (const tag of selectedTags) {
+          if (!compTags.has(tag)) return false;
+        }
+      }
       if (q) {
         const searchable = [
           comp.name,
@@ -66,19 +228,16 @@ export function CompositionBrowser({
       }
       return true;
     });
-  }, [allComps, search, categoryFilter, showFavoritesOnly, favorites]);
+  }, [allComps, search, selectedTags, showFavoritesOnly, favorites]);
 
-  // Group by category
-  const grouped = useMemo(() => {
-    const map = new Map<string, [string, CompositionDefinition][]>();
-    for (const entry of filtered) {
-      const cat = entry[1].category;
-      let arr = map.get(cat);
-      if (!arr) { arr = []; map.set(cat, arr); }
-      arr.push(entry);
-    }
-    return map;
-  }, [filtered]);
+  const toggleTag = useCallback((tag: string) => {
+    setSelectedTags(prev => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
+  }, []);
 
   const toggleFavorite = useCallback((id: string) => {
     setFavorites(prev => {
@@ -89,6 +248,66 @@ export function CompositionBrowser({
       return next;
     });
   }, []);
+
+  const toggleDir = useCallback((dirKey: string) => {
+    setExpandedDirs(prev => {
+      const next = new Set(prev);
+      if (next.has(dirKey)) next.delete(dirKey);
+      else next.add(dirKey);
+      saveTreeState(next);
+      return next;
+    });
+  }, []);
+
+  const hasActiveFilter = search.trim() !== "" || selectedTags.size > 0 || showFavoritesOnly;
+
+  // Build tree structure from filtered compositions
+  const tree = useMemo(() => {
+    const pathMap = compositionRegistry.getPathMap();
+    const root: TreeNode = { children: new Map(), compositions: [] };
+
+    for (const [id, comp] of filtered) {
+      const dirPath = pathMap.get(id);
+      if (!dirPath) {
+        root.compositions.push([id, comp]);
+        continue;
+      }
+      const parts = dirPath.split("/");
+      let node = root;
+      for (const part of parts) {
+        if (!node.children.has(part)) {
+          node.children.set(part, { children: new Map(), compositions: [] });
+        }
+        node = node.children.get(part)!;
+      }
+      node.compositions.push([id, comp]);
+    }
+    return root;
+  }, [filtered]);
+
+  // Collect all directory keys that contain matches (for auto-expand during filtering)
+  const matchingDirKeys = useMemo(() => {
+    if (!hasActiveFilter) return null;
+    const keys = new Set<string>();
+    const pathMap = compositionRegistry.getPathMap();
+    for (const [id] of filtered) {
+      const dirPath = pathMap.get(id);
+      if (!dirPath) continue;
+      // Add all ancestor paths too: "3d/geometric" → "3d", "3d/geometric"
+      const parts = dirPath.split("/");
+      let accum = "";
+      for (const part of parts) {
+        accum = accum ? `${accum}/${part}` : part;
+        keys.add(accum);
+      }
+    }
+    return keys;
+  }, [filtered, hasActiveFilter]);
+
+  const isDirExpanded = useCallback((dirKey: string) => {
+    if (matchingDirKeys) return matchingDirKeys.has(dirKey);
+    return expandedDirs.has(dirKey);
+  }, [matchingDirKeys, expandedDirs]);
 
   const currentComp = compositionRegistry.get(currentKey);
 
@@ -112,30 +331,37 @@ export function CompositionBrowser({
         }}
       />
 
-      {/* Filter bar */}
-      <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          style={{
-            padding: "2px 4px",
-            fontSize: 9,
-            fontFamily: "inherit",
-            border: "1px solid var(--border)",
-            background: "transparent",
-            color: "var(--fg)",
-            cursor: "pointer",
-            borderRadius: 0,
-            flex: 1,
-            minWidth: 0,
-          }}
-        >
-          {categories.map((cat) => (
-            <option key={cat} value={cat}>
-              {cat === "all" ? "All categories" : cat}
-            </option>
-          ))}
-        </select>
+      {/* Tag filter (multi-select, AND logic) */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, alignItems: "center" }}>
+        {allTags.map((tag) => (
+          <button
+            key={tag}
+            onClick={() => toggleTag(tag)}
+            style={{
+              ...tagStyle,
+              padding: "1px 5px",
+              fontSize: 8,
+              background: selectedTags.has(tag) ? "var(--fg)" : "transparent",
+              color: selectedTags.has(tag) ? "var(--bg-canvas)" : "var(--fg)",
+            }}
+          >
+            {tag}
+          </button>
+        ))}
+        {selectedTags.size > 0 && (
+          <button
+            onClick={() => setSelectedTags(new Set())}
+            style={{
+              ...tagStyle,
+              padding: "1px 5px",
+              fontSize: 8,
+              opacity: 0.5,
+            }}
+          >
+            clear
+          </button>
+        )}
+        <div style={{ flex: 1 }} />
         <button
           onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
           title="Show favorites only"
@@ -165,61 +391,19 @@ export function CompositionBrowser({
       {/* Composition list */}
       <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 300, overflowY: "auto" }}>
         {viewMode === "list" ? (
-          // Grouped list view
-          Array.from(grouped.entries()).map(([category, comps]) => (
-            <div key={category}>
-              <div style={{
-                fontSize: 9,
-                fontWeight: 700,
-                letterSpacing: "0.08em",
-                color: "var(--fg-hint)",
-                padding: "4px 0 2px 0",
-              }}>
-                {category}
-              </div>
-              {comps.map(([id, comp]) => (
-                <div
-                  key={id}
-                  onClick={() => onSelect(id)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "3px 4px",
-                    cursor: "pointer",
-                    background: currentKey === id ? "var(--fg)" : "transparent",
-                    color: currentKey === id ? "var(--bg-canvas)" : "var(--fg)",
-                    fontSize: 10,
-                  }}
-                >
-                  <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {comp.name}
-                  </span>
-                  <span style={{
-                    fontSize: 8,
-                    opacity: 0.5,
-                    flexShrink: 0,
-                  }}>
-                    {is2DComposition(comp) ? "2D" : "3D"}
-                  </span>
-                  <span
-                    onClick={(e) => { e.stopPropagation(); toggleFavorite(id); }}
-                    style={{
-                      cursor: "pointer",
-                      fontSize: 10,
-                      opacity: favorites.has(id) ? 1 : 0.2,
-                      flexShrink: 0,
-                      color: currentKey === id ? "var(--bg-canvas)" : "var(--fg)",
-                    }}
-                  >
-                    {"\u2605"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ))
+          <TreeView
+            node={tree}
+            path=""
+            depth={0}
+            currentKey={currentKey}
+            onSelect={onSelect}
+            favorites={favorites}
+            toggleFavorite={toggleFavorite}
+            isDirExpanded={isDirExpanded}
+            toggleDir={toggleDir}
+            hasActiveFilter={hasActiveFilter}
+          />
         ) : (
-          // Grid view
           <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
             {filtered.map(([id, comp]) => (
               <button
@@ -261,12 +445,13 @@ export function CompositionBrowser({
               {currentComp.tags.map((tag) => (
                 <span
                   key={tag}
-                  onClick={() => setSearch(tag)}
+                  onClick={() => toggleTag(tag)}
                   style={{
                     padding: "1px 5px",
                     fontSize: 8,
                     border: "1px solid var(--border-light)",
-                    color: "var(--fg-hint)",
+                    color: selectedTags.has(tag) ? "var(--fg)" : "var(--fg-hint)",
+                    background: selectedTags.has(tag) ? "var(--border-light)" : "transparent",
                     cursor: "pointer",
                   }}
                 >

@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const towerAndBase: Composition3DDefinition = {
   id: "towerAndBase",
   name: "Tower + Base",
   description: "Hyperboloid tower with angular canopy caps and torus ring",
   tags: ["architectural", "geometric", "multi-layer"],
-  category: "3D/Architectural",
+  category: "3d",
   hatchGroups: ["Canopy", "Ring", "Tower"],
   macros: {
     scale: {

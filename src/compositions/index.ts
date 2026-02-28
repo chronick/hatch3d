@@ -7,10 +7,14 @@ export * from "./presets";
 export { compositionRegistry } from "./registry";
 
 // Auto-discover all composition files
-const modules3d = import.meta.glob("./3d/*.ts", { eager: true });
-const modules2d = import.meta.glob("./2d/*.ts", { eager: true });
+const modules3d = import.meta.glob("./3d/**/*.ts", { eager: true });
+const modules2d = import.meta.glob("./2d/**/*.ts", { eager: true });
 
-for (const mod of [...Object.values(modules3d), ...Object.values(modules2d)]) {
+for (const [path, mod] of [...Object.entries(modules3d), ...Object.entries(modules2d)]) {
   const comp = (mod as { default: CompositionDefinition }).default;
-  if (comp?.id) compositionRegistry.register(comp);
+  if (comp?.id) {
+    // Extract directory path: "./3d/geometric/double-ring.ts" → "3d/geometric"
+    const dirPath = path.replace(/^\.\//, "").replace(/\/[^/]+$/, "");
+    compositionRegistry.registerWithPath(comp, dirPath);
+  }
 }

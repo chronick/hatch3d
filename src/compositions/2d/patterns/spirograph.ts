@@ -1,11 +1,11 @@
-import type { Composition2DDefinition } from "../types";
+import type { Composition2DDefinition } from "../../types";
 
 const spirograph: Composition2DDefinition = {
   id: "spirograph",
   name: "Spirograph",
   description: "Hypotrochoid and epitrochoid curves with layered pen offsets",
   tags: ["mathematical", "spirograph"],
-  category: "2D/Patterns",
+  category: "2d",
   type: "2d",
   macros: {
     complexity: {

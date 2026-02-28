@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const vortexTunnel: Composition3DDefinition = {
   id: "vortexTunnel",
   name: "Vortex Tunnel",
   description: "Spiraling tunnel of torus rings with twisted ribbon spine",
   tags: ["geometric", "tunnel", "spiral"],
-  category: "3D/Geometric",
+  category: "3d",
   hatchGroups: ["Rings", "Spine"],
   macros: {
     density: {

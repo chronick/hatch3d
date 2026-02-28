@@ -1,11 +1,11 @@
-import type { Composition3DDefinition, LayerConfig } from "../types";
+import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 const doubleRing: Composition3DDefinition = {
   id: "doubleRing",
   name: "Double Ring",
   description: "Interlocked torus rings with conoid connector",
   tags: ["geometric", "rings", "symmetric"],
-  category: "3D/Geometric",
+  category: "3d",
   hatchGroups: ["Rings", "Connector"],
   macros: {
     scale: {
