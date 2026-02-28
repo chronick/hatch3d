@@ -13,7 +13,7 @@ describe("surfaces", () => {
     ]);
   });
 
-  it.each(Object.entries(SURFACES))("%s returns Vector3 at defaults", (key, surface) => {
+  it.each(Object.entries(SURFACES))("%s returns Vector3 at defaults", (_key, surface) => {
     const result = surface.fn(0.5, 0.5, surface.defaults);
     expect(result).toBeInstanceOf(THREE.Vector3);
     expect(Number.isFinite(result.x)).toBe(true);
@@ -21,7 +21,7 @@ describe("surfaces", () => {
     expect(Number.isFinite(result.z)).toBe(true);
   });
 
-  it.each(Object.entries(SURFACES))("%s returns different points for different UV", (key, surface) => {
+  it.each(Object.entries(SURFACES))("%s returns different points for different UV", (_key, surface) => {
     const a = surface.fn(0, 0, surface.defaults);
     const b = surface.fn(1, 1, surface.defaults);
     expect(a.distanceTo(b)).toBeGreaterThan(0);

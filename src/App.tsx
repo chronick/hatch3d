@@ -1,25 +1,29 @@
-import { useState, useRef, useCallback, useMemo, useEffect, memo } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import * as THREE from "three";
 import { SURFACES } from "./surfaces";
 import { generateUVHatchLines, type HatchParams } from "./hatch";
 import { projectPolylines, polylinesToSVGPaths, buildSurfaceMesh } from "./projection";
 import { renderDepthBuffer, clipPolylineByDepth } from "./occlusion";
 import {
-  COMPOSITIONS,
-  type Composition,
+  compositionRegistry,
+  type Composition3DDefinition,
   type LayerConfig,
-  type ControlDef,
-  type MacroDef,
   getControlDefaults,
   getMacroDefaults,
   resolveValues,
-  getControlGroups,
   is2DComposition,
 } from "./compositions";
-import { COMPOSITIONS_2D } from "./compositions2d";
-
-// Merge 2D compositions into the shared registry
-Object.assign(COMPOSITIONS, COMPOSITIONS_2D);
+import { btnStyle, tagStyle } from "./components/styles";
+import { Section } from "./components/Section";
+import { Slider } from "./components/Slider";
+import { Toggle } from "./components/Toggle";
+import { CompositionControls } from "./components/CompositionControls";
+import { CompositionBrowser } from "./components/CompositionBrowser";
+import { HatchFamilySelect } from "./components/HatchFamilySelect";
+import { HoverReset } from "./components/HoverReset";
+import { OrbitCube } from "./components/OrbitCube";
+import { XYPad } from "./components/XYPad";
+import type { HatchGroupConfig } from "./components/HatchGroupControls";
 
 const PAGE_SIZES: Record<string, { label: string; w: number; h: number }> = {
   a3: { label: "A3", w: 420, h: 297 },
@@ -42,30 +46,6 @@ const HATCH_GROUPS_KEY = "hatch3d-hatch-groups";
 
 type HatchFamily = "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral";
 
-interface HatchGroupConfig {
-  family: "inherit" | HatchFamily;
-  count: number;
-  samples: number;
-  angle: number;
-}
-
-const HATCH_GROUP_DEFAULT: HatchGroupConfig = {
-  family: "inherit",
-  count: 30,
-  samples: 50,
-  angle: 0.7,
-};
-
-const HATCH_FAMILIES: { value: HatchFamily; label: string }[] = [
-  { value: "u", label: "U-const" },
-  { value: "v", label: "V-const" },
-  { value: "diagonal", label: "Diagonal" },
-  { value: "rings", label: "Rings" },
-  { value: "hex", label: "Hex" },
-  { value: "crosshatch", label: "Cross" },
-  { value: "spiral", label: "Spiral" },
-];
-
 const DEFAULTS = {
   surfaceKey: "hyperboloid",
   compositionKey: "single",
@@ -74,7 +54,7 @@ const DEFAULTS = {
   paramB: 0.5,
   paramC: 0.5,
   paramD: 0.5,
-  hatchFamily: "u" as "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral",
+  hatchFamily: "u" as HatchFamily,
   hatchCount: 30,
   hatchSamples: 50,
   hatchAngle: 0.7,
@@ -200,8 +180,8 @@ export default function App() {
     return () => { window.removeEventListener("resize", handler); clearTimeout(timer); };
   }, []);
 
-  // Current composition helpers — cache defaults per composition key to avoid recomputing
-  const comp = COMPOSITIONS[compositionKey];
+  // Current composition helpers — use registry
+  const comp = compositionRegistry.get(compositionKey)!;
   const is2d = is2DComposition(comp);
   const controlDefaults = useMemo(() => getControlDefaults(comp.controls), [comp.controls]);
   const macroDefaults = useMemo(() => getMacroDefaults(comp.macros), [comp.macros]);
@@ -220,7 +200,6 @@ export default function App() {
   const setCompValue = useCallback((key: string, val: unknown) => {
     setCompValues(prev => {
       const existing = prev[compositionKey];
-      // Skip update if value hasn't changed
       if (existing && existing[key] === val) return prev;
       return { ...prev, [compositionKey]: { ...existing, [key]: val } };
     });
@@ -289,7 +268,7 @@ export default function App() {
   );
 
   // Persist all controls to localStorage (debounced to avoid thrashing during slider drags)
-  const persistTimer = useRef<ReturnType<typeof setTimeout>>();
+  const persistTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const stateSnapshot = useMemo(() => ({
     surfaceKey, compositionKey, controlsPanel,
     paramA, paramB, paramC, paramD,
@@ -409,7 +388,7 @@ export default function App() {
     };
 
     if (compositionKey !== "single") {
-      const comp3d = COMPOSITIONS[compositionKey] as Composition;
+      const comp3d = comp as Composition3DDefinition;
       layers = comp3d.layers({
         surface: surfaceKey,
         surfaceParams,
@@ -743,24 +722,10 @@ export default function App() {
           }}
         >
           <Section title="COMPOSITION" preview={comp.name}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-              {Object.entries(COMPOSITIONS).map(([key, val]) => (
-                <button
-                  key={key}
-                  onClick={() => setCompositionKey(key)}
-                  style={{
-                    ...tagStyle,
-                    background: compositionKey === key ? "var(--fg)" : "transparent",
-                    color: compositionKey === key ? "var(--bg-canvas)" : "var(--fg)",
-                  }}
-                >
-                  {val.name}
-                  <span style={{ fontSize: 8, marginLeft: 4, opacity: 0.5 }}>
-                    {is2DComposition(val) ? "2D" : "3D"}
-                  </span>
-                </button>
-              ))}
-            </div>
+            <CompositionBrowser
+              currentKey={compositionKey}
+              onSelect={setCompositionKey}
+            />
             {compositionKey !== "single" && !isNarrow && controlsPanel === "inline" && (
               <button
                 onClick={() => setControlsPanel("side")}
@@ -805,7 +770,7 @@ export default function App() {
             <CompositionControls
               controls={comp.controls}
               macros={comp.macros}
-              hatchGroups={"hatchGroups" in comp ? comp.hatchGroups : undefined}
+              hatchGroups={"hatchGroups" in comp ? (comp as Composition3DDefinition).hatchGroups : undefined}
               currentValues={currentValues}
               currentMacros={currentMacros}
               resolvedValues={resolvedValues}
@@ -1004,7 +969,7 @@ export default function App() {
             <CompositionControls
               controls={comp.controls}
               macros={comp.macros}
-              hatchGroups={"hatchGroups" in comp ? comp.hatchGroups : undefined}
+              hatchGroups={"hatchGroups" in comp ? (comp as Composition3DDefinition).hatchGroups : undefined}
               currentValues={currentValues}
               currentMacros={currentMacros}
               resolvedValues={resolvedValues}
@@ -1104,857 +1069,7 @@ export default function App() {
   );
 }
 
-// ── UI primitives ──
-
-function Section({
-  title,
-  preview,
-  defaultOpen = true,
-  onReset,
-  children,
-}: {
-  title: string;
-  preview?: string;
-  defaultOpen?: boolean;
-  onReset?: () => void;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  const [resetHover, setResetHover] = useState(false);
-  return (
-    <div>
-      <div
-        onClick={() => setOpen(!open)}
-        style={{
-          fontSize: 10,
-          fontWeight: 700,
-          letterSpacing: "0.1em",
-          color: "var(--fg-dim)",
-          marginBottom: open ? 7 : 0,
-          borderBottom: "1px solid var(--border-light)",
-          paddingBottom: 4,
-          cursor: "pointer",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          userSelect: "none",
-        }}
-      >
-        <span>{title}</span>
-        <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {open && onReset && (
-            <span
-              onClick={(e) => { e.stopPropagation(); onReset(); }}
-              onMouseEnter={() => setResetHover(true)}
-              onMouseLeave={() => setResetHover(false)}
-              style={{
-                fontSize: 9,
-                fontWeight: 400,
-                color: resetHover ? "var(--fg)" : "var(--fg-hint)",
-                cursor: "pointer",
-                textDecoration: "underline",
-                textDecorationStyle: "dotted",
-                textUnderlineOffset: 2,
-              }}
-            >
-              reset
-            </span>
-          )}
-          {!open && preview && (
-            <span style={{ color: "var(--fg-hint)", fontSize: 9, fontWeight: 400 }}>{preview}</span>
-          )}
-          <span style={{ fontSize: 9 }}>{open ? "\u25BE" : "\u25B8"}</span>
-        </span>
-      </div>
-      {open && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>{children}</div>
-      )}
-    </div>
-  );
-}
-
-// ── Composition control renderer ──
-
-const MacroSlider = memo(function MacroSlider({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ width: 70, color: "var(--fg)", flexShrink: 0, fontSize: 11, fontWeight: 600 }}>{label}</span>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.01}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ flex: 1, accentColor: "var(--accent-color)", height: 2 }}
-      />
-      <span style={{ width: 44, textAlign: "right", color: "var(--fg-dim)", fontSize: 10 }}>
-        {value.toFixed(2)}
-      </span>
-    </div>
-  );
-});
-
-function ControlXYPad({
-  label,
-  value,
-  min,
-  max,
-  onChange,
-}: {
-  label: string;
-  value: [number, number];
-  min: number;
-  max: number;
-  onChange: (v: [number, number]) => void;
-}) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <span style={{ color: "var(--fg-muted)", fontSize: 10 }}>{label}</span>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <XYPad
-          valueX={value[0]}
-          valueY={value[1]}
-          onChangeX={(x) => onChange([x, value[1]])}
-          onChangeY={(y) => onChange([value[0], y])}
-          min={min}
-          max={max}
-          size={100}
-        />
-        <span style={{ color: "var(--fg-dim)", fontSize: 10 }}>
-          {value[0].toFixed(2)}, {value[1].toFixed(2)}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-const SelectButtons = memo(function SelectButtons({
-  options,
-  value,
-  onChange,
-}: {
-  options: { label: string; value: string }[];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-      {options.map((opt) => (
-        <button
-          key={opt.value}
-          onClick={() => onChange(opt.value)}
-          style={{
-            ...tagStyle,
-            background: value === opt.value ? "var(--fg)" : "transparent",
-            color: value === opt.value ? "var(--bg-canvas)" : "var(--fg)",
-          }}
-        >
-          {opt.label}
-        </button>
-      ))}
-    </div>
-  );
-});
-
-const ControlRenderer = memo(function ControlRenderer({
-  controlKey,
-  control,
-  value,
-  onChange,
-}: {
-  controlKey: string;
-  control: ControlDef;
-  value: unknown;
-  onChange: (key: string, val: unknown) => void;
-}) {
-  // Stable per-key callback so children don't re-render from new closure refs
-  const handleChange = useCallback(
-    (v: unknown) => onChange(controlKey, v),
-    [onChange, controlKey],
-  );
-
-  switch (control.type) {
-    case "slider":
-      return (
-        <Slider
-          label={control.label}
-          value={value as number}
-          onChange={handleChange as (v: number) => void}
-          min={control.min}
-          max={control.max}
-          step={control.step ?? (control.max - control.min > 10 ? 1 : 0.01)}
-        />
-      );
-    case "toggle":
-      return (
-        <Toggle
-          label={control.label}
-          value={value as boolean}
-          onChange={handleChange as (v: boolean) => void}
-        />
-      );
-    case "select":
-      return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-          <span style={{ color: "var(--fg-muted)", fontSize: 10 }}>{control.label}</span>
-          <SelectButtons
-            options={control.options}
-            value={value as string}
-            onChange={handleChange as (v: string) => void}
-          />
-        </div>
-      );
-    case "xy":
-      return (
-        <ControlXYPad
-          label={control.label}
-          value={value as [number, number]}
-          min={control.min}
-          max={control.max}
-          onChange={handleChange as (v: [number, number]) => void}
-        />
-      );
-    default:
-      return null;
-  }
-});
-
-const CompositionControls = memo(function CompositionControls({
-  controls,
-  macros,
-  hatchGroups,
-  currentValues,
-  currentMacros,
-  resolvedValues,
-  currentHatchGroups,
-  onControlChange,
-  onMacroChange,
-  onHatchGroupChange,
-  onResetMacros,
-  onResetGroup,
-  onResetAll,
-}: {
-  controls?: Record<string, ControlDef>;
-  macros?: Record<string, MacroDef>;
-  hatchGroups?: string[];
-  currentValues: Record<string, unknown>;
-  currentMacros: Record<string, number>;
-  resolvedValues: Record<string, unknown>;
-  currentHatchGroups: Record<string, HatchGroupConfig>;
-  onControlChange: (key: string, val: unknown) => void;
-  onMacroChange: (key: string, val: number) => void;
-  onHatchGroupChange: (groupName: string, config: HatchGroupConfig) => void;
-  onResetMacros: () => void;
-  onResetGroup: (group: string) => void;
-  onResetAll: () => void;
-}) {
-  // Memoize groups so they don't recompute on every value change
-  const groups = useMemo(() => getControlGroups(controls), [controls]);
-
-  // Stable per-macro callbacks via a ref to avoid re-rendering all MacroSliders when one changes
-  const onMacroChangeRef = useRef(onMacroChange);
-  onMacroChangeRef.current = onMacroChange;
-  const macroHandlers = useMemo(() => {
-    if (!macros) return {} as Record<string, (v: number) => void>;
-    const handlers: Record<string, (v: number) => void> = {};
-    for (const key of Object.keys(macros)) {
-      handlers[key] = (v: number) => onMacroChangeRef.current(key, v);
-    }
-    return handlers;
-  }, [macros]);
-
-  const macroPreview = macros
-    ? Object.values(currentMacros).map((v) => v.toFixed(1)).join(" \u00b7 ")
-    : undefined;
-
-  // Pre-compute grouped controls so we don't filter on every render
-  const groupedControls = useMemo(() => {
-    if (!controls) return new Map<string, [string, ControlDef][]>();
-    const map = new Map<string, [string, ControlDef][]>();
-    for (const [key, ctrl] of Object.entries(controls)) {
-      let arr = map.get(ctrl.group);
-      if (!arr) { arr = []; map.set(ctrl.group, arr); }
-      arr.push([key, ctrl]);
-    }
-    return map;
-  }, [controls]);
-
-  // Stable per-group reset handlers
-  const onResetGroupRef = useRef(onResetGroup);
-  onResetGroupRef.current = onResetGroup;
-  const groupResetHandlers = useMemo(() => {
-    const handlers: Record<string, () => void> = {};
-    for (const g of groups) {
-      handlers[g] = () => onResetGroupRef.current(g);
-    }
-    return handlers;
-  }, [groups]);
-
-  return (
-    <>
-      {macros && Object.keys(macros).length > 0 && (
-        <Section title="MACROS" preview={macroPreview} onReset={onResetMacros}>
-          {Object.entries(macros).map(([key, macro]) => (
-            <MacroSlider
-              key={key}
-              label={macro.label}
-              value={currentMacros[key] ?? macro.default}
-              onChange={macroHandlers[key]}
-            />
-          ))}
-        </Section>
-      )}
-      {groups.map((group) => {
-        const groupControls = groupedControls.get(group) ?? [];
-        const previewParts = groupControls
-          .slice(0, 2)
-          .map(([k, c]) => {
-            const v = resolvedValues[k];
-            if (c.type === "slider") return `${(v as number).toFixed(1)}`;
-            if (c.type === "toggle") return (v as boolean) ? "on" : "off";
-            return String(v);
-          });
-        return (
-          <Section key={group} title={group.toUpperCase()} preview={previewParts.join(" \u00b7 ")} defaultOpen={group !== "Visibility" && group !== "Position" && group !== "Style"} onReset={groupResetHandlers[group]}>
-            {groupControls.map(([key, ctrl]) => (
-              <ControlRenderer
-                key={key}
-                controlKey={key}
-                control={ctrl}
-                value={currentValues[key] ?? ctrl.default}
-                onChange={onControlChange}
-              />
-            ))}
-          </Section>
-        );
-      })}
-      {hatchGroups && hatchGroups.length > 0 && (
-        <>
-          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--fg-dim)", borderBottom: "1px solid var(--border-light)", paddingBottom: 4 }}>
-            HATCH GROUPS
-          </div>
-          {hatchGroups.map((groupName) => {
-            const config = currentHatchGroups[groupName] ?? HATCH_GROUP_DEFAULT;
-            const preview = config.family === "inherit" ? "global" : config.family;
-            return (
-              <Section
-                key={groupName}
-                title={groupName}
-                preview={preview}
-                onReset={() => onHatchGroupChange(groupName, HATCH_GROUP_DEFAULT)}
-              >
-                <HatchGroupControls
-                  groupName={groupName}
-                  config={config}
-                  onChange={onHatchGroupChange}
-                />
-              </Section>
-            );
-          })}
-        </>
-      )}
-    </>
-  );
-});
-
-// ── Hatch group UI components ──
-
-const selectStyle: React.CSSProperties = {
-  padding: "3px 6px",
-  fontSize: 10,
-  fontFamily: "inherit",
-  fontWeight: 600,
-  letterSpacing: "0.02em",
-  border: "1px solid var(--fg)",
-  background: "transparent",
-  color: "var(--fg)",
-  cursor: "pointer",
-  borderRadius: 0,
-};
-
-function HatchFamilySelect({
-  value,
-  onChange,
-  includeInherit = false,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  includeInherit?: boolean;
-}) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      style={selectStyle}
-    >
-      {includeInherit && <option value="inherit">Global (inherit)</option>}
-      {HATCH_FAMILIES.map((f) => (
-        <option key={f.value} value={f.value}>{f.label}</option>
-      ))}
-    </select>
-  );
-}
-
-function HatchGroupControls({
-  groupName,
-  config,
-  onChange,
-}: {
-  groupName: string;
-  config: HatchGroupConfig;
-  onChange: (groupName: string, config: HatchGroupConfig) => void;
-}) {
-  const isOverride = config.family !== "inherit";
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-      <HatchFamilySelect
-        value={config.family}
-        onChange={(f) => onChange(groupName, { ...config, family: f as HatchGroupConfig["family"] })}
-        includeInherit
-      />
-      {isOverride && (
-        <>
-          <Slider label="Count" value={config.count} onChange={(v) => onChange(groupName, { ...config, count: Math.round(v) })} min={5} max={80} step={1} />
-          <Slider label="Samples" value={config.samples} onChange={(v) => onChange(groupName, { ...config, samples: Math.round(v) })} min={10} max={120} step={1} />
-          {(config.family === "diagonal" || config.family === "crosshatch") && (
-            <Slider label="Angle" value={config.angle} onChange={(v) => onChange(groupName, { ...config, angle: v })} min={0} max={Math.PI} step={0.01} />
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-const Slider = memo(function Slider({
-  label,
-  value,
-  onChange,
-  min,
-  max,
-  step,
-}: {
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  min: number;
-  max: number;
-  step: number;
-}) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-      <span style={{ width: 70, color: "var(--fg-muted)", flexShrink: 0, fontSize: 11 }}>{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ flex: 1, accentColor: "var(--accent-color)", height: 2 }}
-      />
-      <span style={{ width: 44, textAlign: "right", color: "var(--fg-dim)", fontSize: 10 }}>
-        {typeof value === "number" && value % 1 !== 0 ? value.toFixed(2) : value}
-      </span>
-    </div>
-  );
-});
-
-const Toggle = memo(function Toggle({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div
-      onClick={() => onChange(!value)}
-      style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
-    >
-      <div
-        style={{
-          width: 28,
-          height: 14,
-          borderRadius: 7,
-          background: value ? "var(--fg)" : "var(--toggle-off)",
-          position: "relative",
-          transition: "background 0.15s",
-          flexShrink: 0,
-        }}
-      >
-        <div
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: 5,
-            background: "var(--bg-canvas)",
-            position: "absolute",
-            top: 2,
-            left: value ? 16 : 2,
-            transition: "left 0.15s",
-          }}
-        />
-      </div>
-      <span style={{ color: "var(--fg-muted)" }}>{label}</span>
-    </div>
-  );
-});
-
-function HoverReset({
-  label,
-  onReset,
-  children,
-}: {
-  label: string;
-  onReset: () => void;
-  children: React.ReactNode;
-}) {
-  const [hovered, setHovered] = useState(false);
-  return (
-    <div
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{ display: "inline-flex", alignItems: "baseline", gap: 4 }}
-    >
-      {hovered ? (
-        <span
-          onClick={onReset}
-          style={{
-            color: "var(--fg-dim)",
-            fontWeight: 600,
-            cursor: "pointer",
-            textDecoration: "underline",
-            textDecorationStyle: "dotted",
-            textUnderlineOffset: 2,
-          }}
-        >
-          reset
-        </span>
-      ) : (
-        <span style={{ color: "var(--fg-dim)", fontWeight: 600 }}>{label}</span>
-      )}
-      {" "}{children}
-    </div>
-  );
-}
-
-function OrbitCube({
-  theta,
-  phi,
-  onChangeTheta,
-  onChangePhi,
-  size = 120,
-}: {
-  theta: number;
-  phi: number;
-  onChangeTheta: (v: number) => void;
-  onChangePhi: (v: number) => void;
-  size?: number;
-}) {
-  const draggingRef = useRef(false);
-  const startRef = useRef({ x: 0, y: 0, theta: 0, phi: 0 });
-
-  // 8 cube vertices at ±1
-  const verts: [number, number, number][] = [
-    [-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1],
-    [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1],
-  ];
-  // 12 edges
-  const edges: [number, number][] = [
-    [0, 1], [1, 2], [2, 3], [3, 0],
-    [4, 5], [5, 6], [6, 7], [7, 4],
-    [0, 4], [1, 5], [2, 6], [3, 7],
-  ];
-  // Axis tips and labels
-  const axisTips: { label: string; pos: [number, number, number] }[] = [
-    { label: "X", pos: [1.4, 0, 0] },
-    { label: "Y", pos: [0, 1.4, 0] },
-    { label: "Z", pos: [0, 0, 1.4] },
-  ];
-
-  // Rotate point: phi around X, then theta around Y
-  const rotatePoint = (x: number, y: number, z: number): [number, number, number] => {
-    // Rotate around X by phi
-    const cosP = Math.cos(phi);
-    const sinP = Math.sin(phi);
-    const y1 = y * cosP - z * sinP;
-    const z1 = y * sinP + z * cosP;
-    // Rotate around Y by theta
-    const cosT = Math.cos(theta);
-    const sinT = Math.sin(theta);
-    const x2 = x * cosT + z1 * sinT;
-    const z2 = -x * sinT + z1 * cosT;
-    return [x2, y1, z2];
-  };
-
-  const half = size / 2;
-  const scale = size * 0.28;
-
-  // Project vertices
-  const projected = verts.map(([x, y, z]) => {
-    const [rx, ry, rz] = rotatePoint(x, y, z);
-    return { x: half + rx * scale, y: half - ry * scale, z: rz };
-  });
-
-  // Project axis tips
-  const projectedAxes = axisTips.map(({ label, pos: [x, y, z] }) => {
-    const [rx, ry, rz] = rotatePoint(x, y, z);
-    return { label, x: half + rx * scale, y: half - ry * scale, z: rz };
-  });
-
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      draggingRef.current = true;
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
-      startRef.current = { x: e.clientX, y: e.clientY, theta, phi };
-    },
-    [theta, phi],
-  );
-
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!draggingRef.current) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const dx = e.clientX - startRef.current.x;
-      const dy = e.clientY - startRef.current.y;
-      onChangeTheta(startRef.current.theta + dx * 0.008);
-      onChangePhi(Math.max(-1.4, Math.min(1.4, startRef.current.phi + dy * 0.008)));
-    },
-    [onChangeTheta, onChangePhi],
-  );
-
-  const handlePointerUp = useCallback(() => {
-    draggingRef.current = false;
-  }, []);
-
-  const handleDoubleClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      onChangeTheta(0.6);
-      onChangePhi(0.35);
-    },
-    [onChangeTheta, onChangePhi],
-  );
-
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onDoubleClick={handleDoubleClick}
-      style={{
-        border: "1px solid var(--fg)",
-        cursor: "grab",
-        touchAction: "none",
-        flexShrink: 0,
-      }}
-    >
-      {edges.map(([a, b], i) => {
-        const avgZ = (projected[a].z + projected[b].z) / 2;
-        const opacity = 0.25 + 0.75 * Math.max(0, Math.min(1, (avgZ + 1.5) / 3));
-        return (
-          <line
-            key={i}
-            x1={projected[a].x}
-            y1={projected[a].y}
-            x2={projected[b].x}
-            y2={projected[b].y}
-            stroke="var(--fg)"
-            strokeWidth={1}
-            opacity={opacity}
-          />
-        );
-      })}
-      {projectedAxes.map((ax) => (
-        <text
-          key={ax.label}
-          x={ax.x}
-          y={ax.y}
-          fill="var(--fg)"
-          fontSize={9}
-          fontFamily="inherit"
-          fontWeight={600}
-          textAnchor="middle"
-          dominantBaseline="central"
-          opacity={0.3 + 0.7 * Math.max(0, Math.min(1, (ax.z + 1.5) / 3))}
-          style={{ pointerEvents: "none" }}
-        >
-          {ax.label}
-        </text>
-      ))}
-    </svg>
-  );
-}
-
-function XYPad({
-  valueX,
-  valueY,
-  onChangeX,
-  onChangeY,
-  min = -3,
-  max = 3,
-  size = 120,
-}: {
-  valueX: number;
-  valueY: number;
-  onChangeX: (v: number) => void;
-  onChangeY: (v: number) => void;
-  min?: number;
-  max?: number;
-  size?: number;
-}) {
-  const padRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef(false);
-
-  const range = max - min;
-  const normX = (valueX - min) / range;
-  const normY = 1 - (valueY - min) / range; // invert Y so up = positive
-
-  const updateFromEvent = useCallback(
-    (clientX: number, clientY: number) => {
-      const el = padRef.current;
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
-      onChangeX(+(min + nx * range).toFixed(2));
-      onChangeY(+(max - ny * range).toFixed(2)); // invert Y
-    },
-    [min, max, range, onChangeX, onChangeY],
-  );
-
-  const handlePointerDown = useCallback(
-    (e: React.PointerEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      draggingRef.current = true;
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
-      updateFromEvent(e.clientX, e.clientY);
-    },
-    [updateFromEvent],
-  );
-
-  const handlePointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      if (!draggingRef.current) return;
-      e.preventDefault();
-      updateFromEvent(e.clientX, e.clientY);
-    },
-    [updateFromEvent],
-  );
-
-  const handlePointerUp = useCallback(() => {
-    draggingRef.current = false;
-  }, []);
-
-  const handleDoubleClick = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      onChangeX(0);
-      onChangeY(0);
-    },
-    [onChangeX, onChangeY],
-  );
-
-  return (
-    <div
-      ref={padRef}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onDoubleClick={handleDoubleClick}
-      style={{
-        width: size,
-        height: size,
-        border: "1px solid var(--fg)",
-        position: "relative",
-        cursor: "crosshair",
-        touchAction: "none",
-        flexShrink: 0,
-      }}
-    >
-      {/* Crosshair lines */}
-      <div
-        style={{
-          position: "absolute",
-          left: `${normX * 100}%`,
-          top: 0,
-          bottom: 0,
-          width: 1,
-          background: "var(--border-light)",
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: `${normY * 100}%`,
-          left: 0,
-          right: 0,
-          height: 1,
-          background: "var(--border-light)",
-          pointerEvents: "none",
-        }}
-      />
-      {/* Center crosshair (origin) */}
-      <div
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: 0,
-          bottom: 0,
-          width: 1,
-          background: "var(--border-light)",
-          opacity: 0.3,
-          pointerEvents: "none",
-        }}
-      />
-      <div
-        style={{
-          position: "absolute",
-          top: "50%",
-          left: 0,
-          right: 0,
-          height: 1,
-          background: "var(--border-light)",
-          opacity: 0.3,
-          pointerEvents: "none",
-        }}
-      />
-      {/* Position dot */}
-      <div
-        style={{
-          position: "absolute",
-          left: `${normX * 100}%`,
-          top: `${normY * 100}%`,
-          width: 8,
-          height: 8,
-          borderRadius: 4,
-          background: "var(--fg)",
-          transform: "translate(-50%, -50%)",
-          pointerEvents: "none",
-        }}
-      />
-    </div>
-  );
-}
+// ── Border path generation ──
 
 function generateBorderPaths(
   style: string,
@@ -1987,12 +1102,10 @@ function generateBorderPaths(
       const paths = [rect(x, y, w, h)];
       const tickLen = 2;
       const spacing = 10;
-      // Top and bottom ticks
       for (let tx = x + spacing; tx < x + w; tx += spacing) {
         paths.push(`M${tx},${y}V${y - tickLen}`);
         paths.push(`M${tx},${y + h}V${y + h + tickLen}`);
       }
-      // Left and right ticks
       for (let ty = y + spacing; ty < y + h; ty += spacing) {
         paths.push(`M${x},${ty}H${x - tickLen}`);
         paths.push(`M${x + w},${ty}H${x + w + tickLen}`);
@@ -2004,13 +1117,9 @@ function generateBorderPaths(
       const markLen = 8;
       const gap = 2;
       const corners = [
-        // Top-left
         [`M${x - gap},${y}H${x - gap - markLen}`, `M${x},${y - gap}V${y - gap - markLen}`],
-        // Top-right
         [`M${x + w + gap},${y}H${x + w + gap + markLen}`, `M${x + w},${y - gap}V${y - gap - markLen}`],
-        // Bottom-left
         [`M${x - gap},${y + h}H${x - gap - markLen}`, `M${x},${y + h + gap}V${y + h + gap + markLen}`],
-        // Bottom-right
         [`M${x + w + gap},${y + h}H${x + w + gap + markLen}`, `M${x + w},${y + h + gap}V${y + h + gap + markLen}`],
       ];
       return corners.flat();
@@ -2020,27 +1129,3 @@ function generateBorderPaths(
       return [];
   }
 }
-
-const btnStyle: React.CSSProperties = {
-  padding: "6px 14px",
-  fontSize: 11,
-  fontFamily: "inherit",
-  fontWeight: 600,
-  letterSpacing: "0.05em",
-  border: "1px solid var(--fg)",
-  background: "transparent",
-  color: "var(--fg)",
-  cursor: "pointer",
-  borderRadius: 0,
-};
-
-const tagStyle: React.CSSProperties = {
-  padding: "3px 7px",
-  fontSize: 10,
-  fontFamily: "inherit",
-  fontWeight: 600,
-  letterSpacing: "0.02em",
-  border: "1px solid var(--fg)",
-  cursor: "pointer",
-  borderRadius: 0,
-};
