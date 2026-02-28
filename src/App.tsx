@@ -39,6 +39,7 @@ const DEFAULTS = {
   camTheta: 0.6,
   camPhi: 0.35,
   camDist: 8,
+  camOrtho: false,
   panX: 0,
   panY: 0,
   strokeWidth: 0.5,
@@ -102,6 +103,7 @@ export default function App() {
   const [camTheta, setCamTheta] = useState(INITIAL.camTheta);
   const [camPhi, setCamPhi] = useState(INITIAL.camPhi);
   const [camDist, setCamDist] = useState(INITIAL.camDist);
+  const [camOrtho, setCamOrtho] = useState(INITIAL.camOrtho);
   const [panX, setPanX] = useState(INITIAL.panX);
   const [panY, setPanY] = useState(INITIAL.panY);
 
@@ -123,7 +125,7 @@ export default function App() {
       paramA, paramB, paramC, paramD,
       hatchFamily, hatchCount, hatchSamples, hatchAngle,
       useOcclusion, depthRes, depthBias,
-      camTheta, camPhi, camDist, panX, panY,
+      camTheta, camPhi, camDist, camOrtho, panX, panY,
       strokeWidth, showMesh,
       pageSize, orientation, margin, borderEnabled, borderStyle,
     }));
@@ -146,17 +148,29 @@ export default function App() {
 
   // Build Three.js camera
   const threeCamera = useMemo(() => {
-    const cam = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-    cam.position.set(
+    const pos = new THREE.Vector3(
       camDist * Math.sin(camTheta) * Math.cos(camPhi),
       camDist * Math.sin(camPhi),
       camDist * Math.cos(camTheta) * Math.cos(camPhi)
     );
+    let cam: THREE.Camera;
+    if (camOrtho) {
+      const aspect = width / height;
+      const halfH = camDist * 0.35;
+      const halfW = halfH * aspect;
+      const oc = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 100);
+      oc.position.copy(pos);
+      cam = oc;
+    } else {
+      const pc = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+      pc.position.copy(pos);
+      cam = pc;
+    }
     cam.lookAt(panX, panY, 0);
     cam.updateMatrixWorld();
-    cam.updateProjectionMatrix();
+    (cam as THREE.PerspectiveCamera | THREE.OrthographicCamera).updateProjectionMatrix();
     return cam;
-  }, [camTheta, camPhi, camDist, panX, panY, width, height]);
+  }, [camTheta, camPhi, camDist, camOrtho, panX, panY, width, height]);
 
   // Export layout geometry (shared by preview and export)
   const exportLayout = useMemo(() => {
@@ -661,7 +675,22 @@ export default function App() {
           </Section>
 
           <Section title="CAMERA">
-            <Slider label="Distance" value={camDist} onChange={setCamDist} min={3} max={25} step={0.1} />
+            <div style={{ display: "flex", gap: 3 }}>
+              {(["perspective", "orthographic"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setCamOrtho(m === "orthographic")}
+                  style={{
+                    ...tagStyle,
+                    background: (m === "orthographic") === camOrtho ? "var(--fg)" : "transparent",
+                    color: (m === "orthographic") === camOrtho ? "var(--bg-canvas)" : "var(--fg)",
+                  }}
+                >
+                  {m === "perspective" ? "Perspective" : "Ortho"}
+                </button>
+              ))}
+            </div>
+            <Slider label="Distance" value={camDist} onChange={setCamDist} min={1} max={25} step={0.1} />
             <div style={{ display: "flex", gap: 8, marginTop: 4, marginBottom: 4 }}>
               <XYPad valueX={panX} valueY={panY} onChangeX={setPanX} onChangeY={setPanY} size={100} />
               <OrbitCube theta={camTheta} phi={camPhi} onChangeTheta={setCamTheta} onChangePhi={setCamPhi} size={100} />
