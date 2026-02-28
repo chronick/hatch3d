@@ -32,6 +32,33 @@ const BORDER_STYLES: Record<string, string> = {
 const STORAGE_KEY = "hatch3d-state";
 const COMP_VALUES_KEY = "hatch3d-comp-values";
 const MACRO_VALUES_KEY = "hatch3d-macro-values";
+const HATCH_GROUPS_KEY = "hatch3d-hatch-groups";
+
+type HatchFamily = "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral";
+
+interface HatchGroupConfig {
+  family: "inherit" | HatchFamily;
+  count: number;
+  samples: number;
+  angle: number;
+}
+
+const HATCH_GROUP_DEFAULT: HatchGroupConfig = {
+  family: "inherit",
+  count: 30,
+  samples: 50,
+  angle: 0.7,
+};
+
+const HATCH_FAMILIES: { value: HatchFamily; label: string }[] = [
+  { value: "u", label: "U-const" },
+  { value: "v", label: "V-const" },
+  { value: "diagonal", label: "Diagonal" },
+  { value: "rings", label: "Rings" },
+  { value: "hex", label: "Hex" },
+  { value: "crosshatch", label: "Cross" },
+  { value: "spiral", label: "Spiral" },
+];
 
 const DEFAULTS = {
   surfaceKey: "hyperboloid",
@@ -147,6 +174,14 @@ export default function App() {
     } catch { return {}; }
   });
 
+  // Per-composition hatch group overrides: { compositionKey: { groupName: HatchGroupConfig } }
+  const [hatchGroupValues, setHatchGroupValues] = useState<Record<string, Record<string, HatchGroupConfig>>>(() => {
+    try {
+      const raw = localStorage.getItem(HATCH_GROUPS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  });
+
   // Responsive: detect narrow viewport (debounced)
   const [isNarrow, setIsNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 1200);
   useEffect(() => {
@@ -192,6 +227,18 @@ export default function App() {
     });
   }, [compositionKey]);
 
+  const setHatchGroupValue = useCallback((groupName: string, config: HatchGroupConfig) => {
+    setHatchGroupValues(prev => {
+      const existing = prev[compositionKey] ?? {};
+      return { ...prev, [compositionKey]: { ...existing, [groupName]: config } };
+    });
+  }, [compositionKey]);
+
+  const currentHatchGroups = useMemo(
+    () => hatchGroupValues[compositionKey] ?? {},
+    [hatchGroupValues, compositionKey],
+  );
+
   // Reset all macros to their defaults (0.5 center)
   const resetMacros = useCallback(() => {
     setMacroValues(prev => {
@@ -212,13 +259,17 @@ export default function App() {
     });
   }, [compositionKey, comp.controls]);
 
-  // Reset all controls + macros for current composition
+  // Reset all controls + macros + hatch groups for current composition
   const resetAllControls = useCallback(() => {
     setCompValues(prev => {
       const { [compositionKey]: _, ...rest } = prev;
       return rest;
     });
     setMacroValues(prev => {
+      const { [compositionKey]: _, ...rest } = prev;
+      return rest;
+    });
+    setHatchGroupValues(prev => {
       const { [compositionKey]: _, ...rest } = prev;
       return rest;
     });
@@ -255,9 +306,10 @@ export default function App() {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stateSnapshot));
       localStorage.setItem(COMP_VALUES_KEY, JSON.stringify(compValues));
       localStorage.setItem(MACRO_VALUES_KEY, JSON.stringify(macroValues));
+      localStorage.setItem(HATCH_GROUPS_KEY, JSON.stringify(hatchGroupValues));
     }, 300);
     return () => clearTimeout(persistTimer.current);
-  }, [stateSnapshot, compValues, macroValues]);
+  }, [stateSnapshot, compValues, macroValues, hatchGroupValues]);
 
   // Preview pan/zoom (ephemeral, not persisted)
   const [viewZoom, setViewZoom] = useState(1);
@@ -353,6 +405,21 @@ export default function App() {
           hatch: hatchParams,
         },
       ];
+    }
+
+    // Post-process: apply per-group hatch overrides
+    for (const layer of layers) {
+      if (layer.group) {
+        const groupConfig = currentHatchGroups[layer.group];
+        if (groupConfig && groupConfig.family !== "inherit") {
+          layer.hatch = {
+            family: groupConfig.family,
+            count: groupConfig.count,
+            samples: groupConfig.samples,
+            angle: groupConfig.angle,
+          };
+        }
+      }
     }
 
     let allPaths: string[] = [];
@@ -489,6 +556,7 @@ export default function App() {
     surfaceParams,
     compositionKey,
     resolvedValues,
+    currentHatchGroups,
     hatchFamily,
     hatchCount,
     hatchSamples,
@@ -714,11 +782,14 @@ export default function App() {
             <CompositionControls
               controls={comp.controls}
               macros={comp.macros}
+              hatchGroups={comp.hatchGroups}
               currentValues={currentValues}
               currentMacros={currentMacros}
               resolvedValues={resolvedValues}
+              currentHatchGroups={currentHatchGroups}
               onControlChange={setCompValue}
               onMacroChange={setMacroValue}
+              onHatchGroupChange={setHatchGroupValue}
               onResetMacros={resetMacros}
               onResetGroup={resetControlGroup}
               onResetAll={resetAllControls}
@@ -726,21 +797,10 @@ export default function App() {
           )}
 
           <Section title="HATCHING" preview={`${hatchFamily} \u00b7 ${hatchCount} lines`}>
-            <div style={{ display: "flex", gap: 3 }}>
-              {(["u", "v", "diagonal", "rings", "hex", "crosshatch", "spiral"] as const).map((f) => (
-                <button
-                  key={f}
-                  onClick={() => setHatchFamily(f)}
-                  style={{
-                    ...tagStyle,
-                    background: hatchFamily === f ? "var(--fg)" : "transparent",
-                    color: hatchFamily === f ? "var(--bg-canvas)" : "var(--fg)",
-                  }}
-                >
-                  {{ u: "U-const", v: "V-const", diagonal: "Diagonal", rings: "Rings", hex: "Hex", crosshatch: "Cross", spiral: "Spiral" }[f]}
-                </button>
-              ))}
-            </div>
+            <HatchFamilySelect
+              value={hatchFamily}
+              onChange={(f) => setHatchFamily(f as HatchFamily)}
+            />
             <Slider label="Count" value={hatchCount} onChange={setHatchCount} min={5} max={80} step={1} />
             <Slider label="Samples" value={hatchSamples} onChange={setHatchSamples} min={10} max={120} step={1} />
             {(hatchFamily === "diagonal" || hatchFamily === "crosshatch") && (
@@ -912,11 +972,14 @@ export default function App() {
             <CompositionControls
               controls={comp.controls}
               macros={comp.macros}
+              hatchGroups={comp.hatchGroups}
               currentValues={currentValues}
               currentMacros={currentMacros}
               resolvedValues={resolvedValues}
+              currentHatchGroups={currentHatchGroups}
               onControlChange={setCompValue}
               onMacroChange={setMacroValue}
+              onHatchGroupChange={setHatchGroupValue}
               onResetMacros={resetMacros}
               onResetGroup={resetControlGroup}
               onResetAll={resetAllControls}
@@ -1236,22 +1299,28 @@ const ControlRenderer = memo(function ControlRenderer({
 const CompositionControls = memo(function CompositionControls({
   controls,
   macros,
+  hatchGroups,
   currentValues,
   currentMacros,
   resolvedValues,
+  currentHatchGroups,
   onControlChange,
   onMacroChange,
+  onHatchGroupChange,
   onResetMacros,
   onResetGroup,
   onResetAll,
 }: {
   controls?: Record<string, ControlDef>;
   macros?: Record<string, MacroDef>;
+  hatchGroups?: string[];
   currentValues: Record<string, unknown>;
   currentMacros: Record<string, number>;
   resolvedValues: Record<string, unknown>;
+  currentHatchGroups: Record<string, HatchGroupConfig>;
   onControlChange: (key: string, val: unknown) => void;
   onMacroChange: (key: string, val: number) => void;
+  onHatchGroupChange: (groupName: string, config: HatchGroupConfig) => void;
   onResetMacros: () => void;
   onResetGroup: (group: string) => void;
   onResetAll: () => void;
@@ -1336,9 +1405,102 @@ const CompositionControls = memo(function CompositionControls({
           </Section>
         );
       })}
+      {hatchGroups && hatchGroups.length > 0 && (
+        <>
+          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "var(--fg-dim)", borderBottom: "1px solid var(--border-light)", paddingBottom: 4 }}>
+            HATCH GROUPS
+          </div>
+          {hatchGroups.map((groupName) => {
+            const config = currentHatchGroups[groupName] ?? HATCH_GROUP_DEFAULT;
+            const preview = config.family === "inherit" ? "global" : config.family;
+            return (
+              <Section
+                key={groupName}
+                title={groupName}
+                preview={preview}
+                onReset={() => onHatchGroupChange(groupName, HATCH_GROUP_DEFAULT)}
+              >
+                <HatchGroupControls
+                  groupName={groupName}
+                  config={config}
+                  onChange={onHatchGroupChange}
+                />
+              </Section>
+            );
+          })}
+        </>
+      )}
     </>
   );
 });
+
+// ── Hatch group UI components ──
+
+const selectStyle: React.CSSProperties = {
+  padding: "3px 6px",
+  fontSize: 10,
+  fontFamily: "inherit",
+  fontWeight: 600,
+  letterSpacing: "0.02em",
+  border: "1px solid var(--fg)",
+  background: "transparent",
+  color: "var(--fg)",
+  cursor: "pointer",
+  borderRadius: 0,
+};
+
+function HatchFamilySelect({
+  value,
+  onChange,
+  includeInherit = false,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  includeInherit?: boolean;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={selectStyle}
+    >
+      {includeInherit && <option value="inherit">Global (inherit)</option>}
+      {HATCH_FAMILIES.map((f) => (
+        <option key={f.value} value={f.value}>{f.label}</option>
+      ))}
+    </select>
+  );
+}
+
+function HatchGroupControls({
+  groupName,
+  config,
+  onChange,
+}: {
+  groupName: string;
+  config: HatchGroupConfig;
+  onChange: (groupName: string, config: HatchGroupConfig) => void;
+}) {
+  const isOverride = config.family !== "inherit";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      <HatchFamilySelect
+        value={config.family}
+        onChange={(f) => onChange(groupName, { ...config, family: f as HatchGroupConfig["family"] })}
+        includeInherit
+      />
+      {isOverride && (
+        <>
+          <Slider label="Count" value={config.count} onChange={(v) => onChange(groupName, { ...config, count: Math.round(v) })} min={5} max={80} step={1} />
+          <Slider label="Samples" value={config.samples} onChange={(v) => onChange(groupName, { ...config, samples: Math.round(v) })} min={10} max={120} step={1} />
+          {(config.family === "diagonal" || config.family === "crosshatch") && (
+            <Slider label="Angle" value={config.angle} onChange={(v) => onChange(groupName, { ...config, angle: v })} min={0} max={Math.PI} step={0.01} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 const Slider = memo(function Slider({
   label,

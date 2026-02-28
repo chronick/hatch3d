@@ -59,6 +59,7 @@ export interface LayerConfig {
   params?: Record<string, number>;
   hatch: HatchParams;
   transform?: { x?: number; y?: number; z?: number };
+  group?: string;
 }
 
 export interface CompositionInput {
@@ -72,6 +73,7 @@ export interface Composition {
   name: string;
   macros?: Record<string, MacroDef>;
   controls?: Record<string, ControlDef>;
+  hatchGroups?: string[];
   layers: (input: CompositionInput) => LayerConfig[];
 }
 
@@ -163,6 +165,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   towerAndBase: {
     name: "Tower + Base",
+    hatchGroups: ["Canopy", "Ring", "Tower"],
     macros: {
       scale: {
         label: "Scale",
@@ -222,6 +225,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
           surface: "canopy",
           params: { radius: canopyRadius, sag: canopySag, sharpness: capSharpness, yOffset: towerHeight * 0.6 },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
+          group: "Canopy",
         },
       ];
       if (showRing) {
@@ -230,6 +234,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
           params: { majorR: ringSize, minorR: ringThickness, ySquish: 0.2 },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
           transform: { y: 0 },
+          group: "Ring",
         });
       }
       if (showTower) {
@@ -238,12 +243,14 @@ export const COMPOSITIONS: Record<string, Composition> = {
           params: { radius: towerRadius, height: towerHeight, twist: towerTwist, waist: towerWaist },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "v" },
           transform: { y: 0 },
+          group: "Tower",
         });
       }
       layers.push({
         surface: "canopy",
         params: { radius: canopyRadius * 0.9, sag: canopySag * 0.83, sharpness: capSharpness * 0.75, yOffset: -towerHeight * 0.6 },
         hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
+        group: "Canopy",
       });
       return layers;
     },
@@ -251,6 +258,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   doubleRing: {
     name: "Double Ring",
+    hatchGroups: ["Rings", "Connector"],
     macros: {
       scale: {
         label: "Scale",
@@ -298,12 +306,14 @@ export const COMPOSITIONS: Record<string, Composition> = {
           params: { majorR: ringRadius, minorR: ringThickness, ySquish: ringSquish },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
           transform: { y: ringSpacing, x: ringOffset[0], z: ringOffset[1] },
+          group: "Rings",
         },
         {
           surface: "torus",
           params: { majorR: ringRadius, minorR: ringThickness, ySquish: ringSquish },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
           transform: { y: -ringSpacing, x: -ringOffset[0], z: -ringOffset[1] },
+          group: "Rings",
         },
       ];
       if (showConnector) {
@@ -312,6 +322,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
           params: { height: connectorHeight, spread: connectorSpread, fanAngle: connectorFanAngle },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "v" },
           transform: { y: 0 },
+          group: "Connector",
         });
       }
       return layers;
@@ -320,6 +331,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   crystalSpire: {
     name: "Crystal Spire",
+    hatchGroups: ["Primary", "Secondary"],
     macros: {
       twist: {
         label: "Twist",
@@ -360,6 +372,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             bulge: v.primaryBulge as number,
           },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
+          group: "Primary",
         },
         {
           surface: "twistedRibbon",
@@ -370,6 +383,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             bulge: v.secondaryBulge as number,
           },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "v" },
+          group: "Secondary",
         },
       ];
     },
@@ -377,6 +391,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   ribbonCage: {
     name: "Ribbon Cage",
+    hatchGroups: ["Ribbons"],
     macros: {
       density: {
         label: "Density",
@@ -444,6 +459,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             x: cageRadius * Math.cos((i / n) * Math.PI * 2),
             z: cageRadius * Math.sin((i / n) * Math.PI * 2),
           },
+          group: "Ribbons",
         });
       }
       return layers;
@@ -452,6 +468,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   dnaHelix: {
     name: "DNA Helix",
+    hatchGroups: ["Strands", "Rungs"],
     macros: {
       twist: {
         label: "Twist",
@@ -509,11 +526,13 @@ export const COMPOSITIONS: Record<string, Composition> = {
             surface: "twistedRibbon",
             params: { twist: strandTwist, width: strandWidth, height: dnaHeight, bulge: strandBulge },
             hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
+            group: "Strands",
           },
           {
             surface: "twistedRibbon",
             params: { twist: strandTwist, width: strandWidth, height: dnaHeight, bulge: strandBulge },
             hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "v" },
+            group: "Strands",
           },
         );
       }
@@ -525,6 +544,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             params: { majorR: rungRadius, minorR: rungThickness, ySquish: rungSquish },
             hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
             transform: { y: -dnaHeight / 2 + t * dnaHeight },
+            group: "Rungs",
           });
         }
       }
@@ -534,6 +554,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   totemStack: {
     name: "Totem Stack",
+    hatchGroups: ["Tiers", "Caps"],
     macros: {
       density: {
         label: "Density",
@@ -621,6 +642,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             },
             hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "v" },
             transform: { y: yPos },
+            group: "Tiers",
           });
         } else if (useTorus) {
           layers.push({
@@ -632,6 +654,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             },
             hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
             transform: { y: yPos },
+            group: "Tiers",
           });
         }
         if (showCaps) {
@@ -644,6 +667,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
               yOffset: yPos + hypHeight * 0.5,
             },
             hatch: { ...p.hatchParams, family: p.hatchParams.family ?? tierFamilies[i % 3] },
+            group: "Caps",
           });
         }
       }
@@ -653,6 +677,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   starburst: {
     name: "Starburst",
+    hatchGroups: ["Hub", "Arms"],
     macros: {
       density: {
         label: "Density",
@@ -711,6 +736,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
         params: { majorR: hubSize, minorR: hubThickness, ySquish: 0.6 },
         hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
         transform: { x: armOffset[0], z: armOffset[1] },
+        group: "Hub",
       });
       for (let i = 0; i < armCount; i++) {
         const angle = (i / armCount) * Math.PI * 2;
@@ -728,6 +754,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             z: armOffset[1] + hubSize * Math.sin(angle),
             y: armHeight * Math.sin(i * 0.9),
           },
+          group: "Arms",
         });
       }
       return layers;
@@ -736,6 +763,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   mushroomColony: {
     name: "Mushroom Colony",
+    hatchGroups: ["Stems", "Caps"],
     macros: {
       scale: {
         label: "Scale",
@@ -808,12 +836,14 @@ export const COMPOSITIONS: Record<string, Composition> = {
           params: { radius: 0.3 * ms, height: mh, twist: stemTwist, waist: stemWaist },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "v" },
           transform: { x: mx, z: mz, y: -mh * 0.25 },
+          group: "Stems",
         });
         layers.push({
           surface: "canopy",
           params: { radius: ms, sag: capSag * ms, sharpness: capSharpness, yOffset: mh * 0.25 },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
           transform: { x: mx, z: mz },
+          group: "Caps",
         });
       }
       return layers;
@@ -822,6 +852,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   nestedShells: {
     name: "Nested Shells",
+    hatchGroups: ["Shells", "Caps"],
     macros: {
       density: {
         label: "Density",
@@ -890,6 +921,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             waist: outerWaist + t * (innerWaist - outerWaist),
           },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? shellFamilies[i % 3] },
+          group: "Shells",
         });
       }
       if (showCaps) {
@@ -897,11 +929,13 @@ export const COMPOSITIONS: Record<string, Composition> = {
           surface: "canopy",
           params: { radius: outerRadius, sag: capSag, sharpness: capSharpness, yOffset: baseHeight * 0.73 },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "diagonal" },
+          group: "Caps",
         });
         layers.push({
           surface: "canopy",
           params: { radius: outerRadius, sag: capSag, sharpness: capSharpness, yOffset: -baseHeight * 0.73 },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
+          group: "Caps",
         });
       }
       return layers;
@@ -910,6 +944,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
 
   vortexTunnel: {
     name: "Vortex Tunnel",
+    hatchGroups: ["Rings", "Spine"],
     macros: {
       density: {
         label: "Density",
@@ -982,6 +1017,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
             },
             hatch: { ...p.hatchParams, family: p.hatchParams.family ?? ringFamilies[i % 2] },
             transform: { y },
+            group: "Rings",
           });
         }
       }
@@ -990,6 +1026,7 @@ export const COMPOSITIONS: Record<string, Composition> = {
           surface: "twistedRibbon",
           params: { twist: spineTwist, width: spineWidth, height: verticalSpan, bulge: spineBulge },
           hatch: { ...p.hatchParams, family: p.hatchParams.family ?? "u" },
+          group: "Spine",
         });
       }
       return layers;
