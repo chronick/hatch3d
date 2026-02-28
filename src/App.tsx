@@ -41,7 +41,7 @@ const DEFAULTS = {
   paramB: 0.5,
   paramC: 0.5,
   paramD: 0.5,
-  hatchFamily: "u" as "u" | "v" | "diagonal",
+  hatchFamily: "u" as "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral",
   hatchCount: 30,
   hatchSamples: 50,
   hatchAngle: 0.7,
@@ -727,7 +727,7 @@ export default function App() {
 
           <Section title="HATCHING" preview={`${hatchFamily} \u00b7 ${hatchCount} lines`}>
             <div style={{ display: "flex", gap: 3 }}>
-              {(["u", "v", "diagonal"] as const).map((f) => (
+              {(["u", "v", "diagonal", "rings", "hex", "crosshatch", "spiral"] as const).map((f) => (
                 <button
                   key={f}
                   onClick={() => setHatchFamily(f)}
@@ -737,13 +737,13 @@ export default function App() {
                     color: hatchFamily === f ? "var(--bg-canvas)" : "var(--fg)",
                   }}
                 >
-                  {f === "u" ? "U-const" : f === "v" ? "V-const" : "Diagonal"}
+                  {{ u: "U-const", v: "V-const", diagonal: "Diagonal", rings: "Rings", hex: "Hex", crosshatch: "Cross", spiral: "Spiral" }[f]}
                 </button>
               ))}
             </div>
             <Slider label="Count" value={hatchCount} onChange={setHatchCount} min={5} max={80} step={1} />
             <Slider label="Samples" value={hatchSamples} onChange={setHatchSamples} min={10} max={120} step={1} />
-            {hatchFamily === "diagonal" && (
+            {(hatchFamily === "diagonal" || hatchFamily === "crosshatch") && (
               <Slider label="Angle" value={hatchAngle} onChange={setHatchAngle} min={0} max={Math.PI} step={0.01} />
             )}
           </Section>
