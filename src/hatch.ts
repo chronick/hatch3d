@@ -19,6 +19,10 @@ export interface HatchParams {
   dashLength?: number;
   gapLength?: number;
   dashRandom?: number;
+  // Variable-density hatching: callback returns 0..1 density at a UV point.
+  // Lines are oversampled by densityOversample and probabilistically filtered.
+  densityFn?: (u: number, v: number) => number;
+  densityOversample?: number;
 }
 
 /**
@@ -223,32 +227,51 @@ export function generateUVHatchLines(
     dashLength,
     gapLength,
     dashRandom = 0,
+    densityFn,
+    densityOversample = 3,
   } = hatchParams;
 
+  // If densityFn is provided, oversample the line count and filter afterward
+  const effectiveCount = densityFn ? count * densityOversample : count;
+
   let polylines3D: THREE.Vector3[][] = [];
+  // Track UV midpoints per line for density filtering
+  const lineMidUV: { u: number; v: number }[] = [];
 
   if (family === "u") {
-    for (let i = 0; i < count; i++) {
-      const u = uRange[0] + (i / (count - 1)) * (uRange[1] - uRange[0]);
+    for (let i = 0; i < effectiveCount; i++) {
+      const u = uRange[0] + (i / (effectiveCount - 1)) * (uRange[1] - uRange[0]);
+      const vMid = (vRange[0] + vRange[1]) / 2;
       const pts: THREE.Vector3[] = [];
       for (let j = 0; j <= samples; j++) {
         const v = vRange[0] + (j / samples) * (vRange[1] - vRange[0]);
         pts.push(surfaceFn(u, v, surfaceParams));
       }
       polylines3D.push(pts);
+      lineMidUV.push({ u, v: vMid });
     }
   } else if (family === "v") {
-    for (let i = 0; i < count; i++) {
-      const v = vRange[0] + (i / (count - 1)) * (vRange[1] - vRange[0]);
+    for (let i = 0; i < effectiveCount; i++) {
+      const v = vRange[0] + (i / (effectiveCount - 1)) * (vRange[1] - vRange[0]);
+      const uMid = (uRange[0] + uRange[1]) / 2;
       const pts: THREE.Vector3[] = [];
       for (let j = 0; j <= samples; j++) {
         const u = uRange[0] + (j / samples) * (uRange[1] - uRange[0]);
         pts.push(surfaceFn(u, v, surfaceParams));
       }
       polylines3D.push(pts);
+      lineMidUV.push({ u: uMid, v });
     }
   } else if (family === "diagonal") {
-    polylines3D.push(...generateDiagonalLines(surfaceFn, surfaceParams, angle, count, samples, uRange, vRange));
+    const lines = generateDiagonalLines(surfaceFn, surfaceParams, angle, effectiveCount, samples, uRange, vRange);
+    for (let i = 0; i < lines.length; i++) {
+      polylines3D.push(lines[i]);
+      const t = effectiveCount > 1 ? i / (effectiveCount - 1) : 0.5;
+      lineMidUV.push({
+        u: (uRange[0] + uRange[1]) / 2,
+        v: vRange[0] + t * (vRange[1] - vRange[0]),
+      });
+    }
   } else if (family === "rings") {
     const uMid = (uRange[0] + uRange[1]) / 2;
     const vMid = (vRange[0] + vRange[1]) / 2;
@@ -256,8 +279,8 @@ export function generateUVHatchLines(
     const vSpan = vRange[1] - vRange[0];
     const maxRadius = Math.min(uSpan, vSpan) / 2;
 
-    for (let i = 0; i < count; i++) {
-      const r = ((i + 1) / count) * maxRadius;
+    for (let i = 0; i < effectiveCount; i++) {
+      const r = ((i + 1) / effectiveCount) * maxRadius;
       const pts: THREE.Vector3[] = [];
       for (let j = 0; j <= samples; j++) {
         const theta = (j / samples) * Math.PI * 2;
@@ -267,18 +290,38 @@ export function generateUVHatchLines(
           pts.push(surfaceFn(u, v, surfaceParams));
         }
       }
-      if (pts.length >= 2) polylines3D.push(pts);
+      if (pts.length >= 2) {
+        polylines3D.push(pts);
+        lineMidUV.push({ u: uMid + r, v: vMid });
+      }
     }
   } else if (family === "hex") {
-    const perDir = Math.max(1, Math.floor(count / 3));
+    const perDir = Math.max(1, Math.floor(effectiveCount / 3));
     const angles = [0, Math.PI / 3, (2 * Math.PI) / 3];
     for (const a of angles) {
-      polylines3D.push(...generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange));
+      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange);
+      for (let i = 0; i < lines.length; i++) {
+        polylines3D.push(lines[i]);
+        const t = perDir > 1 ? i / (perDir - 1) : 0.5;
+        lineMidUV.push({
+          u: (uRange[0] + uRange[1]) / 2,
+          v: vRange[0] + t * (vRange[1] - vRange[0]),
+        });
+      }
     }
   } else if (family === "crosshatch") {
-    const perDir = Math.max(1, Math.floor(count / 2));
-    polylines3D.push(...generateDiagonalLines(surfaceFn, surfaceParams, angle, perDir, samples, uRange, vRange));
-    polylines3D.push(...generateDiagonalLines(surfaceFn, surfaceParams, angle + Math.PI / 2, perDir, samples, uRange, vRange));
+    const perDir = Math.max(1, Math.floor(effectiveCount / 2));
+    for (const a of [angle, angle + Math.PI / 2]) {
+      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange);
+      for (let i = 0; i < lines.length; i++) {
+        polylines3D.push(lines[i]);
+        const t = perDir > 1 ? i / (perDir - 1) : 0.5;
+        lineMidUV.push({
+          u: (uRange[0] + uRange[1]) / 2,
+          v: vRange[0] + t * (vRange[1] - vRange[0]),
+        });
+      }
+    }
   } else if (family === "spiral") {
     const uMid = (uRange[0] + uRange[1]) / 2;
     const vMid = (vRange[0] + vRange[1]) / 2;
@@ -288,8 +331,8 @@ export function generateUVHatchLines(
     const totalTurns = 4;
     const maxTheta = totalTurns * Math.PI * 2;
 
-    for (let i = 0; i < count; i++) {
-      const armOffset = (i / count) * Math.PI * 2;
+    for (let i = 0; i < effectiveCount; i++) {
+      const armOffset = (i / effectiveCount) * Math.PI * 2;
       const pts: THREE.Vector3[] = [];
       for (let j = 0; j <= samples; j++) {
         const theta = (j / samples) * maxTheta;
@@ -300,13 +343,16 @@ export function generateUVHatchLines(
           pts.push(surfaceFn(u, v, surfaceParams));
         }
       }
-      if (pts.length >= 2) polylines3D.push(pts);
+      if (pts.length >= 2) {
+        polylines3D.push(pts);
+        lineMidUV.push({ u: uMid, v: vMid });
+      }
     }
   } else if (family === "wave") {
     // Sinusoidal hatch lines — like v-constant lines but with sine modulation
     const vSpan = vRange[1] - vRange[0];
-    for (let i = 0; i < count; i++) {
-      const vBase = vRange[0] + (i / (count - 1)) * vSpan;
+    for (let i = 0; i < effectiveCount; i++) {
+      const vBase = vRange[0] + (i / (effectiveCount - 1)) * vSpan;
       const phaseShift = i * 0.3;
       const pts: THREE.Vector3[] = [];
       for (let j = 0; j <= samples; j++) {
@@ -317,7 +363,26 @@ export function generateUVHatchLines(
         pts.push(surfaceFn(u, vc, surfaceParams));
       }
       polylines3D.push(pts);
+      lineMidUV.push({ u: (uRange[0] + uRange[1]) / 2, v: vBase });
     }
+  }
+
+  // Post-process: density-based filtering (oversample-and-filter)
+  if (densityFn && polylines3D.length > 0) {
+    const filtered: THREE.Vector3[][] = [];
+    for (let i = 0; i < polylines3D.length; i++) {
+      const mid = lineMidUV[i];
+      if (!mid) {
+        filtered.push(polylines3D[i]);
+        continue;
+      }
+      const density = densityFn(mid.u, mid.v);
+      // Probabilistic keep: density 1 = always keep, density 0 = always drop
+      if (Math.random() < Math.max(0, Math.min(1, density))) {
+        filtered.push(polylines3D[i]);
+      }
+    }
+    polylines3D = filtered;
   }
 
   // Post-process: noise perturbation

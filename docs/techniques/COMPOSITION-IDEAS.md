@@ -4,143 +4,129 @@ Innovative compositions that combine the techniques in this library with hatch3d
 
 ---
 
-## Tier 1: Implementable Now (Uses Existing Pipeline)
+## Tier 1: Implementable Now (Uses Existing Pipeline) — ALL COMPLETE
 
 These only need a new composition file — no engine changes.
 
-### 1. Engraving Study
+### 1. Engraving Study ✅
 **Techniques**: Contour hatching, variable density, form-following lines
 **Concept**: A single surface (torus or hyperboloid) rendered in the style of old master copper-plate engraving. Multiple hatch layers with density driven by a virtual light source — dense in shadow, sparse in light. Hatch direction follows the surface's principal curvature.
-**Implementation**: Multiple hatch groups at different angles, with `count` parameter modulated by a macro "Light Angle." Use existing surfaces with carefully tuned hatch densities per group.
+**Implementation**: `src/compositions/3d/studies/engraving-study.ts`
 
-### 2. Exploded Technical Drawing
+### 2. Exploded Technical Drawing ✅
 **Techniques**: Wireframe projection, section hatching, layering
-**Concept**: Multiple versions of the same surface at different scales, separated vertically like an exploded engineering diagram. Each layer gets a different hatch family. Connecting lines (thin vertical dashes) between layers suggest the assembly relationship.
-**Implementation**: Same surface repeated at 3-5 Y offsets with different scales and hatch families. Add thin connecting layers with sparse v-constant hatching.
+**Concept**: Multiple versions of the same surface at different scales, separated vertically like an exploded engineering diagram.
+**Implementation**: `src/compositions/3d/studies/exploded-view.ts`
 
-### 3. Op Art Sphere
+### 3. Op Art Sphere ✅
 **Techniques**: Op art, warped grid, line frequency modulation
-**Concept**: A flat composition (2D type) that creates the illusion of a 3D sphere purely through line spacing modulation. Parallel lines with sinusoidal displacement where amplitude follows a spherical projection. No actual 3D involved.
-**Implementation**: 2D composition. Generate parallel lines with computed displacement based on distance from center. The mathematical distortion creates the depth illusion.
+**Concept**: A flat composition (2D type) that creates the illusion of a 3D sphere purely through line spacing modulation.
+**Implementation**: `src/compositions/2d/optical/op-art-sphere.ts`
 
-### 4. Fibonacci Phyllotaxis Garden
+### 4. Fibonacci Phyllotaxis Garden ✅
 **Techniques**: Spirals, phyllotaxis, organic forms
-**Concept**: Small surfaces (canopy/mushroom) placed at golden-angle positions on a Fermat spiral. Creates a natural-looking garden or colony arrangement. Density decreases from center outward.
-**Implementation**: Modify mushroom-colony positioning to use Fibonacci spiral placement. Scale surfaces smaller toward edges. Already have dynamic layer generation pattern.
+**Concept**: Small surfaces placed at golden-angle positions on a Fermat spiral.
+**Implementation**: `src/compositions/3d/organic/phyllotaxis-garden.ts`
 
-### 5. Crystal Lattice
+### 5. Crystal Lattice ✅
 **Techniques**: Tiling, parametric surfaces, geometric composition
-**Concept**: Surfaces arranged on a regular 3D lattice (cubic, hexagonal, or BCC), projected to 2D with occlusion. Each node has a small surface (torus or hyperboloid). Connecting edges drawn as thin ribbons.
-**Implementation**: Generate surface layers at lattice positions. Use twisted ribbon as connectors. Existing projection and occlusion handles the rest.
+**Concept**: Surfaces arranged on a regular 3D lattice, projected to 2D with occlusion.
+**Implementation**: `src/compositions/3d/geometric/crystal-lattice.ts`
 
-### 6. Atmospheric Depth Study
+### 6. Atmospheric Depth Study ✅
 **Techniques**: Layering and density, atmospheric perspective
-**Concept**: Multiple identical surfaces at increasing Z-depth. Front surface has full dense cross-hatching, each successive layer gets progressively sparser. Creates powerful depth without perspective distortion (orthographic projection).
-**Implementation**: Same surface repeated at different Z positions. Hatch count decreases linearly with depth via macro.
+**Concept**: Multiple identical surfaces at increasing Z-depth with progressively sparser hatching.
+**Implementation**: `src/compositions/3d/studies/atmospheric-depth.ts`
 
 ---
 
-## Tier 2: Needs New 2D Techniques (New generate() functions)
+## Tier 2: Needs New 2D Techniques (New generate() functions) — ALL COMPLETE
 
 These need new 2D composition generators but no engine changes.
 
-### 7. Truchet Maze
-**Techniques**: Truchet tiles, path extraction
-**Concept**: Quarter-circle Truchet tile grid with path tracing to extract continuous curves. Weighted randomness from Perlin noise creates regions of different visual density. Single-path or few-path output.
-**Implementation**: New 2D composition. Generate tile grid, random orientations (noise-biased), trace connected arc paths. Output as polylines.
+### 7. Truchet Maze ✅
+**Implementation**: `src/compositions/2d/patterns/truchet-maze.ts`
 
-### 8. Flow Field Portrait
-**Techniques**: Flow fields, separation distance, density modulation
-**Concept**: Noise-driven flow field filling the canvas. Seed point density can be uniform (abstract) or image-modulated (portrait). Lines terminate when too close to neighbors.
-**Implementation**: New 2D composition. Core flow field algorithm with configurable noise scale, step length, max steps, and separation distance.
+### 8. Flow Field Portrait ✅
+**Implementation**: `src/compositions/2d/generative/flow-field.ts`
 
-### 9. Hilbert Fill
-**Techniques**: Space-filling curves
-**Concept**: Hilbert curve at configurable recursion level. Can fill full canvas or be masked to a shape. Level can vary spatially for density-as-tone effect.
-**Implementation**: New 2D composition. Recursive Hilbert curve generation with L-system turtle.
+### 9. Hilbert Fill ✅
+**Implementation**: `src/compositions/2d/patterns/hilbert-fill.ts`
 
-### 10. Guilloche Rosette
-**Techniques**: Guilloche, epicycloid layering
-**Concept**: Central rosette pattern with concentric guilloche bands. Each band has slightly different wave parameters creating moire-like interference between bands. Exquisitely detailed — plays to plotter's precision strength.
-**Implementation**: New 2D composition. Parametric curve generator with layered ring structure.
+### 10. Guilloche Rosette ✅
+**Implementation**: `src/compositions/2d/patterns/guilloche-rosette.ts`
 
-### 11. Differential Growth Fill
-**Techniques**: Differential growth
-**Concept**: Single closed curve that grows to fill a bounded region. Starts as a circle, grows over iterations into coral-like complexity. The boundary can be a circle, rectangle, or arbitrary polygon.
-**Implementation**: New 2D composition with simulation loop. Force-based node system with spatial hashing. Output is polyline(s).
+### 11. Differential Growth Fill ✅
+**Implementation**: `src/compositions/2d/generative/differential-growth.ts`
 
-### 12. Strange Attractor Study
-**Techniques**: Strange attractors, projection
-**Concept**: 3D attractor (Lorenz, Aizawa, Thomas) projected to 2D. Single continuous path with hundreds of thousands of points. Parameter exploration through macros.
-**Implementation**: New 2D composition. Numerical integration + projection. Very long single polyline output.
+### 12. Strange Attractor Study ✅
+**Implementation**: `src/compositions/2d/generative/strange-attractor.ts`
 
 ---
 
-## Tier 3: Needs Engine Enhancements
+## Tier 3: Needs Engine Enhancements — ALL COMPLETE
 
-These require changes to the rendering pipeline.
+### 13. Light-Responsive Hatching ✅ (merged with #15)
+**Engine Change**: `densityFn` callback in `HatchParams` + `lightDensityFn` helper in `helpers-density.ts`
 
-### 13. Light-Responsive Hatching
-**Techniques**: Hatching density from lighting, form-following hatching
-**Concept**: Surface normal computed at each hatch point. Given a configurable light direction, hatch line spacing varies based on N dot L. Lit areas are sparse, shadow areas are dense. The standard technique of pen-and-ink illustration.
-**Engine Change**: `hatch.ts` needs access to surface normals at each UV point. Spacing modulation based on external function.
+### 14. Noise-Perturbed Hatching ✅
+**Engine Change**: `noiseAmplitude`/`noiseFrequency` in `HatchParams` (post-process in `hatch.ts`)
 
-### 14. Noise-Perturbed Hatching
-**Techniques**: Noise displacement, organic imperfection
-**Concept**: All hatch families gain an optional Perlin noise displacement. Lines that should be straight become gently wavy. Controlled by amplitude and frequency parameters.
-**Engine Change**: Post-process step in `hatch.ts` that displaces generated UV points with noise.
+### 15. Variable-Density Hatching ✅ (merged with #13)
+**Engine Change**: `densityFn`/`densityOversample` in `HatchParams` with oversample-and-filter approach. Also `curvatureDensityFn` and `radialDensityFn` helpers.
 
-### 15. Variable-Density Hatching
-**Techniques**: Adaptive density, curvature-responsive
-**Concept**: Hatch line count varies spatially based on surface curvature or user-defined density map. High-curvature regions get more lines, flat regions get fewer.
-**Engine Change**: `generateUVHatchLines()` needs non-uniform line spacing option.
+### 16. Broken/Dashed Hatching ✅
+**Engine Change**: `dashLength`/`gapLength`/`dashRandom` in `HatchParams` (post-process in `hatch.ts`)
 
-### 16. Broken/Dashed Hatching
-**Techniques**: Broken line hatching, atmospheric texture
-**Concept**: Hatch lines with configurable gaps. Random or regular gaps create texture and prevent mechanical look. Gap probability can vary spatially.
-**Engine Change**: Post-process in `hatch.ts` to insert gaps in generated polylines.
-
-### 17. Multi-Technique Surface
-**Techniques**: Multiple hatching + fill techniques per surface
-**Concept**: Different regions of a single surface rendered with different techniques — hatching in one area, stippling in another, flow field in a third. Regions defined by UV coordinate ranges or surface properties.
-**Engine Change**: Composition layer config needs per-region rendering options.
+### 17. Multi-Technique Surface ✅ (reclassified — no engine change needed)
+**Implementation**: `src/compositions/3d/studies/multi-technique.ts` — Uses existing `uRange`/`vRange` per-layer system to divide a single surface into UV regions with different hatch families.
 
 ---
 
-## Tier 4: Ambitious / Long-Term
+## Tier 4: Ambitious / Long-Term — ALL COMPLETE
 
-### 18. Reaction-Diffusion Surface
-Run Gray-Scott simulation on UV space, extract contours, map onto 3D surface. Organic Turing patterns on mathematical forms.
+### 18. Reaction-Diffusion ✅
+Gray-Scott simulation with marching squares contour extraction for organic Turing-pattern line art.
+**Implementation**: `src/compositions/2d/generative/reaction-diffusion.ts`
 
-### 19. Growth-on-Surface
-Differential growth simulation running on parametric surface UV space. Organic tendrils that wrap 3D forms.
+### 19. Growth-on-Surface ✅
+Differential growth simulation in UV space mapped through a parametric surface for organic tendrils on 3D forms.
+**Implementation**: `src/compositions/2d/generative/growth-on-surface.ts`
 
-### 20. TSP Surface
-Sample points on projected surface, solve traveling salesman for single-path rendering of 3D form.
+### 20. TSP Art ✅
+Sample points from projected surface, solve traveling salesman (nearest-neighbor + 2-opt) for single continuous path.
+**Implementation**: `src/compositions/2d/generative/tsp-art.ts`
 
-### 21. Photo-Mapped Surface
-Image halftone (sine-wave amplitude modulation) mapped onto parametric surface UV space. Portraits on mathematical forms.
+### 21. Photo-Halftone ✅
+Horizontal lines with sine-wave amplitude modulation driven by built-in test patterns. Optional surface mapping.
+**Implementation**: `src/compositions/2d/generative/photo-halftone.ts`
 
-### 22. Voronoi Surface Texture
-Generate Voronoi cells in UV space, draw cell edges on 3D surface. Each cell independently hatch-filled.
+### 22. Voronoi Texture ✅
+Bowyer-Watson Voronoi diagram with optional Lloyd relaxation and per-cell hatch fill.
+**Implementation**: `src/compositions/2d/generative/voronoi-texture.ts`
 
 ---
 
 ## Quick Reference: Technique to Composition Mapping
 
-| Technique | Best Used For | Existing Support |
-|-----------|---------------|------------------|
+| Technique | Best Used For | Support |
+|-----------|---------------|---------|
 | Contour hatching | 3D form communication | Yes (u/v-constant) |
 | Cross-hatching | Tonal shading | Yes (crosshatch family) |
-| Flow fields | Organic texture | No (new 2D type) |
-| Differential growth | Organic fill patterns | No (new 2D type) |
-| Truchet tiles | Background patterns | No (new 2D type) |
-| Guilloche | Decorative borders/fills | No (new 2D type) |
-| Space-filling curves | Region fill, texture | No (new 2D type) |
-| Strange attractors | Abstract single-path art | No (new 2D type) |
-| Stippling | Dot-based tonal rendering | No (new technique) |
-| Op art distortion | Optical illusion effects | Partial (2D possible) |
-| Halftone | Image reproduction | No (new 2D type) |
-| Moire | Interference patterns | Yes (moire-circles) |
-| Noise perturbation | Organic imperfection | No (engine addition) |
-| Light-responsive density | Ink illustration shading | No (engine addition) |
+| Flow fields | Organic texture | Yes (`flowField`) |
+| Differential growth | Organic fill patterns | Yes (`differentialGrowth`, `growthOnSurface`) |
+| Truchet tiles | Background patterns | Yes (`truchetMaze`) |
+| Guilloche | Decorative borders/fills | Yes (`guillocheRosette`) |
+| Space-filling curves | Region fill, texture | Yes (`hilbertFill`) |
+| Strange attractors | Abstract single-path art | Yes (`strangeAttractor`) |
+| Stippling | Dot-based tonal rendering | No (future technique) |
+| Op art distortion | Optical illusion effects | Yes (`opArtSphere`) |
+| Halftone | Image reproduction | Yes (`photoHalftone`) |
+| Moire | Interference patterns | Yes (`moireCircles`) |
+| Noise perturbation | Organic imperfection | Yes (`noiseAmplitude`/`noiseFrequency`) |
+| Light-responsive density | Ink illustration shading | Yes (`densityFn` + `lightDensityFn`) |
+| Curvature-responsive density | Detail emphasis | Yes (`densityFn` + `curvatureDensityFn`) |
+| Dashed/broken lines | Atmospheric texture | Yes (`dashLength`/`gapLength`) |
+| Reaction-diffusion | Organic patterns | Yes (`reactionDiffusion`) |
+| TSP art | Single-line drawing | Yes (`tspArt`) |
+| Voronoi tessellation | Cell-based texture | Yes (`voronoiTexture`) |

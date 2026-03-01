@@ -1,6 +1,7 @@
 import type { MacroFn, MacroDef, ControlDef } from "./types";
 
 export { lightModulatedLayers } from "./helpers-lighting";
+export { lightDensityFn, curvatureDensityFn, radialDensityFn } from "./helpers-density";
 
 export function applyMacroFn(fn: MacroFn, strength: number, macroValue: number): number {
   const delta = (macroValue - 0.5) * 2; // -1..1
