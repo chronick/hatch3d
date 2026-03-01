@@ -1,13 +1,24 @@
 import * as THREE from "three";
+import { createNoise2D } from "simplex-noise";
 import type { SurfaceFn } from "./surfaces";
 
 export interface HatchParams {
-  family?: "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral";
+  family?: "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral" | "wave";
   count?: number;
   samples?: number;
   uRange?: [number, number];
   vRange?: [number, number];
   angle?: number;
+  // Wave family parameters
+  waveAmplitude?: number;
+  waveFrequency?: number;
+  // Noise perturbation (post-process, applies to all families)
+  noiseAmplitude?: number;
+  noiseFrequency?: number;
+  // Dashed/broken lines (post-process, applies to all families)
+  dashLength?: number;
+  gapLength?: number;
+  dashRandom?: number;
 }
 
 /**
@@ -56,6 +67,143 @@ function generateDiagonalLines(
   return lines;
 }
 
+/**
+ * Post-process: apply Perlin noise displacement perpendicular to each line's direction.
+ * Adds organic imperfection to otherwise-regular hatch lines.
+ */
+function applyNoiseDisplacement(
+  polylines: THREE.Vector3[][],
+  amplitude: number,
+  frequency: number,
+): void {
+  const noise2D = createNoise2D();
+
+  for (let lineIdx = 0; lineIdx < polylines.length; lineIdx++) {
+    const pts = polylines[lineIdx];
+    for (let i = 0; i < pts.length; i++) {
+      // Compute perpendicular direction from adjacent points
+      let dx: number, dy: number, dz: number;
+      if (i === 0 && pts.length > 1) {
+        dx = pts[1].x - pts[0].x;
+        dy = pts[1].y - pts[0].y;
+        dz = pts[1].z - pts[0].z;
+      } else if (i === pts.length - 1 && pts.length > 1) {
+        dx = pts[i].x - pts[i - 1].x;
+        dy = pts[i].y - pts[i - 1].y;
+        dz = pts[i].z - pts[i - 1].z;
+      } else {
+        dx = pts[i + 1].x - pts[i - 1].x;
+        dy = pts[i + 1].y - pts[i - 1].y;
+        dz = pts[i + 1].z - pts[i - 1].z;
+      }
+
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (len < 1e-8) continue;
+
+      // Perpendicular in the XY plane (primary view)
+      const perpX = -dy / len;
+      const perpY = dx / len;
+      const perpZ = 0;
+
+      // Noise offset, seeded by line index for variation between lines
+      const n = noise2D(
+        pts[i].x * frequency + lineIdx * 0.1,
+        pts[i].y * frequency,
+      );
+      const offset = amplitude * n;
+
+      pts[i] = new THREE.Vector3(
+        pts[i].x + perpX * offset,
+        pts[i].y + perpY * offset,
+        pts[i].z + perpZ * offset,
+      );
+    }
+  }
+}
+
+/**
+ * Post-process: split polylines into dash segments with optional random variation.
+ */
+function applyDashing(
+  polylines: THREE.Vector3[][],
+  dashLength: number,
+  gapLength: number,
+  dashRandom: number,
+): THREE.Vector3[][] {
+  const result: THREE.Vector3[][] = [];
+
+  for (const pts of polylines) {
+    if (pts.length < 2) {
+      result.push(pts);
+      continue;
+    }
+
+    // Walk along the polyline measuring cumulative arc length
+    let drawing = true;
+    let remaining = randomize(dashLength, dashRandom);
+    let current: THREE.Vector3[] = [pts[0].clone()];
+
+    for (let i = 1; i < pts.length; i++) {
+      const dx = pts[i].x - pts[i - 1].x;
+      const dy = pts[i].y - pts[i - 1].y;
+      const dz = pts[i].z - pts[i - 1].z;
+      let segLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      let consumed = 0;
+
+      while (consumed < segLen) {
+        const step = Math.min(remaining, segLen - consumed);
+        const t = (consumed + step) / segLen;
+
+        // Interpolated point along this segment
+        const interp = new THREE.Vector3(
+          pts[i - 1].x + dx * t,
+          pts[i - 1].y + dy * t,
+          pts[i - 1].z + dz * t,
+        );
+
+        if (drawing) {
+          current.push(interp);
+        }
+
+        consumed += step;
+        remaining -= step;
+
+        if (remaining <= 0) {
+          if (drawing && current.length >= 2) {
+            result.push(current);
+          }
+          drawing = !drawing;
+          remaining = drawing
+            ? randomize(dashLength, dashRandom)
+            : randomize(gapLength, dashRandom);
+          if (drawing) {
+            current = [interp.clone()];
+          } else {
+            current = [];
+          }
+        }
+      }
+
+      // If we're drawing and haven't switched yet, add the endpoint
+      if (drawing && consumed >= segLen) {
+        // Already added interpolated point at end
+      }
+    }
+
+    // Flush remaining drawn segment
+    if (drawing && current.length >= 2) {
+      result.push(current);
+    }
+  }
+
+  return result;
+}
+
+function randomize(base: number, randomness: number): number {
+  if (randomness <= 0) return base;
+  return base * (1 + (Math.random() * 2 - 1) * randomness);
+}
+
 export function generateUVHatchLines(
   surfaceFn: SurfaceFn,
   surfaceParams: Record<string, number>,
@@ -68,9 +216,16 @@ export function generateUVHatchLines(
     uRange = [0, 1],
     vRange = [0, 1],
     angle = 0,
+    waveAmplitude = 0.05,
+    waveFrequency = 6,
+    noiseAmplitude,
+    noiseFrequency,
+    dashLength,
+    gapLength,
+    dashRandom = 0,
   } = hatchParams;
 
-  const polylines3D: THREE.Vector3[][] = [];
+  let polylines3D: THREE.Vector3[][] = [];
 
   if (family === "u") {
     for (let i = 0; i < count; i++) {
@@ -147,6 +302,32 @@ export function generateUVHatchLines(
       }
       if (pts.length >= 2) polylines3D.push(pts);
     }
+  } else if (family === "wave") {
+    // Sinusoidal hatch lines — like v-constant lines but with sine modulation
+    const vSpan = vRange[1] - vRange[0];
+    for (let i = 0; i < count; i++) {
+      const vBase = vRange[0] + (i / (count - 1)) * vSpan;
+      const phaseShift = i * 0.3;
+      const pts: THREE.Vector3[] = [];
+      for (let j = 0; j <= samples; j++) {
+        const u = uRange[0] + (j / samples) * (uRange[1] - uRange[0]);
+        const v = vBase + waveAmplitude * Math.sin(u * waveFrequency * Math.PI * 2 + phaseShift);
+        // Clamp v to range
+        const vc = Math.max(vRange[0], Math.min(vRange[1], v));
+        pts.push(surfaceFn(u, vc, surfaceParams));
+      }
+      polylines3D.push(pts);
+    }
+  }
+
+  // Post-process: noise perturbation
+  if (noiseAmplitude && noiseAmplitude > 0 && noiseFrequency && noiseFrequency > 0) {
+    applyNoiseDisplacement(polylines3D, noiseAmplitude, noiseFrequency);
+  }
+
+  // Post-process: dashed lines
+  if (dashLength && dashLength > 0 && gapLength && gapLength > 0) {
+    polylines3D = applyDashing(polylines3D, dashLength, gapLength, dashRandom);
   }
 
   return polylines3D;

@@ -35,14 +35,14 @@ const ribbonCage: Composition3DDefinition = {
     },
   },
   controls: {
-    ribbons: { type: "slider", label: "Ribbons", default: 6, min: 2, max: 12, step: 1, group: "Structure" },
-    cageRadius: { type: "slider", label: "Cage Radius", default: 0.3, min: 0.05, max: 1.5, group: "Structure" },
-    baseTwist: { type: "slider", label: "Base Twist", default: 1.5, min: 0.3, max: 4, group: "Shape" },
-    twistVariation: { type: "slider", label: "Twist Variation", default: 0.8, min: 0, max: 2, group: "Shape" },
-    width: { type: "slider", label: "Width", default: 0.5, min: 0.2, max: 1.5, group: "Shape" },
-    height: { type: "slider", label: "Height", default: 4.5, min: 2, max: 7, group: "Shape" },
-    baseBulge: { type: "slider", label: "Base Bulge", default: 0.15, min: 0, max: 0.5, group: "Shape" },
-    bulgeProgression: { type: "slider", label: "Bulge Growth", default: 0.05, min: 0, max: 0.15, group: "Shape" },
+    ribbons: { type: "slider", label: "Ribbons", default: 6, min: 2, max: 30, step: 1, group: "Structure" },
+    cageRadius: { type: "slider", label: "Cage Radius", default: 0.3, min: 0.05, max: 4.0, group: "Structure" },
+    baseTwist: { type: "slider", label: "Base Twist", default: 1.5, min: 0.3, max: 10, group: "Shape" },
+    twistVariation: { type: "slider", label: "Twist Variation", default: 0.8, min: 0, max: 6, group: "Shape" },
+    width: { type: "slider", label: "Width", default: 0.5, min: 0.2, max: 4.0, group: "Shape" },
+    height: { type: "slider", label: "Height", default: 4.5, min: 2, max: 15, group: "Shape" },
+    baseBulge: { type: "slider", label: "Base Bulge", default: 0.15, min: 0, max: 1.0, group: "Shape" },
+    bulgeProgression: { type: "slider", label: "Bulge Growth", default: 0.05, min: 0, max: 0.5, group: "Shape" },
   },
   layers: (p): LayerConfig[] => {
     const v = p.values;

@@ -22,9 +22,9 @@ const spirograph: Composition2DDefinition = {
     outerR: { type: "slider", label: "Outer Radius", default: 300, min: 100, max: 380, step: 1, group: "Shape" },
     innerR: { type: "slider", label: "Inner Radius", default: 180, min: 20, max: 350, step: 1, group: "Shape" },
     penOffset: { type: "slider", label: "Pen Offset", default: 120, min: 10, max: 300, step: 1, group: "Shape" },
-    revolutions: { type: "slider", label: "Revolutions", default: 50, min: 5, max: 150, step: 1, group: "Shape" },
-    samples: { type: "slider", label: "Samples", default: 2000, min: 500, max: 6000, step: 50, group: "Quality" },
-    layers: { type: "slider", label: "Layers", default: 1, min: 1, max: 6, step: 1, group: "Layers" },
+    revolutions: { type: "slider", label: "Revolutions", default: 50, min: 5, max: 300, step: 1, group: "Shape" },
+    samples: { type: "slider", label: "Samples", default: 2000, min: 500, max: 15000, step: 50, group: "Quality" },
+    layers: { type: "slider", label: "Layers", default: 1, min: 1, max: 20, step: 1, group: "Layers" },
     layerOffset: { type: "slider", label: "Layer Offset", default: 20, min: 5, max: 80, step: 1, group: "Layers" },
     mode: {
       type: "select",

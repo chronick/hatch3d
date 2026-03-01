@@ -36,7 +36,7 @@ const explodedView: Composition3DDefinition = {
       label: "Tiers",
       default: 4,
       min: 2,
-      max: 6,
+      max: 20,
       step: 1,
       group: "Structure",
     },
@@ -45,7 +45,7 @@ const explodedView: Composition3DDefinition = {
       label: "Tier Spacing",
       default: 2.5,
       min: 1.0,
-      max: 5.0,
+      max: 12.0,
       group: "Structure",
     },
     scaleDecay: {
@@ -62,7 +62,7 @@ const explodedView: Composition3DDefinition = {
       label: "Base Radius",
       default: 2.0,
       min: 0.8,
-      max: 3.5,
+      max: 6.0,
       group: "Shape",
     },
     baseHeight: {
@@ -70,7 +70,7 @@ const explodedView: Composition3DDefinition = {
       label: "Base Height",
       default: 2.5,
       min: 1.0,
-      max: 4.0,
+      max: 8.0,
       group: "Shape",
     },
     twist: {
@@ -78,7 +78,7 @@ const explodedView: Composition3DDefinition = {
       label: "Twist",
       default: 1.2,
       min: 0,
-      max: 4.0,
+      max: 10.0,
       group: "Shape",
     },
     waist: {
@@ -94,7 +94,7 @@ const explodedView: Composition3DDefinition = {
       label: "Hatch Lines",
       default: 25,
       min: 8,
-      max: 60,
+      max: 150,
       step: 1,
       group: "Hatching",
     },

@@ -3,8 +3,8 @@ import { compositionRegistry, is2DComposition } from "../compositions";
 import type { Composition3DDefinition, Composition2DDefinition } from "../compositions/types";
 
 describe("Composition registry completeness", () => {
-  it("has at least 13 compositions registered", () => {
-    expect(compositionRegistry.size).toBeGreaterThanOrEqual(13);
+  it("has at least 19 compositions registered", () => {
+    expect(compositionRegistry.size).toBeGreaterThanOrEqual(19);
   });
 
   it("contains all expected composition IDs", () => {
@@ -13,6 +13,8 @@ describe("Composition registry completeness", () => {
       "ribbonCage", "dnaHelix", "totemStack", "starburst",
       "mushroomColony", "nestedShells", "vortexTunnel",
       "moireCircles", "spirograph", "lissajous",
+      "flowField", "strangeAttractor", "truchetMaze",
+      "guillocheRosette", "hilbertFill", "differentialGrowth",
     ];
     for (const id of expectedIds) {
       expect(compositionRegistry.has(id)).toBe(true);

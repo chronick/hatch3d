@@ -8,10 +8,10 @@ const moireCircles: Composition2DDefinition = {
   category: "2d",
   type: "2d",
   controls: {
-    rings: { type: "slider", label: "Rings", default: 40, min: 10, max: 80, step: 1, group: "Structure" },
+    rings: { type: "slider", label: "Rings", default: 40, min: 10, max: 200, step: 1, group: "Structure" },
     centerOffsetX: { type: "slider", label: "Offset X", default: 60, min: -200, max: 200, step: 1, group: "Structure" },
     centerOffsetY: { type: "slider", label: "Offset Y", default: 40, min: -200, max: 200, step: 1, group: "Structure" },
-    smoothness: { type: "slider", label: "Smoothness", default: 120, min: 36, max: 240, step: 1, group: "Shape" },
+    smoothness: { type: "slider", label: "Smoothness", default: 120, min: 36, max: 500, step: 1, group: "Shape" },
     showSecond: { type: "toggle", label: "Second Set", default: true, group: "Shape" },
   },
   generate({ width, height, values }) {

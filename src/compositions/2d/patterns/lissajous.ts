@@ -8,13 +8,13 @@ const lissajous: Composition2DDefinition = {
   category: "2d",
   type: "2d",
   controls: {
-    freqX: { type: "slider", label: "Freq X", default: 3, min: 1, max: 12, step: 1, group: "Shape" },
-    freqY: { type: "slider", label: "Freq Y", default: 4, min: 1, max: 12, step: 1, group: "Shape" },
+    freqX: { type: "slider", label: "Freq X", default: 3, min: 1, max: 30, step: 1, group: "Shape" },
+    freqY: { type: "slider", label: "Freq Y", default: 4, min: 1, max: 30, step: 1, group: "Shape" },
     phase: { type: "slider", label: "Phase", default: 0.5, min: 0, max: Math.PI, step: 0.01, group: "Shape" },
     amplitude: { type: "slider", label: "Amplitude", default: 350, min: 100, max: 390, step: 1, group: "Shape" },
-    layers: { type: "slider", label: "Layers", default: 5, min: 1, max: 12, step: 1, group: "Layers" },
+    layers: { type: "slider", label: "Layers", default: 5, min: 1, max: 30, step: 1, group: "Layers" },
     phaseStep: { type: "slider", label: "Phase Step", default: 0.15, min: 0.01, max: 0.5, step: 0.01, group: "Layers" },
-    samples: { type: "slider", label: "Samples", default: 1000, min: 200, max: 4000, step: 50, group: "Quality" },
+    samples: { type: "slider", label: "Samples", default: 1000, min: 200, max: 10000, step: 50, group: "Quality" },
     damping: { type: "slider", label: "Damping", default: 0, min: 0, max: 0.5, step: 0.01, group: "Shape" },
   },
   generate({ width, height, values }) {

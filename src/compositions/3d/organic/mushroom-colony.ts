@@ -32,13 +32,13 @@ const mushroomColony: Composition3DDefinition = {
     },
   },
   controls: {
-    count: { type: "slider", label: "Count", default: 5, min: 1, max: 9, step: 1, group: "Structure" },
-    colonySpread: { type: "slider", label: "Colony Spread", default: 2.2, min: 0.5, max: 4, group: "Structure" },
-    capSize: { type: "slider", label: "Cap Size", default: 1.0, min: 0.3, max: 2, group: "Shape" },
-    stemHeight: { type: "slider", label: "Stem Height", default: 2.5, min: 0.5, max: 4, group: "Shape" },
-    stemTwist: { type: "slider", label: "Stem Twist", default: 0.2, min: 0, max: 1.5, group: "Shape" },
+    count: { type: "slider", label: "Count", default: 5, min: 1, max: 25, step: 1, group: "Structure" },
+    colonySpread: { type: "slider", label: "Colony Spread", default: 2.2, min: 0.5, max: 10, group: "Structure" },
+    capSize: { type: "slider", label: "Cap Size", default: 1.0, min: 0.3, max: 5, group: "Shape" },
+    stemHeight: { type: "slider", label: "Stem Height", default: 2.5, min: 0.5, max: 10, group: "Shape" },
+    stemTwist: { type: "slider", label: "Stem Twist", default: 0.2, min: 0, max: 5, group: "Shape" },
     stemWaist: { type: "slider", label: "Stem Waist", default: 0.55, min: 0.1, max: 0.9, group: "Shape" },
-    capSharpness: { type: "slider", label: "Cap Sharpness", default: 5, min: 2, max: 10, group: "Shape" },
+    capSharpness: { type: "slider", label: "Cap Sharpness", default: 5, min: 2, max: 20, group: "Shape" },
     capSag: { type: "slider", label: "Cap Sag", default: 0.5, min: 0.1, max: 1, group: "Shape" },
     colonyOffset: { type: "xy", label: "Colony Offset", default: [0, 0], min: -1.5, max: 1.5, group: "Position" },
   },
@@ -54,8 +54,8 @@ const mushroomColony: Composition3DDefinition = {
     const capSag = v.capSag as number;
     const colonyOffset = v.colonyOffset as [number, number];
 
-    // Deterministic positions for up to 9 mushrooms
-    const positions = [
+    // Deterministic positions — procedurally generated for any count
+    const positions: { x: number; z: number; s: number; h: number }[] = [
       { x: 0, z: 0, s: 1.0, h: 1.0 },
       { x: 1.0, z: 0.23, s: 0.6, h: 0.6 },
       { x: -0.82, z: 0.45, s: 0.7, h: 0.72 },
@@ -66,6 +66,19 @@ const mushroomColony: Composition3DDefinition = {
       { x: 0.2, z: 0.95, s: 0.5, h: 0.5 },
       { x: -0.5, z: 0.85, s: 0.35, h: 0.3 },
     ];
+    // Generate additional positions using golden angle for counts > 9
+    const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+    for (let i = positions.length; i < mushroomCount; i++) {
+      const angle = i * GOLDEN_ANGLE;
+      const r = 0.3 + 0.7 * Math.sqrt(i / mushroomCount);
+      const sizeFactor = 0.2 + 0.4 * (1 - i / mushroomCount);
+      positions.push({
+        x: r * Math.cos(angle),
+        z: r * Math.sin(angle),
+        s: sizeFactor,
+        h: sizeFactor * 0.9,
+      });
+    }
 
     const layers: LayerConfig[] = [];
     for (let i = 0; i < mushroomCount && i < positions.length; i++) {
