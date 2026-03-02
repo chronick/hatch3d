@@ -159,7 +159,6 @@ const crystalLattice: Composition3DDefinition = {
 
     // Add connectors along each axis between adjacent nodes
     if (showConnectors) {
-      const dim = 2 * gridSize + 1;
       for (let ix = -gridSize; ix <= gridSize; ix++) {
         for (let iy = -gridSize; iy <= gridSize; iy++) {
           for (let iz = -gridSize; iz <= gridSize; iz++) {

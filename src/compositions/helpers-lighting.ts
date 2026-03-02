@@ -32,7 +32,6 @@ export function lightModulatedLayers(
   const ly = lightDir[1] / lLen;
   const lz = lightDir[2] / lLen;
 
-  const uSpan = uRange[1] - uRange[0];
   const vSpan = vRange[1] - vRange[0];
   const epsilon = 0.001;
 
