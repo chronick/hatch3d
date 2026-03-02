@@ -19,7 +19,7 @@ export const MacroSlider = memo(function MacroSlider({
         step={0.01}
         value={value}
         onChange={(e) => onChange(parseFloat(e.target.value))}
-        style={{ flex: 1, accentColor: "var(--accent-color)", height: 2 }}
+        style={{ flex: 1 }}
       />
       <span style={{ width: 44, textAlign: "right", color: "var(--fg-dim)", fontSize: 10, flexShrink: 0 }}>
         {value.toFixed(2)}

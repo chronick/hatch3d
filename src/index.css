@@ -44,3 +44,44 @@ body {
   margin: 0;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Custom range inputs — monotone across all browsers */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  height: 16px;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--fg-dim);
+  border-radius: 1px;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg);
+  border: none;
+  margin-top: -5px;
+}
+
+input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: var(--fg-dim);
+  border-radius: 1px;
+  border: none;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg);
+  border: none;
+}
