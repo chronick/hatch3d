@@ -784,8 +784,10 @@ export default function App() {
         <div
           style={{
             width: 280,
+            minWidth: 280,
             padding: "14px 18px",
             overflowY: "auto",
+            overflowX: "hidden",
             borderRight: "1px solid var(--border)",
             fontSize: 11,
             display: "flex",
@@ -1038,8 +1040,10 @@ export default function App() {
           <div
             style={{
               width: 280,
+              minWidth: 280,
               padding: "14px 18px",
               overflowY: "auto",
+              overflowX: "hidden",
               borderRight: "1px solid var(--border)",
               fontSize: 11,
               display: "flex",
