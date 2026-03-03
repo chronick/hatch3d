@@ -14,8 +14,14 @@ export function renderDepthBuffer(
   height: number
 ): DepthBuffer {
   const renderer = new THREE.WebGLRenderer({ antialias: false });
-  renderer.setSize(width, height);
   renderer.setPixelRatio(1);
+  renderer.setSize(width, height);
+
+  // Force linear output so the depth shader values are stored as-is (no sRGB gamma).
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+  // Clear to transparent — alpha=0 marks "no mesh data" pixels.
+  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
 
   const depthScene = new THREE.Scene();
   const depthVisMat = new THREE.ShaderMaterial({
@@ -42,8 +48,11 @@ export function renderDepthBuffer(
     depthScene.add(new THREE.Mesh(geo, depthVisMat));
   }
 
-  const colorTarget = new THREE.WebGLRenderTarget(width, height);
+  const colorTarget = new THREE.WebGLRenderTarget(width, height, {
+    colorSpace: THREE.LinearSRGBColorSpace,
+  });
   renderer.setRenderTarget(colorTarget);
+  renderer.setViewport(0, 0, width, height);
   renderer.render(depthScene, camera);
 
   const colorPixels = new Uint8Array(width * height * 4);
@@ -60,8 +69,17 @@ function sampleDepthBuffer(depthBuffer: DepthBuffer, x: number, y: number): numb
   const { depthData, width, height } = depthBuffer;
   const px = Math.round(x);
   const py = Math.round(height - 1 - y);
-  if (px < 0 || px >= width || py < 0 || py >= height) return 1.0;
+
+  // Out-of-bounds → treat as occluded (depth 0 = very close).
+  // This hides lines that fall outside the camera frustum, where we
+  // have no depth data to produce correct occlusion.
+  if (px < 0 || px >= width || py < 0 || py >= height) return 0.0;
+
   const idx = (py * width + px) * 4;
+
+  // Alpha < 128 means the clear value (no mesh rendered here) → far depth
+  if (depthData[idx + 3] < 128) return 1.0;
+
   return depthData[idx + 2] / 255.0;
 }
 

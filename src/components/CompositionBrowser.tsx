@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from "react";
 import { compositionRegistry } from "../compositions/registry";
 import { is2DComposition, type CompositionDefinition } from "../compositions/types";
 import { tagStyle } from "./styles";
+import { TagSelect } from "./TagSelect";
 
 const FAVORITES_KEY = "hatch3d-favorites";
 const TREE_STATE_KEY = "hatch3d-tree-state";
@@ -332,36 +333,15 @@ export function CompositionBrowser({
       />
 
       {/* Tag filter (multi-select, AND logic) */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 3, alignItems: "center" }}>
-        {allTags.map((tag) => (
-          <button
-            key={tag}
-            onClick={() => toggleTag(tag)}
-            style={{
-              ...tagStyle,
-              padding: "1px 5px",
-              fontSize: 8,
-              background: selectedTags.has(tag) ? "var(--fg)" : "transparent",
-              color: selectedTags.has(tag) ? "var(--bg-canvas)" : "var(--fg)",
-            }}
-          >
-            {tag}
-          </button>
-        ))}
-        {selectedTags.size > 0 && (
-          <button
-            onClick={() => setSelectedTags(new Set())}
-            style={{
-              ...tagStyle,
-              padding: "1px 5px",
-              fontSize: 8,
-              opacity: 0.5,
-            }}
-          >
-            clear
-          </button>
-        )}
-        <div style={{ flex: 1 }} />
+      <div style={{ display: "flex", gap: 4, alignItems: "stretch" }}>
+        <div style={{ flex: 1 }}>
+          <TagSelect
+            allTags={allTags}
+            selectedTags={selectedTags}
+            onToggleTag={toggleTag}
+            onClearAll={() => setSelectedTags(new Set())}
+          />
+        </div>
         <button
           onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
           title="Show favorites only"

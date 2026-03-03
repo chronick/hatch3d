@@ -5,6 +5,7 @@ import { SURFACES } from "./surfaces";
 import { generateUVHatchLines, type HatchParams } from "./hatch";
 import { projectPolylines, polylinesToSVGPaths, buildSurfaceMesh } from "./projection";
 import { renderDepthBuffer, clipPolylineByDepth } from "./occlusion";
+import { filterByProjectedDensity } from "./density";
 import {
   compositionRegistry,
   type Composition3DDefinition,
@@ -40,6 +41,9 @@ const BORDER_STYLES: Record<string, string> = {
   cropmarks: "Crop marks",
 };
 
+const DOUBLE_BORDER_INSET = 2;
+
+const THEME_KEY = "hatch3d-theme";
 const STORAGE_KEY = "hatch3d-state";
 const COMP_VALUES_KEY = "hatch3d-comp-values";
 const MACRO_VALUES_KEY = "hatch3d-macro-values";
@@ -75,6 +79,9 @@ const DEFAULTS = {
   margin: 15,
   borderEnabled: false,
   borderStyle: "simple" as "simple" | "double" | "ticked" | "cropmarks",
+  densityFilterEnabled: false,
+  densityMax: 20,
+  densityCellSize: 40,
 };
 
 /** Load saved state, keeping only keys that exist in DEFAULTS with matching type. */
@@ -144,6 +151,11 @@ export default function App() {
   const [borderEnabled, setBorderEnabled] = useState(INITIAL.borderEnabled);
   const [borderStyle, setBorderStyle] = useState(INITIAL.borderStyle);
 
+  // Density filter
+  const [densityFilterEnabled, setDensityFilterEnabled] = useState(INITIAL.densityFilterEnabled);
+  const [densityMax, setDensityMax] = useState(INITIAL.densityMax);
+  const [densityCellSize, setDensityCellSize] = useState(INITIAL.densityCellSize);
+
   // Layout: controls panel mode
   const [controlsPanel, setControlsPanel] = useState(INITIAL.controlsPanel);
 
@@ -179,6 +191,24 @@ export default function App() {
     };
     window.addEventListener("resize", handler);
     return () => { window.removeEventListener("resize", handler); clearTimeout(timer); };
+  }, []);
+
+  // Theme toggle (auto / light / dark)
+  const [theme, setTheme] = useState<"auto" | "light" | "dark">(() => {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved === "light" || saved === "dark" ? saved : "auto";
+  });
+  useEffect(() => {
+    if (theme === "auto") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", theme);
+    }
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  const cycleTheme = useCallback(() => {
+    setTheme(prev => prev === "auto" ? "light" : prev === "light" ? "dark" : "auto");
   }, []);
 
   // Current composition helpers — use registry
@@ -278,6 +308,7 @@ export default function App() {
     camTheta, camPhi, camDist, camOrtho, panX, panY,
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
+    densityFilterEnabled, densityMax, densityCellSize,
   }), [
     surfaceKey, compositionKey, controlsPanel,
     paramA, paramB, paramC, paramD,
@@ -286,6 +317,7 @@ export default function App() {
     camTheta, camPhi, camDist, camOrtho, panX, panY,
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
+    densityFilterEnabled, densityMax, densityCellSize,
   ]);
   useEffect(() => {
     clearTimeout(persistTimer.current);
@@ -307,6 +339,7 @@ export default function App() {
     camTheta, camPhi, camDist, camOrtho, panX, panY,
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
+    densityFilterEnabled, densityMax, densityCellSize,
     compValues, macroValues, hatchGroupValues,
   }), [
     surfaceKey, compositionKey,
@@ -316,6 +349,7 @@ export default function App() {
     camTheta, camPhi, camDist, camOrtho, panX, panY,
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
+    densityFilterEnabled, densityMax, densityCellSize,
     compValues, macroValues, hatchGroupValues,
   ]);
 
@@ -346,6 +380,9 @@ export default function App() {
     setMargin(snap.margin);
     setBorderEnabled(snap.borderEnabled);
     setBorderStyle(snap.borderStyle);
+    setDensityFilterEnabled(snap.densityFilterEnabled);
+    setDensityMax(snap.densityMax);
+    setDensityCellSize(snap.densityCellSize);
     setCompValues(snap.compValues);
     setMacroValues(snap.macroValues);
     setHatchGroupValues(snap.hatchGroupValues);
@@ -422,6 +459,9 @@ export default function App() {
     return generateBorderPaths(borderStyle, exportLayout.pageW, exportLayout.pageH, margin, strokeWidth);
   }, [borderEnabled, borderStyle, exportLayout, margin, strokeWidth]);
 
+  // Inset clip rect for double border so hatch lines clip at the inner edge
+  const clipInset = borderEnabled && borderStyle === "double" ? DOUBLE_BORDER_INSET : 0;
+
   // Map generic sliders to surface-specific params
   const surfaceParams = useMemo(() => {
     const s = SURFACES[surfaceKey];
@@ -442,7 +482,12 @@ export default function App() {
   const { svgPaths, meshPaths, stats } = useMemo(() => {
     // 2D pipeline: generate polylines directly, skip surfaces/camera/occlusion
     if (is2DComposition(comp)) {
-      const polylines2D = comp.generate({ width, height, values: resolvedValues });
+      let polylines2D = comp.generate({ width, height, values: resolvedValues });
+      if (densityFilterEnabled) {
+        polylines2D = filterByProjectedDensity(polylines2D, {
+          maxDensity: densityMax, cellSize: densityCellSize, width, height,
+        });
+      }
       const paths = polylinesToSVGPaths(polylines2D);
       return {
         svgPaths: paths,
@@ -493,10 +538,8 @@ export default function App() {
       }
     }
 
-    let allPaths: string[] = [];
     const allMeshPaths: string[] = [];
-    let totalLines = 0;
-    let totalVerts = 0;
+    let allPolylines2D: { x: number; y: number }[][] = [];
 
     const meshGeometries: THREE.BufferGeometry[] = [];
 
@@ -530,13 +573,7 @@ export default function App() {
       );
 
       const projected = projectPolylines(polylines3D, threeCamera, width, height);
-
-      for (const pl of projected) {
-        const paths = polylinesToSVGPaths([pl]);
-        allPaths.push(...paths);
-        totalLines++;
-        totalVerts += pl.length;
-      }
+      allPolylines2D.push(...projected);
 
       if (showMesh) {
         const pos = meshGeo.getAttribute("position");
@@ -566,13 +603,47 @@ export default function App() {
 
     if (useOcclusion && meshGeometries.length > 0) {
       try {
-        const depthBuffer = renderDepthBuffer(
-          meshGeometries,
-          threeCamera,
-          depthRes,
-          depthRes
-        );
-        const occludedPaths: string[] = [];
+        // Extend the depth-buffer camera to cover the full visible page area,
+        // not just the square rendering viewport. Without this, occlusion only
+        // works within a center square and lines outside it get cut off.
+        const { contentW, contentH, scale: fitScale } = exportLayout;
+        const extRatioW = Math.max(1, contentW / (fitScale * width));
+        const extRatioH = Math.max(1, contentH / (fitScale * height));
+        const depthW = Math.ceil(depthRes * extRatioW);
+        const depthH = Math.ceil(depthRes * extRatioH);
+
+        // Build extended camera with wider FOV / bounds
+        let extCamera: THREE.Camera;
+        const pos = threeCamera.position.clone();
+        if (camOrtho) {
+          const oc = threeCamera as THREE.OrthographicCamera;
+          const extOc = new THREE.OrthographicCamera(
+            oc.left * extRatioW, oc.right * extRatioW,
+            oc.top * extRatioH, oc.bottom * extRatioH,
+            oc.near, oc.far
+          );
+          extOc.position.copy(pos);
+          extCamera = extOc;
+        } else {
+          const pc = threeCamera as THREE.PerspectiveCamera;
+          const origHalfVFOV = (pc.fov / 2) * Math.PI / 180;
+          const extVFOV = 2 * Math.atan(Math.tan(origHalfVFOV) * extRatioH) * 180 / Math.PI;
+          const extAspect = (width * extRatioW) / (height * extRatioH);
+          const extPc = new THREE.PerspectiveCamera(extVFOV, extAspect, pc.near, pc.far);
+          extPc.position.copy(pos);
+          extCamera = extPc;
+        }
+        extCamera.lookAt(panX, panY, 0);
+        extCamera.updateMatrixWorld();
+        (extCamera as THREE.PerspectiveCamera | THREE.OrthographicCamera).updateProjectionMatrix();
+
+        const depthBuffer = renderDepthBuffer(meshGeometries, extCamera, depthW, depthH);
+
+        // Offset to convert from extended buffer coords back to rendering viewport coords
+        const offsetX = (depthW - depthRes) / 2;
+        const offsetY = (depthH - depthRes) / 2;
+
+        const occludedPolylines: { x: number; y: number }[][] = [];
         for (const layer of layers) {
           const sf = SURFACES[layer.surface];
           const lParams = layer.params || surfaceParams;
@@ -590,32 +661,39 @@ export default function App() {
             layer.hatch
           );
 
-          const projected = projectPolylines(
-            polylines3D,
-            threeCamera,
-            depthRes,
-            depthRes
-          );
+          // Project with extended camera at extended resolution
+          const projected = projectPolylines(polylines3D, extCamera, depthW, depthH);
 
           for (const pl of projected) {
             const visibleSegments = clipPolylineByDepth(pl, depthBuffer, depthBias);
             for (const seg of visibleSegments) {
+              // Convert from extended depth-buffer coords to rendering viewport coords
               const scaled = seg.map((p) => ({
-                x: p.x * (width / depthRes),
-                y: p.y * (height / depthRes),
+                x: (p.x - offsetX) * (width / depthRes),
+                y: (p.y - offsetY) * (height / depthRes),
               }));
-              const paths = polylinesToSVGPaths([scaled]);
-              occludedPaths.push(...paths);
+              occludedPolylines.push(scaled);
             }
           }
         }
-        allPaths = occludedPaths;
+        allPolylines2D = occludedPolylines;
       } catch (e) {
         console.warn("Depth buffer occlusion failed:", (e as Error).message);
       }
     }
 
+    // Apply density filter after projection + occlusion
+    if (densityFilterEnabled) {
+      allPolylines2D = filterByProjectedDensity(allPolylines2D, {
+        maxDensity: densityMax, cellSize: densityCellSize, width, height,
+      });
+    }
+
     meshGeometries.forEach((g) => g.dispose());
+
+    const totalLines = allPolylines2D.length;
+    const totalVerts = allPolylines2D.reduce((s, p) => s + p.length, 0);
+    const allPaths = polylinesToSVGPaths(allPolylines2D);
 
     return {
       svgPaths: allPaths,
@@ -639,7 +717,14 @@ export default function App() {
     useOcclusion,
     depthRes,
     depthBias,
+    exportLayout,
+    camOrtho,
+    panX,
+    panY,
     showMesh,
+    densityFilterEnabled,
+    densityMax,
+    densityCellSize,
   ]);
 
   // Preview viewport controls (pan/zoom the SVG view, not the 3D scene)
@@ -697,7 +782,7 @@ export default function App() {
 <svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
   <defs>
     <clipPath id="margin-clip">
-      <rect x="${margin}" y="${margin}" width="${contentW}" height="${contentH}"/>
+      <rect x="${margin + clipInset}" y="${margin + clipInset}" width="${contentW - clipInset * 2}" height="${contentH - clipInset * 2}"/>
     </clipPath>
   </defs>
   <g clip-path="url(#margin-clip)">
@@ -713,7 +798,7 @@ export default function App() {
     a.download = is2d ? `hatch2d_${compositionKey}.svg` : `hatch3d_${compositionKey}_${surfaceKey}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [svgPaths, exportLayout, margin, strokeWidth, previewBorderPaths, compositionKey, surfaceKey, is2d]);
+  }, [svgPaths, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths, compositionKey, surfaceKey, is2d]);
 
   const surfaceInfo = SURFACES[surfaceKey];
   const paramKeys = Object.keys(surfaceInfo.defaults);
@@ -773,6 +858,13 @@ export default function App() {
               &minus;
             </button>
           </div>
+          <button
+            onClick={cycleTheme}
+            title={`Theme: ${theme}`}
+            style={{ ...tagStyle, fontSize: 12, padding: "2px 8px", lineHeight: 1 }}
+          >
+            {theme === "auto" ? "\u25D1" : theme === "light" ? "\u2600" : "\u263E"}
+          </button>
           <button onClick={exportSVG} style={{ ...btnStyle, background: "var(--fg)", color: "var(--bg-canvas)" }}>
             EXPORT SVG
           </button>
@@ -916,7 +1008,7 @@ export default function App() {
                     max={1024}
                     step={64}
                   />
-                  <Slider label="Bias" value={depthBias} onChange={setDepthBias} min={0.001} max={0.05} step={0.001} />
+                  <Slider label="Bias" value={depthBias} onChange={setDepthBias} min={0.0001} max={0.02} step={0.0001} />
                 </>
               )}
             </Section>
@@ -925,6 +1017,16 @@ export default function App() {
           <Section title="DISPLAY" preview={`sw ${strokeWidth.toFixed(1)}`}>
             <Slider label="Stroke W" value={strokeWidth} onChange={setStrokeWidth} min={0.1} max={2} step={0.05} />
             {!is2d && <Toggle label="Show mesh" value={showMesh} onChange={setShowMesh} />}
+          </Section>
+
+          <Section title="DENSITY" preview={densityFilterEnabled ? `max ${densityMax}` : "off"}>
+            <Toggle label="Density filter" value={densityFilterEnabled} onChange={setDensityFilterEnabled} />
+            {densityFilterEnabled && (
+              <>
+                <Slider label="Max" value={densityMax} onChange={(v) => setDensityMax(Math.round(v))} min={1} max={60} step={1} />
+                <Slider label="Cell size" value={densityCellSize} onChange={(v) => setDensityCellSize(Math.round(v))} min={10} max={100} step={5} />
+              </>
+            )}
           </Section>
 
           <Section title="EXPORT" preview={`${PAGE_SIZES[pageSize].label} ${orientation}`}>
@@ -1030,7 +1132,7 @@ export default function App() {
             <br />
             Pipeline: {is2d
               ? "generate 2D \u2192 SVG"
-              : <>UV hatch &rarr; 3D surface &rarr; project{useOcclusion ? " \u2192 depth clip" : ""} &rarr; SVG</>
+              : <>UV hatch &rarr; 3D surface &rarr; project{useOcclusion ? " \u2192 depth clip" : ""}{densityFilterEnabled ? " \u2192 density" : ""} &rarr; SVG</>
             }
           </div>
         </div>
@@ -1124,7 +1226,7 @@ export default function App() {
           >
             <defs>
               <clipPath id="preview-margin-clip">
-                <rect x={margin} y={margin} width={exportLayout.contentW} height={exportLayout.contentH} />
+                <rect x={margin + clipInset} y={margin + clipInset} width={exportLayout.contentW - clipInset * 2} height={exportLayout.contentH - clipInset * 2} />
               </clipPath>
             </defs>
             {/* Margin guide (preview only) */}

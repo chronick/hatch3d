@@ -15,8 +15,25 @@
   --shadow: rgba(0, 0, 0, 0.06);
 }
 
+[data-theme="dark"] {
+  --bg: #1a1a1e;
+  --bg-panel: #232328;
+  --bg-canvas: #2a2a2f;
+  --fg: #e8e6e1;
+  --fg-muted: #999;
+  --fg-dim: #777;
+  --fg-faint: #666;
+  --fg-hint: #888;
+  --border: #3a3a40;
+  --border-light: #333338;
+  --mesh-stroke: #444;
+  --accent-color: #e8e6e1;
+  --toggle-off: #555;
+  --shadow: rgba(0, 0, 0, 0.3);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1a1a1e;
     --bg-panel: #232328;
     --bg-canvas: #2a2a2f;
