@@ -8,7 +8,7 @@ const tspArt: Composition2DDefinition = {
     "Sample points from a 3D surface projection, then connect them via a travelling salesman path for a single continuous line drawing",
   tags: ["generative", "tsp", "optimization", "single-line"],
   category: "2d",
-  manualRefresh: true,
+  renderMode: "manual",
   type: "2d",
 
   macros: {

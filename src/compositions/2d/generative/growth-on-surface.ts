@@ -15,7 +15,7 @@ const growthOnSurface: Composition2DDefinition = {
     "Differential growth simulation in UV space mapped through a parametric surface, creating organic forms distorted by 3D geometry",
   tags: ["generative", "simulation", "growth", "surface", "organic"],
   category: "2d",
-  manualRefresh: true,
+  renderMode: "manual",
   type: "2d",
 
   macros: {

@@ -98,8 +98,13 @@ export interface CompositionMetadata {
   author?: string;
   thumbnail?: string;
   suggestedPresets?: Record<string, CompositionPreset>;
-  /** If true, renders only on explicit user click (not on every param change). */
-  manualRefresh?: boolean;
+  /**
+   * Controls how aggressively the composition re-renders on parameter changes.
+   * - "immediate": render on every change, no debounce (default — fast compositions)
+   * - "debounced": 300ms debounce before rendering
+   * - "manual": render only on explicit user click (expensive simulations)
+   */
+  renderMode?: "immediate" | "debounced" | "manual";
 }
 
 // ── Enhanced composition definitions with metadata ──

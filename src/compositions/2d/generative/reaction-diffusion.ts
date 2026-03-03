@@ -8,7 +8,7 @@ const reactionDiffusion: Composition2DDefinition = {
     "Gray-Scott reaction-diffusion simulation with marching squares contour extraction for organic, Turing-pattern line art",
   tags: ["generative", "simulation", "reaction-diffusion", "organic"],
   category: "2d",
-  manualRefresh: true,
+  renderMode: "manual",
   type: "2d",
 
   macros: {

@@ -20,6 +20,7 @@ import { ThreeDControls } from "./components/ThreeDControls";
 import { CompositionBrowser } from "./components/CompositionBrowser";
 import { ExportModal } from "./components/ExportModal";
 import { PresetMenu } from "./components/PresetMenu";
+import { RenderButton } from "./components/RenderButton";
 import type { HatchGroupConfig } from "./components/HatchGroupControls";
 import { configHash } from "./utils/config-hash";
 import { exportPng, PNG_THEMES } from "./utils/export-png";
@@ -519,7 +520,7 @@ export default function App() {
       densityFilterEnabled,
       densityMax,
       densityCellSize,
-      manualRefresh: comp.manualRefresh ?? false,
+      renderMode: comp.renderMode ?? "immediate",
     });
 
   // Preview viewport controls (pan/zoom the SVG view, not the 3D scene)
@@ -892,23 +893,12 @@ export default function App() {
             </>
           )}
 
-          {comp.manualRefresh && (
-            <button
-              onClick={triggerRender}
-              disabled={isRendering}
-              style={{
-                ...btnStyle,
-                width: "100%",
-                padding: "8px 0",
-                fontWeight: 700,
-                letterSpacing: "0.06em",
-                background: isStale ? "var(--fg)" : "transparent",
-                color: isStale ? "var(--bg-canvas)" : "var(--fg)",
-                opacity: isRendering ? 0.5 : 1,
-              }}
-            >
-              {isRendering ? "RENDERING..." : "RENDER"}
-            </button>
+          {comp.renderMode === "manual" && (
+            <RenderButton
+              isStale={isStale}
+              isRendering={isRendering}
+              onRender={triggerRender}
+            />
           )}
 
           {compositionKey !== "single" && (

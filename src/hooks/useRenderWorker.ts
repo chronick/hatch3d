@@ -32,8 +32,8 @@ export interface UseRenderWorkerInput {
   densityFilterEnabled: boolean;
   densityMax: number;
   densityCellSize: number;
-  /** If true, only render when triggerRender() is called. */
-  manualRefresh: boolean;
+  /** Controls render timing: "immediate" (no debounce), "debounced" (300ms), "manual" (click only). */
+  renderMode: "immediate" | "debounced" | "manual";
 }
 
 export interface UseRenderWorkerOutput {
@@ -99,7 +99,7 @@ export function useRenderWorker(
     input.densityFilterEnabled,
     input.densityMax,
     input.densityCellSize,
-    input.manualRefresh,
+    input.renderMode,
   ]);
 
   // Derive staleness: input has changed since last completed render
@@ -205,17 +205,24 @@ export function useRenderWorker(
     worker.postMessage(request);
   }, []);
 
-  // Auto-refresh: debounced dispatch on input change (skip if manualRefresh)
+  // Auto-refresh: dispatch strategy depends on renderMode
   useEffect(() => {
-    if (input.manualRefresh) return;
+    if (input.renderMode === "manual") return;
 
     clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
+
+    if (input.renderMode === "immediate") {
+      // No debounce — dispatch right away
       dispatchRender(versionRef.current);
-    }, DEBOUNCE_MS);
+    } else {
+      // "debounced" — wait DEBOUNCE_MS before dispatching
+      debounceRef.current = setTimeout(() => {
+        dispatchRender(versionRef.current);
+      }, DEBOUNCE_MS);
+    }
 
     return () => clearTimeout(debounceRef.current);
-  }, [inputVersion, input.manualRefresh, dispatchRender]);
+  }, [inputVersion, input.renderMode, dispatchRender]);
 
   // Fire an initial render on mount
   const initialRef = useRef(true);

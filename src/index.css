@@ -102,3 +102,11 @@ input[type="range"]::-moz-range-thumb {
   background: var(--fg);
   border: none;
 }
+
+/* Render button radiating lines animation */
+@keyframes render-btn-radiate {
+  0%   { opacity: 0; }
+  30%  { opacity: 0.7; }
+  60%  { opacity: 0; }
+  100% { opacity: 0; }
+}
