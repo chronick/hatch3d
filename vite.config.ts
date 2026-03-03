@@ -11,6 +11,9 @@ export default defineConfig({
   build: {
     target: "esnext",
   },
+  worker: {
+    format: "es",
+  },
   test: {
     environment: "jsdom",
     globals: true,

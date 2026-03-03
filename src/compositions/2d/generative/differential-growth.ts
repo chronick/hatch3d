@@ -14,6 +14,7 @@ const differentialGrowth: Composition2DDefinition = {
     "Force-based closed curve growth simulation with spatial hashing for path separation",
   tags: ["generative", "simulation", "growth", "organic"],
   category: "2d",
+  manualRefresh: true,
   type: "2d",
 
   macros: {

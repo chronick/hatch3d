@@ -98,6 +98,8 @@ export interface CompositionMetadata {
   author?: string;
   thumbnail?: string;
   suggestedPresets?: Record<string, CompositionPreset>;
+  /** If true, renders only on explicit user click (not on every param change). */
+  manualRefresh?: boolean;
 }
 
 // ── Enhanced composition definitions with metadata ──

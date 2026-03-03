@@ -1,26 +1,16 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { useHistory } from "./hooks/useHistory";
-import * as THREE from "three";
+import { useRenderWorker } from "./hooks/useRenderWorker";
+import type { CameraParams } from "./workers/render-worker.types";
 import { SURFACES } from "./surfaces";
-import { generateUVHatchLines, type HatchParams } from "./hatch";
-import { projectPolylines, polylinesToSVGPaths, buildSurfaceMesh } from "./projection";
-import { renderDepthBuffer, clipPolylineByDepth } from "./occlusion";
-import { filterByProjectedDensity } from "./density";
 import {
   compositionRegistry,
   type Composition3DDefinition,
-  type LayerConfig,
   getControlDefaults,
   getMacroDefaults,
   resolveValues,
   is2DComposition,
 } from "./compositions";
-import {
-  ensureWasm,
-  isWasmReady,
-  generateLayersWasm,
-  isLayerWasmCompatible,
-} from "./wasm-pipeline";
 import { btnStyle, tagStyle } from "./components/styles";
 import { Section } from "./components/Section";
 import { Slider } from "./components/Slider";
@@ -215,15 +205,7 @@ export default function App() {
     return () => { window.removeEventListener("resize", handler); clearTimeout(timer); };
   }, []);
 
-  // WASM pipeline init — loads asynchronously, triggers re-render when ready
-  const [wasmReady, setWasmReady] = useState(isWasmReady());
-  useEffect(() => {
-    if (!wasmReady) {
-      ensureWasm().then(() => {
-        if (isWasmReady()) setWasmReady(true);
-      });
-    }
-  }, [wasmReady]);
+  // WASM is now initialized inside the render worker
 
   // Theme toggle (auto / light / dark)
   const [theme, setTheme] = useState<"auto" | "light" | "dark">(() => {
@@ -446,31 +428,20 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const viewDragRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
 
-  // Build Three.js camera
-  const threeCamera = useMemo(() => {
-    const pos = new THREE.Vector3(
-      camDist * Math.sin(camTheta) * Math.cos(camPhi),
-      camDist * Math.sin(camPhi),
-      camDist * Math.cos(camTheta) * Math.cos(camPhi)
-    );
-    let cam: THREE.Camera;
-    if (camOrtho) {
-      const aspect = width / height;
-      const halfH = camDist * 0.35;
-      const halfW = halfH * aspect;
-      const oc = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 100);
-      oc.position.copy(pos);
-      cam = oc;
-    } else {
-      const pc = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
-      pc.position.copy(pos);
-      cam = pc;
-    }
-    cam.lookAt(panX, panY, 0);
-    cam.updateMatrixWorld();
-    (cam as THREE.PerspectiveCamera | THREE.OrthographicCamera).updateProjectionMatrix();
-    return cam;
-  }, [camTheta, camPhi, camDist, camOrtho, panX, panY, width, height]);
+  // Serializable camera params (camera is reconstructed inside the worker)
+  const cameraParams: CameraParams = useMemo(
+    () => ({
+      theta: camTheta,
+      phi: camPhi,
+      dist: camDist,
+      ortho: camOrtho,
+      panX,
+      panY,
+      width,
+      height,
+    }),
+    [camTheta, camPhi, camDist, camOrtho, panX, panY, width, height]
+  );
 
   // Export layout geometry (shared by preview and export)
   const exportLayout = useMemo(() => {
@@ -510,285 +481,46 @@ export default function App() {
     return result;
   }, [surfaceKey, paramA, paramB, paramC, paramD]);
 
-  // Generate everything
-  const { svgPaths, meshPaths, stats } = useMemo(() => {
-    // 2D pipeline: generate polylines directly, skip surfaces/camera/occlusion
-    if (is2DComposition(comp)) {
-      const input2D = { width, height, values: resolvedValues };
-      let polylines2D = (comp.wasmGenerate && wasmReady
-        ? comp.wasmGenerate(input2D)
-        : null) ?? comp.generate(input2D);
-      if (densityFilterEnabled) {
-        polylines2D = filterByProjectedDensity(polylines2D, {
-          maxDensity: densityMax, cellSize: densityCellSize, width, height,
-        });
-      }
-      const paths = polylinesToSVGPaths(polylines2D);
-      return {
-        svgPaths: paths,
-        meshPaths: [],
-        stats: { lines: polylines2D.length, verts: polylines2D.reduce((s, p) => s + p.length, 0), paths: paths.length },
-      };
-    }
-
-    let layers: LayerConfig[];
-
-    const hatchParams: HatchParams = {
+  // Hatch params memo (serializable for worker)
+  const hatchParams = useMemo(
+    () => ({
       family: hatchFamily,
       count: hatchCount,
       samples: hatchSamples,
       angle: hatchAngle,
-    };
+    }),
+    [hatchFamily, hatchCount, hatchSamples, hatchAngle]
+  );
 
-    if (compositionKey !== "single") {
-      const comp3d = comp as Composition3DDefinition;
-      layers = comp3d.layers({
-        surface: surfaceKey,
-        surfaceParams,
-        hatchParams,
-        values: resolvedValues,
-      });
-    } else {
-      layers = [
-        {
-          surface: surfaceKey,
-          params: surfaceParams,
-          hatch: hatchParams,
-        },
-      ];
-    }
+  // Stable reference for the subset of exportLayout the worker needs
+  const workerExportLayout = useMemo(
+    () => ({ contentW: exportLayout.contentW, contentH: exportLayout.contentH, scale: exportLayout.scale }),
+    [exportLayout]
+  );
 
-    // Post-process: apply per-group hatch overrides
-    for (const layer of layers) {
-      if (layer.group) {
-        const groupConfig = currentHatchGroups[layer.group];
-        if (groupConfig && groupConfig.family !== "inherit") {
-          layer.hatch = {
-            family: groupConfig.family,
-            count: groupConfig.count,
-            samples: groupConfig.samples,
-            angle: groupConfig.angle,
-          };
-        }
-      }
-    }
-
-    const allMeshPaths: string[] = [];
-    let allPolylines2D: { x: number; y: number }[][] = [];
-
-    const meshGeometries: THREE.BufferGeometry[] = [];
-
-    // ── WASM fast path ──
-    // Try to generate all 3D hatch polylines in a single WASM call.
-    // Falls back to JS if WASM is unavailable or any layer is incompatible.
-    const allLayersWasmCompatible = wasmReady && layers.every(isLayerWasmCompatible);
-    const surfaceDefaults: Record<string, Record<string, number>> = {};
-    if (allLayersWasmCompatible) {
-      for (const layer of layers) {
-        if (!surfaceDefaults[layer.surface]) {
-          surfaceDefaults[layer.surface] = SURFACES[layer.surface].defaults;
-        }
-      }
-    }
-
-    const wasmPolylines3D = allLayersWasmCompatible
-      ? generateLayersWasm(layers, surfaceParams, surfaceDefaults)
-      : null;
-
-    // Build mesh geometries (needed for occlusion + showMesh regardless of pipeline)
-    for (let li = 0; li < layers.length; li++) {
-      const layer = layers[li];
-      const sf = SURFACES[layer.surface];
-      const lParams = layer.params || surfaceParams;
-      const fn = sf.fn;
-
-      const meshGeo = buildSurfaceMesh(fn, lParams, 24, 24);
-      if (layer.transform) {
-        meshGeo.translate(
-          layer.transform.x || 0,
-          layer.transform.y || 0,
-          layer.transform.z || 0
-        );
-      }
-      meshGeometries.push(meshGeo);
-
-      // Get 3D polylines: from WASM cache or JS fallback
-      const polylines3D = wasmPolylines3D
-        ? wasmPolylines3D[li]
-        : generateUVHatchLines(
-            (u, v, p) => {
-              const pt = fn(u, v, p);
-              if (layer.transform) {
-                pt.x += layer.transform.x || 0;
-                pt.y += layer.transform.y || 0;
-                pt.z += layer.transform.z || 0;
-              }
-              return pt;
-            },
-            lParams,
-            layer.hatch
-          );
-
-      const projected = projectPolylines(polylines3D, threeCamera, width, height);
-      allPolylines2D.push(...projected);
-
-      if (showMesh) {
-        const pos = meshGeo.getAttribute("position");
-        const idx = meshGeo.getIndex();
-        if (idx) {
-          for (let i = 0; i < idx.count; i += 3) {
-            const tri = [0, 1, 2].map((j) => {
-              const vi = idx.getX(i + j);
-              const v3 = new THREE.Vector3(
-                pos.getX(vi),
-                pos.getY(vi),
-                pos.getZ(vi)
-              );
-              const p = v3.project(threeCamera);
-              return {
-                x: (p.x * 0.5 + 0.5) * width,
-                y: (-p.y * 0.5 + 0.5) * height,
-              };
-            });
-            allMeshPaths.push(
-              `M${tri[0].x.toFixed(1)},${tri[0].y.toFixed(1)}L${tri[1].x.toFixed(1)},${tri[1].y.toFixed(1)}L${tri[2].x.toFixed(1)},${tri[2].y.toFixed(1)}Z`
-            );
-          }
-        }
-      }
-    }
-
-    if (useOcclusion && meshGeometries.length > 0) {
-      try {
-        // Extend the depth-buffer camera to cover the full visible page area,
-        // not just the square rendering viewport. Without this, occlusion only
-        // works within a center square and lines outside it get cut off.
-        const { contentW, contentH, scale: fitScale } = exportLayout;
-        const extRatioW = Math.max(1, contentW / (fitScale * width));
-        const extRatioH = Math.max(1, contentH / (fitScale * height));
-        const depthW = Math.ceil(depthRes * extRatioW);
-        const depthH = Math.ceil(depthRes * extRatioH);
-
-        // Build extended camera with wider FOV / bounds
-        let extCamera: THREE.Camera;
-        const pos = threeCamera.position.clone();
-        if (camOrtho) {
-          const oc = threeCamera as THREE.OrthographicCamera;
-          const extOc = new THREE.OrthographicCamera(
-            oc.left * extRatioW, oc.right * extRatioW,
-            oc.top * extRatioH, oc.bottom * extRatioH,
-            oc.near, oc.far
-          );
-          extOc.position.copy(pos);
-          extCamera = extOc;
-        } else {
-          const pc = threeCamera as THREE.PerspectiveCamera;
-          const origHalfVFOV = (pc.fov / 2) * Math.PI / 180;
-          const extVFOV = 2 * Math.atan(Math.tan(origHalfVFOV) * extRatioH) * 180 / Math.PI;
-          const extAspect = (width * extRatioW) / (height * extRatioH);
-          const extPc = new THREE.PerspectiveCamera(extVFOV, extAspect, pc.near, pc.far);
-          extPc.position.copy(pos);
-          extCamera = extPc;
-        }
-        extCamera.lookAt(panX, panY, 0);
-        extCamera.updateMatrixWorld();
-        (extCamera as THREE.PerspectiveCamera | THREE.OrthographicCamera).updateProjectionMatrix();
-
-        const depthBuffer = renderDepthBuffer(meshGeometries, extCamera, depthW, depthH);
-
-        // Offset to convert from extended buffer coords back to rendering viewport coords
-        const offsetX = (depthW - depthRes) / 2;
-        const offsetY = (depthH - depthRes) / 2;
-
-        const occludedPolylines: { x: number; y: number }[][] = [];
-        for (let li = 0; li < layers.length; li++) {
-          const layer = layers[li];
-          const sf = SURFACES[layer.surface];
-          const lParams = layer.params || surfaceParams;
-
-          // Reuse WASM-generated 3D polylines if available (avoids double generation)
-          const polylines3D = wasmPolylines3D
-            ? wasmPolylines3D[li]
-            : generateUVHatchLines(
-                (u, v, p) => {
-                  const pt = sf.fn(u, v, p);
-                  if (layer.transform) {
-                    pt.x += layer.transform.x || 0;
-                    pt.y += layer.transform.y || 0;
-                    pt.z += layer.transform.z || 0;
-                  }
-                  return pt;
-                },
-                lParams,
-                layer.hatch
-              );
-
-          // Project with extended camera at extended resolution
-          const projected = projectPolylines(polylines3D, extCamera, depthW, depthH);
-
-          for (const pl of projected) {
-            const visibleSegments = clipPolylineByDepth(pl, depthBuffer, depthBias);
-            for (const seg of visibleSegments) {
-              // Convert from extended depth-buffer coords to rendering viewport coords
-              const scaled = seg.map((p) => ({
-                x: (p.x - offsetX) * (width / depthRes),
-                y: (p.y - offsetY) * (height / depthRes),
-              }));
-              occludedPolylines.push(scaled);
-            }
-          }
-        }
-        allPolylines2D = occludedPolylines;
-      } catch (e) {
-        console.warn("Depth buffer occlusion failed:", (e as Error).message);
-      }
-    }
-
-    // Apply density filter after projection + occlusion
-    if (densityFilterEnabled) {
-      allPolylines2D = filterByProjectedDensity(allPolylines2D, {
-        maxDensity: densityMax, cellSize: densityCellSize, width, height,
-      });
-    }
-
-    meshGeometries.forEach((g) => g.dispose());
-
-    const totalLines = allPolylines2D.length;
-    const totalVerts = allPolylines2D.reduce((s, p) => s + p.length, 0);
-    const allPaths = polylinesToSVGPaths(allPolylines2D);
-
-    return {
-      svgPaths: allPaths,
-      meshPaths: allMeshPaths,
-      stats: { lines: totalLines, verts: totalVerts, paths: allPaths.length },
-    };
-  }, [
-    comp,
-    surfaceKey,
-    surfaceParams,
-    compositionKey,
-    resolvedValues,
-    currentHatchGroups,
-    hatchFamily,
-    hatchCount,
-    hatchSamples,
-    hatchAngle,
-    threeCamera,
-    width,
-    height,
-    useOcclusion,
-    depthRes,
-    depthBias,
-    exportLayout,
-    camOrtho,
-    panX,
-    panY,
-    showMesh,
-    densityFilterEnabled,
-    densityMax,
-    densityCellSize,
-    wasmReady,
-  ]);
+  // Generate everything via Web Worker
+  const { svgPaths, meshPaths, stats, isRendering, isStale, renderTimeMs, triggerRender } =
+    useRenderWorker({
+      compositionKey,
+      is2d,
+      width,
+      height,
+      resolvedValues,
+      surfaceKey,
+      surfaceParams,
+      hatchParams,
+      currentHatchGroups,
+      camera: cameraParams,
+      useOcclusion,
+      depthRes,
+      depthBias,
+      exportLayout: workerExportLayout,
+      showMesh,
+      densityFilterEnabled,
+      densityMax,
+      densityCellSize,
+      manualRefresh: comp.manualRefresh ?? false,
+    });
 
   // Preview viewport controls (pan/zoom the SVG view, not the 3D scene)
   const handleViewMouseDown = useCallback(
@@ -1160,6 +892,25 @@ export default function App() {
             </>
           )}
 
+          {comp.manualRefresh && (
+            <button
+              onClick={triggerRender}
+              disabled={isRendering}
+              style={{
+                ...btnStyle,
+                width: "100%",
+                padding: "8px 0",
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                background: isStale ? "var(--fg)" : "transparent",
+                color: isStale ? "var(--bg-canvas)" : "var(--fg)",
+                opacity: isRendering ? 0.5 : 1,
+              }}
+            >
+              {isRendering ? "RENDERING..." : "RENDER"}
+            </button>
+          )}
+
           {compositionKey !== "single" && (
             <PresetMenu
               compositionKey={compositionKey}
@@ -1247,6 +998,8 @@ export default function App() {
             }}
           >
             {stats.paths} SVG paths · {stats.lines} {is2d ? "polylines" : "hatch lines"} · {stats.verts} vertices
+            {renderTimeMs > 0 && <> · {renderTimeMs < 1000 ? `${Math.round(renderTimeMs)}ms` : `${(renderTimeMs / 1000).toFixed(1)}s`}</>}
+            {isRendering && <> · <span style={{ color: "var(--fg-dim)" }}>rendering...</span></>}
             <br />
             Pipeline: {is2d
               ? "generate 2D \u2192 SVG"
@@ -1355,6 +1108,7 @@ export default function App() {
             background: "var(--bg)",
             cursor: isDragging ? "grabbing" : "grab",
             overflow: "hidden",
+            position: "relative",
           }}
           onMouseDown={handleViewMouseDown}
           onMouseMove={handleViewMouseMove}
@@ -1365,6 +1119,26 @@ export default function App() {
           onTouchEnd={handleTouchEnd}
           onDoubleClick={handleViewDoubleClick}
         >
+          {isRendering && (
+            <div
+              style={{
+                position: "absolute",
+                top: 12,
+                right: 12,
+                zIndex: 10,
+                background: "var(--bg-panel)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                padding: "4px 10px",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                color: "var(--fg-dim)",
+              }}
+            >
+              Rendering...
+            </div>
+          )}
           <svg
             viewBox={`0 0 ${exportLayout.pageW} ${exportLayout.pageH}`}
             style={{
@@ -1374,6 +1148,8 @@ export default function App() {
               boxShadow: "0 1px 16px var(--shadow)",
               transform: `translate(${viewPanX}px, ${viewPanY}px) scale(${viewZoom})`,
               transformOrigin: "center center",
+              opacity: isStale ? 0.6 : 1,
+              transition: "opacity 0.15s ease",
             }}
           >
             <defs>

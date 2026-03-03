@@ -65,6 +65,66 @@ export function renderDepthBuffer(
   return { depthData: colorPixels, width, height };
 }
 
+/**
+ * Same as renderDepthBuffer but creates an OffscreenCanvas for use in Web Workers
+ * where DOM canvas elements are unavailable.
+ */
+export function renderDepthBufferOffscreen(
+  meshGeometries: THREE.BufferGeometry[],
+  camera: THREE.Camera,
+  width: number,
+  height: number
+): DepthBuffer {
+  const canvas = new OffscreenCanvas(width, height);
+  const renderer = new THREE.WebGLRenderer({ canvas: canvas as unknown as HTMLCanvasElement, antialias: false });
+  renderer.setPixelRatio(1);
+  renderer.setSize(width, height, false);
+
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+  renderer.setClearColor(new THREE.Color(0, 0, 0), 0);
+
+  const depthScene = new THREE.Scene();
+  const depthVisMat = new THREE.ShaderMaterial({
+    vertexShader: `
+      varying float vDepth;
+      void main() {
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vDepth = gl_Position.z / gl_Position.w * 0.5 + 0.5;
+      }
+    `,
+    fragmentShader: `
+      varying float vDepth;
+      void main() {
+        float d = vDepth;
+        float r = floor(d * 255.0) / 255.0;
+        float g = floor((d * 255.0 - floor(d * 255.0)) * 255.0) / 255.0;
+        gl_FragColor = vec4(r, g, d, 1.0);
+      }
+    `,
+    side: THREE.DoubleSide,
+  });
+
+  for (const geo of meshGeometries) {
+    depthScene.add(new THREE.Mesh(geo, depthVisMat));
+  }
+
+  const colorTarget = new THREE.WebGLRenderTarget(width, height, {
+    colorSpace: THREE.LinearSRGBColorSpace,
+  });
+  renderer.setRenderTarget(colorTarget);
+  renderer.setViewport(0, 0, width, height);
+  renderer.render(depthScene, camera);
+
+  const colorPixels = new Uint8Array(width * height * 4);
+  renderer.readRenderTargetPixels(colorTarget, 0, 0, width, height, colorPixels);
+
+  renderer.setRenderTarget(null);
+  renderer.dispose();
+  colorTarget.dispose();
+
+  return { depthData: colorPixels, width, height };
+}
+
 function sampleDepthBuffer(depthBuffer: DepthBuffer, x: number, y: number): number {
   const { depthData, width, height } = depthBuffer;
   const px = Math.round(x);

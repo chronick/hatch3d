@@ -1,0 +1,333 @@
+/**
+ * Pure render pipeline function extracted from App.tsx useMemo.
+ *
+ * Receives a RenderRequest, runs the full hatch → project → occlude → SVG pipeline,
+ * and returns a RenderResult. Importable directly for testing (no worker needed).
+ */
+
+import * as THREE from "three";
+import { SURFACES } from "../surfaces";
+import { generateUVHatchLines, type HatchParams } from "../hatch";
+import {
+  projectPolylines,
+  polylinesToSVGPaths,
+  buildSurfaceMesh,
+} from "../projection";
+import { renderDepthBufferOffscreen, clipPolylineByDepth } from "../occlusion";
+import { filterByProjectedDensity } from "../density";
+import {
+  compositionRegistry,
+  type Composition3DDefinition,
+  type LayerConfig,
+  is2DComposition,
+} from "../compositions";
+import {
+  isWasmReady,
+  generateLayersWasm,
+  isLayerWasmCompatible,
+} from "../wasm-pipeline";
+import type { RenderRequest, RenderResult, CameraParams } from "./render-worker.types";
+
+/**
+ * Reconstruct a Three.js camera from serialized params.
+ */
+function buildCamera(cam: CameraParams): THREE.Camera {
+  const pos = new THREE.Vector3(
+    cam.dist * Math.sin(cam.theta) * Math.cos(cam.phi),
+    cam.dist * Math.sin(cam.phi),
+    cam.dist * Math.cos(cam.theta) * Math.cos(cam.phi)
+  );
+
+  let camera: THREE.Camera;
+  if (cam.ortho) {
+    const aspect = cam.width / cam.height;
+    const halfH = cam.dist * 0.35;
+    const halfW = halfH * aspect;
+    const oc = new THREE.OrthographicCamera(-halfW, halfW, halfH, -halfH, 0.1, 100);
+    oc.position.copy(pos);
+    camera = oc;
+  } else {
+    const pc = new THREE.PerspectiveCamera(45, cam.width / cam.height, 0.1, 100);
+    pc.position.copy(pos);
+    camera = pc;
+  }
+  camera.lookAt(cam.panX, cam.panY, 0);
+  camera.updateMatrixWorld();
+  (camera as THREE.PerspectiveCamera | THREE.OrthographicCamera).updateProjectionMatrix();
+  return camera;
+}
+
+export function runPipeline(req: RenderRequest): RenderResult {
+  const t0 = performance.now();
+  const comp = compositionRegistry.get(req.compositionKey)!;
+  const wasmReady = isWasmReady();
+
+  // ── 2D pipeline ──
+  if (req.is2d && is2DComposition(comp)) {
+    const input2D = { width: req.width, height: req.height, values: req.resolvedValues };
+    let polylines2D =
+      (comp.wasmGenerate && wasmReady ? comp.wasmGenerate(input2D) : null) ??
+      comp.generate(input2D);
+
+    if (req.densityFilterEnabled) {
+      polylines2D = filterByProjectedDensity(polylines2D, {
+        maxDensity: req.densityMax,
+        cellSize: req.densityCellSize,
+        width: req.width,
+        height: req.height,
+      });
+    }
+    const paths = polylinesToSVGPaths(polylines2D);
+    return {
+      type: "render-result",
+      id: req.id,
+      svgPaths: paths,
+      meshPaths: [],
+      stats: {
+        lines: polylines2D.length,
+        verts: polylines2D.reduce((s, p) => s + p.length, 0),
+        paths: paths.length,
+      },
+      durationMs: performance.now() - t0,
+    };
+  }
+
+  // ── 3D pipeline ──
+  const threeCamera = buildCamera(req.camera);
+
+  const hatchParams: HatchParams = {
+    family: req.hatchParams.family as HatchParams["family"],
+    count: req.hatchParams.count,
+    samples: req.hatchParams.samples,
+    angle: req.hatchParams.angle,
+  };
+
+  let layers: LayerConfig[];
+  if (req.compositionKey !== "single") {
+    const comp3d = comp as Composition3DDefinition;
+    layers = comp3d.layers({
+      surface: req.surfaceKey,
+      surfaceParams: req.surfaceParams,
+      hatchParams,
+      values: req.resolvedValues,
+    });
+  } else {
+    layers = [
+      {
+        surface: req.surfaceKey,
+        params: req.surfaceParams,
+        hatch: hatchParams,
+      },
+    ];
+  }
+
+  // Apply per-group hatch overrides
+  for (const layer of layers) {
+    if (layer.group) {
+      const groupConfig = req.currentHatchGroups[layer.group];
+      if (groupConfig && groupConfig.family !== "inherit") {
+        layer.hatch = {
+          family: groupConfig.family as HatchParams["family"],
+          count: groupConfig.count,
+          samples: groupConfig.samples,
+          angle: groupConfig.angle,
+        };
+      }
+    }
+  }
+
+  const allMeshPaths: string[] = [];
+  let allPolylines2D: { x: number; y: number }[][] = [];
+  const meshGeometries: THREE.BufferGeometry[] = [];
+
+  // ── WASM fast path ──
+  const allLayersWasmCompatible = wasmReady && layers.every(isLayerWasmCompatible);
+  const surfaceDefaults: Record<string, Record<string, number>> = {};
+  if (allLayersWasmCompatible) {
+    for (const layer of layers) {
+      if (!surfaceDefaults[layer.surface]) {
+        surfaceDefaults[layer.surface] = SURFACES[layer.surface].defaults;
+      }
+    }
+  }
+
+  const wasmPolylines3D = allLayersWasmCompatible
+    ? generateLayersWasm(layers, req.surfaceParams, surfaceDefaults)
+    : null;
+
+  // Build mesh geometries + project hatch lines
+  for (let li = 0; li < layers.length; li++) {
+    const layer = layers[li];
+    const sf = SURFACES[layer.surface];
+    const lParams = layer.params || req.surfaceParams;
+    const fn = sf.fn;
+
+    const meshGeo = buildSurfaceMesh(fn, lParams, 24, 24);
+    if (layer.transform) {
+      meshGeo.translate(
+        layer.transform.x || 0,
+        layer.transform.y || 0,
+        layer.transform.z || 0
+      );
+    }
+    meshGeometries.push(meshGeo);
+
+    const polylines3D = wasmPolylines3D
+      ? wasmPolylines3D[li]
+      : generateUVHatchLines(
+          (u, v, p) => {
+            const pt = fn(u, v, p);
+            if (layer.transform) {
+              pt.x += layer.transform.x || 0;
+              pt.y += layer.transform.y || 0;
+              pt.z += layer.transform.z || 0;
+            }
+            return pt;
+          },
+          lParams,
+          layer.hatch
+        );
+
+    const projected = projectPolylines(polylines3D, threeCamera, req.width, req.height);
+    allPolylines2D.push(...projected);
+
+    if (req.showMesh) {
+      const pos = meshGeo.getAttribute("position");
+      const idx = meshGeo.getIndex();
+      if (idx) {
+        for (let i = 0; i < idx.count; i += 3) {
+          const tri = [0, 1, 2].map((j) => {
+            const vi = idx.getX(i + j);
+            const v3 = new THREE.Vector3(
+              pos.getX(vi),
+              pos.getY(vi),
+              pos.getZ(vi)
+            );
+            const p = v3.project(threeCamera);
+            return {
+              x: (p.x * 0.5 + 0.5) * req.width,
+              y: (-p.y * 0.5 + 0.5) * req.height,
+            };
+          });
+          allMeshPaths.push(
+            `M${tri[0].x.toFixed(1)},${tri[0].y.toFixed(1)}L${tri[1].x.toFixed(1)},${tri[1].y.toFixed(1)}L${tri[2].x.toFixed(1)},${tri[2].y.toFixed(1)}Z`
+          );
+        }
+      }
+    }
+  }
+
+  // ── Occlusion ──
+  if (req.useOcclusion && meshGeometries.length > 0) {
+    try {
+      const { contentW, contentH, scale: fitScale } = req.exportLayout;
+      const extRatioW = Math.max(1, contentW / (fitScale * req.width));
+      const extRatioH = Math.max(1, contentH / (fitScale * req.height));
+      const depthW = Math.ceil(req.depthRes * extRatioW);
+      const depthH = Math.ceil(req.depthRes * extRatioH);
+
+      // Build extended camera
+      let extCamera: THREE.Camera;
+      const cpos = threeCamera.position.clone();
+      if (req.camera.ortho) {
+        const oc = threeCamera as THREE.OrthographicCamera;
+        const extOc = new THREE.OrthographicCamera(
+          oc.left * extRatioW,
+          oc.right * extRatioW,
+          oc.top * extRatioH,
+          oc.bottom * extRatioH,
+          oc.near,
+          oc.far
+        );
+        extOc.position.copy(cpos);
+        extCamera = extOc;
+      } else {
+        const pc = threeCamera as THREE.PerspectiveCamera;
+        const origHalfVFOV = ((pc.fov / 2) * Math.PI) / 180;
+        const extVFOV =
+          ((2 * Math.atan(Math.tan(origHalfVFOV) * extRatioH)) * 180) / Math.PI;
+        const extAspect = (req.width * extRatioW) / (req.height * extRatioH);
+        const extPc = new THREE.PerspectiveCamera(extVFOV, extAspect, pc.near, pc.far);
+        extPc.position.copy(cpos);
+        extCamera = extPc;
+      }
+      extCamera.lookAt(req.camera.panX, req.camera.panY, 0);
+      extCamera.updateMatrixWorld();
+      (extCamera as THREE.PerspectiveCamera | THREE.OrthographicCamera).updateProjectionMatrix();
+
+      const depthBuffer = renderDepthBufferOffscreen(
+        meshGeometries,
+        extCamera,
+        depthW,
+        depthH
+      );
+
+      const offsetX = (depthW - req.depthRes) / 2;
+      const offsetY = (depthH - req.depthRes) / 2;
+
+      const occludedPolylines: { x: number; y: number }[][] = [];
+      for (let li = 0; li < layers.length; li++) {
+        const layer = layers[li];
+        const sf = SURFACES[layer.surface];
+        const lParams = layer.params || req.surfaceParams;
+
+        const polylines3D = wasmPolylines3D
+          ? wasmPolylines3D[li]
+          : generateUVHatchLines(
+              (u, v, p) => {
+                const pt = sf.fn(u, v, p);
+                if (layer.transform) {
+                  pt.x += layer.transform.x || 0;
+                  pt.y += layer.transform.y || 0;
+                  pt.z += layer.transform.z || 0;
+                }
+                return pt;
+              },
+              lParams,
+              layer.hatch
+            );
+
+        const projected = projectPolylines(polylines3D, extCamera, depthW, depthH);
+
+        for (const pl of projected) {
+          const visibleSegments = clipPolylineByDepth(pl, depthBuffer, req.depthBias);
+          for (const seg of visibleSegments) {
+            const scaled = seg.map((p) => ({
+              x: (p.x - offsetX) * (req.width / req.depthRes),
+              y: (p.y - offsetY) * (req.height / req.depthRes),
+            }));
+            occludedPolylines.push(scaled);
+          }
+        }
+      }
+      allPolylines2D = occludedPolylines;
+    } catch (e) {
+      console.warn("Depth buffer occlusion failed:", (e as Error).message);
+    }
+  }
+
+  // ── Density filter ──
+  if (req.densityFilterEnabled) {
+    allPolylines2D = filterByProjectedDensity(allPolylines2D, {
+      maxDensity: req.densityMax,
+      cellSize: req.densityCellSize,
+      width: req.width,
+      height: req.height,
+    });
+  }
+
+  meshGeometries.forEach((g) => g.dispose());
+
+  const totalLines = allPolylines2D.length;
+  const totalVerts = allPolylines2D.reduce((s, p) => s + p.length, 0);
+  const allPaths = polylinesToSVGPaths(allPolylines2D);
+
+  return {
+    type: "render-result",
+    id: req.id,
+    svgPaths: allPaths,
+    meshPaths: allMeshPaths,
+    stats: { lines: totalLines, verts: totalVerts, paths: allPaths.length },
+    durationMs: performance.now() - t0,
+  };
+}
