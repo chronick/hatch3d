@@ -1,5 +1,6 @@
 import { createNoise2D } from "simplex-noise";
 import type { Composition2DDefinition } from "../../types";
+import { wasmGenerateInkVortex } from "../../../wasm-pipeline-2d";
 
 // ── Spatial Hash for efficient nearest-distance queries ──
 
@@ -266,6 +267,8 @@ const inkVortex: Composition2DDefinition = {
       group: "Layout",
     },
   },
+
+  wasmGenerate: wasmGenerateInkVortex,
 
   generate({ width, height, values }) {
     const arrangement = values.arrangement as string;

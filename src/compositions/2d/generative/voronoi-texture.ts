@@ -1,4 +1,5 @@
 import type { Composition2DDefinition } from "../../types";
+import { wasmGenerateVoronoi } from "../../../wasm-pipeline-2d";
 
 interface Point {
   x: number;
@@ -92,6 +93,8 @@ const voronoiTexture: Composition2DDefinition = {
       group: "Layout",
     },
   },
+
+  wasmGenerate: wasmGenerateVoronoi,
 
   generate({ width, height, values }) {
     const pointCount = Math.round(values.pointCount as number);

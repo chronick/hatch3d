@@ -115,6 +115,8 @@ export interface Composition2DDefinition extends CompositionMetadata {
   macros?: Record<string, MacroDef>;
   controls?: Record<string, ControlDef>;
   generate: (input: Composition2DInput) => { x: number; y: number }[][];
+  /** Optional WASM-accelerated generator. Returns null if WASM unavailable. */
+  wasmGenerate?: (input: Composition2DInput) => { x: number; y: number }[][] | null;
 }
 
 export type CompositionDefinition = Composition3DDefinition | Composition2DDefinition;

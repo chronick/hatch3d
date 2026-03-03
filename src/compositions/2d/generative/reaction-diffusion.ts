@@ -1,4 +1,5 @@
 import type { Composition2DDefinition } from "../../types";
+import { wasmGenerateReactionDiffusion } from "../../../wasm-pipeline-2d";
 
 const reactionDiffusion: Composition2DDefinition = {
   id: "reactionDiffusion",
@@ -106,6 +107,8 @@ const reactionDiffusion: Composition2DDefinition = {
       group: "Init",
     },
   },
+
+  wasmGenerate: wasmGenerateReactionDiffusion,
 
   generate({ width, height, values }) {
     const N = Math.round(values.gridResolution as number);

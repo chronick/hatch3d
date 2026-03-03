@@ -17,11 +17,18 @@
 //! [num_layers, per_layer: [num_polylines, per_polyline: [num_points, x,y,z, ...]]]
 //! ```
 
+mod compositions;
 mod hatch;
 mod noise;
 mod surfaces;
 
 use wasm_bindgen::prelude::*;
+
+// Re-export 2D composition entry points
+pub use compositions::reaction_diffusion::generate_reaction_diffusion;
+pub use compositions::flow_field::generate_flow_field;
+pub use compositions::ink_vortex::generate_ink_vortex;
+pub use compositions::voronoi::generate_voronoi;
 
 use hatch::{generate_hatch_lines, HatchConfig};
 

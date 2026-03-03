@@ -517,7 +517,10 @@ export default function App() {
   const { svgPaths, meshPaths, stats } = useMemo(() => {
     // 2D pipeline: generate polylines directly, skip surfaces/camera/occlusion
     if (is2DComposition(comp)) {
-      let polylines2D = comp.generate({ width, height, values: resolvedValues });
+      const input2D = { width, height, values: resolvedValues };
+      let polylines2D = (comp.wasmGenerate && wasmReady
+        ? comp.wasmGenerate(input2D)
+        : null) ?? comp.generate(input2D);
       if (densityFilterEnabled) {
         polylines2D = filterByProjectedDensity(polylines2D, {
           maxDensity: densityMax, cellSize: densityCellSize, width, height,

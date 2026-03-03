@@ -1,5 +1,6 @@
 import { createNoise2D } from "simplex-noise";
 import type { Composition2DDefinition } from "../../types";
+import { wasmGenerateFlowField } from "../../../wasm-pipeline-2d";
 
 const flowField: Composition2DDefinition = {
   id: "flowField",
@@ -77,6 +78,8 @@ const flowField: Composition2DDefinition = {
       group: "Density",
     },
   },
+
+  wasmGenerate: wasmGenerateFlowField,
 
   generate({ width, height, values }) {
     const noiseScale = values.noiseScale as number;
