@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Rust/WASM build artifacts
+src/wasm/pkg/
+src/wasm/target/

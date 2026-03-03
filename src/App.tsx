@@ -15,6 +15,12 @@ import {
   resolveValues,
   is2DComposition,
 } from "./compositions";
+import {
+  ensureWasm,
+  isWasmReady,
+  generateLayersWasm,
+  isLayerWasmCompatible,
+} from "./wasm-pipeline";
 import { btnStyle, tagStyle } from "./components/styles";
 import { Section } from "./components/Section";
 import { Slider } from "./components/Slider";
@@ -192,6 +198,16 @@ export default function App() {
     window.addEventListener("resize", handler);
     return () => { window.removeEventListener("resize", handler); clearTimeout(timer); };
   }, []);
+
+  // WASM pipeline init — loads asynchronously, triggers re-render when ready
+  const [wasmReady, setWasmReady] = useState(isWasmReady());
+  useEffect(() => {
+    if (!wasmReady) {
+      ensureWasm().then(() => {
+        if (isWasmReady()) setWasmReady(true);
+      });
+    }
+  }, [wasmReady]);
 
   // Theme toggle (auto / light / dark)
   const [theme, setTheme] = useState<"auto" | "light" | "dark">(() => {
@@ -543,7 +559,26 @@ export default function App() {
 
     const meshGeometries: THREE.BufferGeometry[] = [];
 
-    for (const layer of layers) {
+    // ── WASM fast path ──
+    // Try to generate all 3D hatch polylines in a single WASM call.
+    // Falls back to JS if WASM is unavailable or any layer is incompatible.
+    const allLayersWasmCompatible = wasmReady && layers.every(isLayerWasmCompatible);
+    const surfaceDefaults: Record<string, Record<string, number>> = {};
+    if (allLayersWasmCompatible) {
+      for (const layer of layers) {
+        if (!surfaceDefaults[layer.surface]) {
+          surfaceDefaults[layer.surface] = SURFACES[layer.surface].defaults;
+        }
+      }
+    }
+
+    const wasmPolylines3D = allLayersWasmCompatible
+      ? generateLayersWasm(layers, surfaceParams, surfaceDefaults)
+      : null;
+
+    // Build mesh geometries (needed for occlusion + showMesh regardless of pipeline)
+    for (let li = 0; li < layers.length; li++) {
+      const layer = layers[li];
       const sf = SURFACES[layer.surface];
       const lParams = layer.params || surfaceParams;
       const fn = sf.fn;
@@ -558,19 +593,22 @@ export default function App() {
       }
       meshGeometries.push(meshGeo);
 
-      const polylines3D = generateUVHatchLines(
-        (u, v, p) => {
-          const pt = fn(u, v, p);
-          if (layer.transform) {
-            pt.x += layer.transform.x || 0;
-            pt.y += layer.transform.y || 0;
-            pt.z += layer.transform.z || 0;
-          }
-          return pt;
-        },
-        lParams,
-        layer.hatch
-      );
+      // Get 3D polylines: from WASM cache or JS fallback
+      const polylines3D = wasmPolylines3D
+        ? wasmPolylines3D[li]
+        : generateUVHatchLines(
+            (u, v, p) => {
+              const pt = fn(u, v, p);
+              if (layer.transform) {
+                pt.x += layer.transform.x || 0;
+                pt.y += layer.transform.y || 0;
+                pt.z += layer.transform.z || 0;
+              }
+              return pt;
+            },
+            lParams,
+            layer.hatch
+          );
 
       const projected = projectPolylines(polylines3D, threeCamera, width, height);
       allPolylines2D.push(...projected);
@@ -644,22 +682,27 @@ export default function App() {
         const offsetY = (depthH - depthRes) / 2;
 
         const occludedPolylines: { x: number; y: number }[][] = [];
-        for (const layer of layers) {
+        for (let li = 0; li < layers.length; li++) {
+          const layer = layers[li];
           const sf = SURFACES[layer.surface];
           const lParams = layer.params || surfaceParams;
-          const polylines3D = generateUVHatchLines(
-            (u, v, p) => {
-              const pt = sf.fn(u, v, p);
-              if (layer.transform) {
-                pt.x += layer.transform.x || 0;
-                pt.y += layer.transform.y || 0;
-                pt.z += layer.transform.z || 0;
-              }
-              return pt;
-            },
-            lParams,
-            layer.hatch
-          );
+
+          // Reuse WASM-generated 3D polylines if available (avoids double generation)
+          const polylines3D = wasmPolylines3D
+            ? wasmPolylines3D[li]
+            : generateUVHatchLines(
+                (u, v, p) => {
+                  const pt = sf.fn(u, v, p);
+                  if (layer.transform) {
+                    pt.x += layer.transform.x || 0;
+                    pt.y += layer.transform.y || 0;
+                    pt.z += layer.transform.z || 0;
+                  }
+                  return pt;
+                },
+                lParams,
+                layer.hatch
+              );
 
           // Project with extended camera at extended resolution
           const projected = projectPolylines(polylines3D, extCamera, depthW, depthH);
@@ -725,6 +768,7 @@ export default function App() {
     densityFilterEnabled,
     densityMax,
     densityCellSize,
+    wasmReady,
   ]);
 
   // Preview viewport controls (pan/zoom the SVG view, not the 3D scene)
