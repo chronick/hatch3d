@@ -1,0 +1,15 @@
+{
+  "name": "hatch3d-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "hatch3d_wasm_bg.wasm",
+    "hatch3d_wasm.js",
+    "hatch3d_wasm.d.ts"
+  ],
+  "main": "hatch3d_wasm.js",
+  "types": "hatch3d_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
