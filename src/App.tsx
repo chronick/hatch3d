@@ -31,7 +31,18 @@ import { HatchFamilySelect } from "./components/HatchFamilySelect";
 import { HoverReset } from "./components/HoverReset";
 import { OrbitCube } from "./components/OrbitCube";
 import { XYPad } from "./components/XYPad";
+import { ExportModal } from "./components/ExportModal";
+import { PresetMenu } from "./components/PresetMenu";
 import type { HatchGroupConfig } from "./components/HatchGroupControls";
+import { configHash } from "./utils/config-hash";
+import { exportPng, PNG_THEMES } from "./utils/export-png";
+import { useHashRoute } from "./hooks/useHashRoute";
+import {
+  getPresetsForComposition,
+  saveUserPreset,
+  deleteUserPreset,
+} from "./compositions/presets";
+import type { CompositionPreset } from "./compositions/types";
 
 const PAGE_SIZES: Record<string, { label: string; w: number; h: number }> = {
   a3: { label: "A3", w: 420, h: 297 },
@@ -120,6 +131,14 @@ export default function App() {
   // Shape
   const [surfaceKey, setSurfaceKey] = useState(INITIAL.surfaceKey);
   const [compositionKey, setCompositionKey] = useState(INITIAL.compositionKey);
+
+  // Hash-based routing: sync compositionKey with URL hash
+  useHashRoute(
+    compositionKey,
+    setCompositionKey,
+    (key: string) => compositionRegistry.has(key),
+    DEFAULTS.compositionKey,
+  );
 
   // Surface params (generic sliders mapped to surface)
   const [paramA, setParamA] = useState(INITIAL.paramA);
@@ -818,11 +837,24 @@ export default function App() {
     setViewPanY(0);
   }, []);
 
-  // Export
-  const exportSVG = useCallback(() => {
-    const { pageW, pageH, contentW, contentH, scale, cx, cy } = exportLayout;
+  // Deterministic config hash for filenames
+  const fileHash = useMemo(() => configHash({
+    compositionKey,
+    resolvedValues,
+    currentMacros,
+    hatchGroupValues: currentHatchGroups,
+    ...(is2d ? {} : { surfaceKey, camTheta, camPhi, camDist, hatchFamily, hatchCount, hatchSamples }),
+  }), [compositionKey, resolvedValues, currentMacros, currentHatchGroups, is2d, surfaceKey, camTheta, camPhi, camDist, hatchFamily, hatchCount, hatchSamples]);
 
-    const content = `<?xml version="1.0" encoding="UTF-8"?>
+  const fileBasename = useMemo(() => {
+    const prefix = is2d ? "hatch2d" : "hatch3d";
+    return `${prefix}_${compositionKey}_${fileHash}`;
+  }, [is2d, compositionKey, fileHash]);
+
+  // Build SVG content string (shared between SVG and PNG export)
+  const buildSVGContent = useCallback(() => {
+    const { pageW, pageH, contentW, contentH, scale, cx, cy } = exportLayout;
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
   <defs>
     <clipPath id="margin-clip">
@@ -835,14 +867,78 @@ export default function App() {
     </g>
   </g>${previewBorderPaths.length > 0 ? `\n  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">\n    ${previewBorderPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}\n  </g>` : ""}
 </svg>`;
+  }, [svgPaths, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths]);
+
+  // Export SVG
+  const handleExportSVG = useCallback(() => {
+    const content = buildSVGContent();
     const blob = new Blob([content], { type: "image/svg+xml" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = is2d ? `hatch2d_${compositionKey}.svg` : `hatch3d_${compositionKey}_${surfaceKey}.svg`;
+    a.download = `${fileBasename}.svg`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [svgPaths, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths, compositionKey, surfaceKey, is2d]);
+  }, [buildSVGContent, fileBasename]);
+
+  // Export PNG
+  const handleExportPNG = useCallback(async (pngTheme: "light" | "dark", scale: number) => {
+    const content = buildSVGContent();
+    try {
+      const blob = await exportPng(content, PNG_THEMES[pngTheme], scale);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${fileBasename}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn("PNG export failed:", (e as Error).message);
+    }
+  }, [buildSVGContent, fileBasename]);
+
+  // Export modal state
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+
+  // Preset management
+  const [presetVersion, setPresetVersion] = useState(0);
+
+  const presets = useMemo(
+    () => getPresetsForComposition(compositionKey, comp.suggestedPresets),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [compositionKey, comp.suggestedPresets, presetVersion],
+  );
+
+  const handleSavePreset = useCallback((name: string) => {
+    const key = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+    const preset: CompositionPreset = {
+      name,
+      values: {
+        controls: compValues[compositionKey],
+        macros: macroValues[compositionKey],
+        hatchGroups: hatchGroupValues[compositionKey],
+      },
+    };
+    saveUserPreset(compositionKey, key, preset);
+    setPresetVersion((v) => v + 1);
+  }, [compositionKey, compValues, macroValues, hatchGroupValues]);
+
+  const handleLoadPreset = useCallback((preset: CompositionPreset) => {
+    if (preset.values.controls) {
+      setCompValues((prev) => ({ ...prev, [compositionKey]: preset.values.controls as Record<string, unknown> }));
+    }
+    if (preset.values.macros) {
+      setMacroValues((prev) => ({ ...prev, [compositionKey]: preset.values.macros as Record<string, number> }));
+    }
+    if (preset.values.hatchGroups) {
+      setHatchGroupValues((prev) => ({ ...prev, [compositionKey]: preset.values.hatchGroups as Record<string, HatchGroupConfig> }));
+    }
+  }, [compositionKey]);
+
+  const handleDeletePreset = useCallback((key: string) => {
+    deleteUserPreset(compositionKey, key);
+    setPresetVersion((v) => v + 1);
+  }, [compositionKey]);
 
   const surfaceInfo = SURFACES[surfaceKey];
   const paramKeys = Object.keys(surfaceInfo.defaults);
@@ -909,8 +1005,11 @@ export default function App() {
           >
             {theme === "auto" ? "\u25D1" : theme === "light" ? "\u2600" : "\u263E"}
           </button>
-          <button onClick={exportSVG} style={{ ...btnStyle, background: "var(--fg)", color: "var(--bg-canvas)" }}>
-            EXPORT SVG
+          <button
+            onClick={() => setExportModalOpen(true)}
+            style={{ ...btnStyle, background: "var(--fg)", color: "var(--bg-canvas)" }}
+          >
+            EXPORT
           </button>
         </div>
       </div>
@@ -1022,6 +1121,17 @@ export default function App() {
               onResetMacros={resetMacros}
               onResetGroup={resetControlGroup}
               onResetAll={resetAllControls}
+            />
+          )}
+
+          {compositionKey !== "single" && (
+            <PresetMenu
+              compositionKey={compositionKey}
+              suggested={presets.suggested}
+              user={presets.user}
+              onSave={handleSavePreset}
+              onLoad={handleLoadPreset}
+              onDelete={handleDeletePreset}
             />
           )}
 
@@ -1318,6 +1428,14 @@ export default function App() {
       </div>
 
       <canvas ref={canvasRef} style={{ display: "none" }} />
+
+      <ExportModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        onExportSVG={handleExportSVG}
+        onExportPNG={handleExportPNG}
+        currentTheme={theme}
+      />
     </div>
   );
 }
