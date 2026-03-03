@@ -26,11 +26,8 @@ import { Section } from "./components/Section";
 import { Slider } from "./components/Slider";
 import { Toggle } from "./components/Toggle";
 import { CompositionControls } from "./components/CompositionControls";
+import { ThreeDControls } from "./components/ThreeDControls";
 import { CompositionBrowser } from "./components/CompositionBrowser";
-import { HatchFamilySelect } from "./components/HatchFamilySelect";
-import { HoverReset } from "./components/HoverReset";
-import { OrbitCube } from "./components/OrbitCube";
-import { XYPad } from "./components/XYPad";
 import { ExportModal } from "./components/ExportModal";
 import { PresetMenu } from "./components/PresetMenu";
 import type { HatchGroupConfig } from "./components/HatchGroupControls";
@@ -1069,10 +1066,10 @@ export default function App() {
               currentKey={compositionKey}
               onSelect={setCompositionKey}
             />
-            {compositionKey !== "single" && !isNarrow && controlsPanel === "inline" && (
+            {!isNarrow && controlsPanel === "inline" && (comp.controls || !is2d) && (
               <button
                 onClick={() => setControlsPanel("side")}
-                title="Undock composition controls to side panel"
+                title="Undock controls to side panel"
                 style={{ ...tagStyle, fontSize: 9, padding: "2px 6px", alignSelf: "flex-start" }}
               >
                 Undock controls &rarr;
@@ -1108,23 +1105,59 @@ export default function App() {
             </Section>
           )}
 
-          {/* Inline composition controls (when not using side panel) */}
-          {compositionKey !== "single" && (isNarrow || controlsPanel === "inline") && comp.controls && (
-            <CompositionControls
-              controls={comp.controls}
-              macros={comp.macros}
-              hatchGroups={"hatchGroups" in comp ? (comp as Composition3DDefinition).hatchGroups : undefined}
-              currentValues={currentValues}
-              currentMacros={currentMacros}
-              resolvedValues={resolvedValues}
-              currentHatchGroups={currentHatchGroups}
-              onControlChange={setCompValue}
-              onMacroChange={setMacroValue}
-              onHatchGroupChange={setHatchGroupValue}
-              onResetMacros={resetMacros}
-              onResetGroup={resetControlGroup}
-              onResetAll={resetAllControls}
-            />
+          {/* Inline composition controls + 3D controls (when not using side panel) */}
+          {(isNarrow || controlsPanel === "inline") && (
+            <>
+              {compositionKey !== "single" && comp.controls && (
+                <CompositionControls
+                  controls={comp.controls}
+                  macros={comp.macros}
+                  hatchGroups={"hatchGroups" in comp ? (comp as Composition3DDefinition).hatchGroups : undefined}
+                  currentValues={currentValues}
+                  currentMacros={currentMacros}
+                  resolvedValues={resolvedValues}
+                  currentHatchGroups={currentHatchGroups}
+                  onControlChange={setCompValue}
+                  onMacroChange={setMacroValue}
+                  onHatchGroupChange={setHatchGroupValue}
+                  onResetMacros={resetMacros}
+                  onResetGroup={resetControlGroup}
+                  onResetAll={resetAllControls}
+                />
+              )}
+              {!is2d && (
+                <ThreeDControls
+                  hatchFamily={hatchFamily}
+                  setHatchFamily={(f) => setHatchFamily(f as HatchFamily)}
+                  hatchCount={hatchCount}
+                  setHatchCount={setHatchCount}
+                  hatchSamples={hatchSamples}
+                  setHatchSamples={setHatchSamples}
+                  hatchAngle={hatchAngle}
+                  setHatchAngle={setHatchAngle}
+                  useOcclusion={useOcclusion}
+                  setUseOcclusion={setUseOcclusion}
+                  depthRes={depthRes}
+                  setDepthRes={setDepthRes}
+                  depthBias={depthBias}
+                  setDepthBias={setDepthBias}
+                  showMesh={showMesh}
+                  setShowMesh={setShowMesh}
+                  camOrtho={camOrtho}
+                  setCamOrtho={setCamOrtho}
+                  camDist={camDist}
+                  setCamDist={setCamDist}
+                  camTheta={camTheta}
+                  setCamTheta={setCamTheta}
+                  camPhi={camPhi}
+                  setCamPhi={setCamPhi}
+                  panX={panX}
+                  setPanX={setPanX}
+                  panY={panY}
+                  setPanY={setPanY}
+                />
+              )}
+            </>
           )}
 
           {compositionKey !== "single" && (
@@ -1138,42 +1171,8 @@ export default function App() {
             />
           )}
 
-          {!is2d && (
-            <Section title="HATCHING" preview={`${hatchFamily} \u00b7 ${hatchCount} lines`}>
-              <HatchFamilySelect
-                value={hatchFamily}
-                onChange={(f) => setHatchFamily(f as HatchFamily)}
-              />
-              <Slider label="Count" value={hatchCount} onChange={setHatchCount} min={5} max={80} step={1} />
-              <Slider label="Samples" value={hatchSamples} onChange={setHatchSamples} min={10} max={120} step={1} />
-              {(hatchFamily === "diagonal" || hatchFamily === "crosshatch") && (
-                <Slider label="Angle" value={hatchAngle} onChange={setHatchAngle} min={0} max={Math.PI} step={0.01} />
-              )}
-            </Section>
-          )}
-
-          {!is2d && (
-            <Section title="OCCLUSION" preview={useOcclusion ? `${depthRes}px` : "off"}>
-              <Toggle label="Depth-buffer HLR" value={useOcclusion} onChange={setUseOcclusion} />
-              {useOcclusion && (
-                <>
-                  <Slider
-                    label="Resolution"
-                    value={depthRes}
-                    onChange={(v) => setDepthRes(Math.round(v))}
-                    min={128}
-                    max={1024}
-                    step={64}
-                  />
-                  <Slider label="Bias" value={depthBias} onChange={setDepthBias} min={0.0001} max={0.02} step={0.0001} />
-                </>
-              )}
-            </Section>
-          )}
-
           <Section title="DISPLAY" preview={`sw ${strokeWidth.toFixed(1)}`}>
             <Slider label="Stroke W" value={strokeWidth} onChange={setStrokeWidth} min={0.1} max={2} step={0.05} />
-            {!is2d && <Toggle label="Show mesh" value={showMesh} onChange={setShowMesh} />}
           </Section>
 
           <Section title="DENSITY" preview={densityFilterEnabled ? `max ${densityMax}` : "off"}>
@@ -1238,44 +1237,6 @@ export default function App() {
             )}
           </Section>
 
-          {!is2d && (
-            <Section title="CAMERA" preview={`\u03B8${camTheta.toFixed(2)} \u03C6${camPhi.toFixed(2)} d${camDist.toFixed(0)}`}>
-              <div style={{ display: "flex", gap: 3 }}>
-                {(["perspective", "orthographic"] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setCamOrtho(m === "orthographic")}
-                    style={{
-                      ...tagStyle,
-                      background: (m === "orthographic") === camOrtho ? "var(--fg)" : "transparent",
-                      color: (m === "orthographic") === camOrtho ? "var(--bg-canvas)" : "var(--fg)",
-                    }}
-                  >
-                    {m === "perspective" ? "Perspective" : "Ortho"}
-                  </button>
-                ))}
-              </div>
-              <Slider label="Distance" value={camDist} onChange={setCamDist} min={1} max={25} step={0.1} />
-              <div style={{ display: "flex", gap: 8, marginTop: 4, marginBottom: 4 }}>
-                <XYPad valueX={panX} valueY={panY} onChangeX={setPanX} onChangeY={setPanY} size={100} />
-                <OrbitCube theta={camTheta} phi={camPhi} onChangeTheta={setCamTheta} onChangePhi={setCamPhi} size={100} />
-              </div>
-              <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--fg-muted)" }}>
-                <HoverReset label="Pan" onReset={() => { setPanX(0); setPanY(0); }}>
-                  X {panX.toFixed(2)} Y {panY.toFixed(2)}
-                </HoverReset>
-                <HoverReset label="Orbit" onReset={() => { setCamTheta(0.6); setCamPhi(0.35); }}>
-                  &theta; {camTheta.toFixed(2)} &phi; {camPhi.toFixed(2)}
-                </HoverReset>
-              </div>
-              <Slider label="Orbit \u03B8" value={camTheta} onChange={setCamTheta} min={-Math.PI} max={Math.PI} step={0.01} />
-              <Slider label="Orbit \u03C6" value={camPhi} onChange={setCamPhi} min={-1.4} max={1.4} step={0.01} />
-              <div style={{ color: "var(--fg-faint)", fontSize: 10, marginTop: 2 }}>
-                Preview: drag to pan · pinch to zoom · dbl-click fit
-              </div>
-            </Section>
-          )}
-
           <div
             style={{
               color: "var(--fg-faint)",
@@ -1294,8 +1255,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* Side panel for composition controls (wide viewports, opt-in) */}
-        {compositionKey !== "single" && !isNarrow && controlsPanel === "side" && comp.controls && (
+        {/* Side panel for composition + 3D controls (wide viewports, opt-in) */}
+        {!isNarrow && controlsPanel === "side" && (comp.controls || !is2d) && (
           <div
             style={{
               width: 280,
@@ -1325,28 +1286,62 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => setControlsPanel("inline")}
-                  title="Dock composition controls back to main sidebar"
+                  title="Dock controls back to main sidebar"
                   style={{ ...tagStyle, fontSize: 9, padding: "2px 6px" }}
                 >
                   &larr; Dock
                 </button>
               </div>
             </div>
-            <CompositionControls
-              controls={comp.controls}
-              macros={comp.macros}
-              hatchGroups={"hatchGroups" in comp ? (comp as Composition3DDefinition).hatchGroups : undefined}
-              currentValues={currentValues}
-              currentMacros={currentMacros}
-              resolvedValues={resolvedValues}
-              currentHatchGroups={currentHatchGroups}
-              onControlChange={setCompValue}
-              onMacroChange={setMacroValue}
-              onHatchGroupChange={setHatchGroupValue}
-              onResetMacros={resetMacros}
-              onResetGroup={resetControlGroup}
-              onResetAll={resetAllControls}
-            />
+            {comp.controls && (
+              <CompositionControls
+                controls={comp.controls}
+                macros={comp.macros}
+                hatchGroups={"hatchGroups" in comp ? (comp as Composition3DDefinition).hatchGroups : undefined}
+                currentValues={currentValues}
+                currentMacros={currentMacros}
+                resolvedValues={resolvedValues}
+                currentHatchGroups={currentHatchGroups}
+                onControlChange={setCompValue}
+                onMacroChange={setMacroValue}
+                onHatchGroupChange={setHatchGroupValue}
+                onResetMacros={resetMacros}
+                onResetGroup={resetControlGroup}
+                onResetAll={resetAllControls}
+              />
+            )}
+            {!is2d && (
+              <ThreeDControls
+                hatchFamily={hatchFamily}
+                setHatchFamily={(f) => setHatchFamily(f as HatchFamily)}
+                hatchCount={hatchCount}
+                setHatchCount={setHatchCount}
+                hatchSamples={hatchSamples}
+                setHatchSamples={setHatchSamples}
+                hatchAngle={hatchAngle}
+                setHatchAngle={setHatchAngle}
+                useOcclusion={useOcclusion}
+                setUseOcclusion={setUseOcclusion}
+                depthRes={depthRes}
+                setDepthRes={setDepthRes}
+                depthBias={depthBias}
+                setDepthBias={setDepthBias}
+                showMesh={showMesh}
+                setShowMesh={setShowMesh}
+                camOrtho={camOrtho}
+                setCamOrtho={setCamOrtho}
+                camDist={camDist}
+                setCamDist={setCamDist}
+                camTheta={camTheta}
+                setCamTheta={setCamTheta}
+                camPhi={camPhi}
+                setCamPhi={setCamPhi}
+                panX={panX}
+                setPanX={setPanX}
+                panY={panY}
+                setPanY={setPanY}
+              />
+            )}
           </div>
         )}
 
