@@ -64,7 +64,7 @@ const voronoiTexture: Composition2DDefinition = {
     },
     fillCells: {
       type: "toggle",
-      label: "Fill Cells",
+      label: "Fill Cells (experimental, may produce overlaps)",
       default: false,
       group: "Fill",
     },

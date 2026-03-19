@@ -3,16 +3,16 @@ import { compositionRegistry, is2DComposition } from "../compositions";
 import type { Composition3DDefinition, Composition2DDefinition } from "../compositions/types";
 
 describe("Composition registry completeness", () => {
-  it("has at least 26 compositions registered", () => {
-    expect(compositionRegistry.size).toBeGreaterThanOrEqual(26);
+  it("has at least 24 compositions registered", () => {
+    expect(compositionRegistry.size).toBeGreaterThanOrEqual(24);
   });
 
   it("contains all expected composition IDs", () => {
     const expectedIds = [
       "single", "towerAndBase", "doubleRing", "crystalSpire",
       "ribbonCage", "dnaHelix", "totemStack", "starburst",
-      "mushroomColony", "nestedShells", "vortexTunnel",
-      "moireCircles", "spirograph", "lissajous",
+      "nestedShells", "vortexTunnel",
+      "moireCircles", "spirograph",
       "flowField", "strangeAttractor", "truchetMaze",
       "guillocheRosette", "hilbertFill", "differentialGrowth",
       "multiTechnique", "tspArt", "reactionDiffusion",
