@@ -91,7 +91,7 @@ const growthOnSurface: Composition2DDefinition = {
     iterations: {
       type: "slider",
       label: "Iterations",
-      default: 400,
+      default: 2000,
       min: 50,
       max: 3000,
       step: 50,
@@ -182,15 +182,17 @@ const growthOnSurface: Composition2DDefinition = {
 
     // Initialize closed curve as circle in UV space centered at (0.5, 0.5)
     const damping = 0.5;
-    const alignStrength = 0.3;
+    const alignStrength = 0.03;
     const restLength = maxEdgeLength * 0.6;
 
+    // Scale radius so initial edge lengths are near maxEdgeLength (drives immediate subdivision)
+    const effectiveRadius = Math.max(initialRadius, (maxEdgeLength * initialNodeCount) / (2 * Math.PI) * 1.1);
     const nodes: Node[] = [];
     for (let i = 0; i < initialNodeCount; i++) {
       const t = (i / initialNodeCount) * Math.PI * 2;
       nodes.push({
-        u: 0.5 + initialRadius * Math.cos(t),
-        v: 0.5 + initialRadius * Math.sin(t),
+        u: 0.5 + effectiveRadius * Math.cos(t),
+        v: 0.5 + effectiveRadius * Math.sin(t),
         fu: 0,
         fv: 0,
       });
@@ -295,6 +297,15 @@ const growthOnSurface: Composition2DDefinition = {
         nodes[i].v += nodes[i].fv * damping;
 
         // Boundary: keep within UV [0.05, 0.95]
+        nodes[i].u = Math.max(0.05, Math.min(0.95, nodes[i].u));
+        nodes[i].v = Math.max(0.05, Math.min(0.95, nodes[i].v));
+      }
+
+      // Random perturbation to break symmetry and drive growth
+      for (let i = 0; i < nodes.length; i++) {
+        nodes[i].u += (Math.random() - 0.5) * 0.002;
+        nodes[i].v += (Math.random() - 0.5) * 0.002;
+        // Re-clamp after perturbation
         nodes[i].u = Math.max(0.05, Math.min(0.95, nodes[i].u));
         nodes[i].v = Math.max(0.05, Math.min(0.95, nodes[i].v));
       }

@@ -41,7 +41,7 @@ const differentialGrowth: Composition2DDefinition = {
     iterations: {
       type: "slider",
       label: "Iterations",
-      default: 500,
+      default: 3000,
       min: 100,
       max: 5000,
       step: 50,
@@ -116,12 +116,13 @@ const differentialGrowth: Composition2DDefinition = {
     const cx = width / 2;
     const cy = height / 2;
     const damping = 0.5;
-    const alignStrength = 0.3;
+    const alignStrength = 0.03;
     const restLength = maxEdgeLength * 0.6;
 
     // Initialize closed curve as circle
+    // Scale radius so initial edge lengths are near maxEdgeLength (drives immediate subdivision)
     const nodes: Node[] = [];
-    const initR = 30;
+    const initR = Math.max(30, (maxEdgeLength * initialNodeCount) / (2 * Math.PI) * 1.1);
     for (let i = 0; i < initialNodeCount; i++) {
       const t = (i / initialNodeCount) * Math.PI * 2;
       nodes.push({
@@ -243,6 +244,12 @@ const differentialGrowth: Composition2DDefinition = {
           nodes[i].x = cx + (dx / dist) * boundaryRadius;
           nodes[i].y = cy + (dy / dist) * boundaryRadius;
         }
+      }
+
+      // Random perturbation to break symmetry and drive growth
+      for (let i = 0; i < nodes.length; i++) {
+        nodes[i].x += (Math.random() - 0.5) * 1.0;
+        nodes[i].y += (Math.random() - 0.5) * 1.0;
       }
 
       // Insert new nodes where edges exceed max length

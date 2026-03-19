@@ -126,8 +126,8 @@ const reactionDiffusion: Composition2DDefinition = {
     const size = N * N;
     let u = new Float64Array(size);
     let v = new Float64Array(size);
-    const uNext = new Float64Array(size);
-    const vNext = new Float64Array(size);
+    let uNext = new Float64Array(size);
+    let vNext = new Float64Array(size);
 
     // Fill with u=1, v=0
     u.fill(1.0);
@@ -224,13 +224,9 @@ const reactionDiffusion: Composition2DDefinition = {
           if (vNext[idx] > 1) vNext[idx] = 1;
         }
       }
-      // Swap buffers
-      const tmpU = u;
-      const tmpV = v;
-      u = uNext;
-      v = vNext;
-      // Reuse old arrays for next iteration
-      tmpU; tmpV; // (they're now pointed to by uNext/vNext references)
+      // Swap buffers (double-buffering)
+      [u, uNext] = [uNext, u];
+      [v, vNext] = [vNext, v];
     }
 
     // Marching squares contour extraction on the v field
