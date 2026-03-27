@@ -458,17 +458,17 @@ function getFeedConfig(): { url: string; token: string } {
   return { url, token };
 }
 
-async function uploadImage(config: { url: string; token: string }, key: string, pngBuffer: Buffer): Promise<void> {
+async function uploadFile(config: { url: string; token: string }, key: string, body: Buffer | string, contentType: string): Promise<void> {
   const resp = await fetch(`${config.url}/image/${key}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.token}`,
-      "Content-Type": "image/png",
+      "Content-Type": contentType,
     },
-    body: pngBuffer,
+    body,
   });
   if (!resp.ok) {
-    throw new Error(`Image upload failed: ${resp.status} ${await resp.text()}`);
+    throw new Error(`Upload failed (${key}): ${resp.status} ${await resp.text()}`);
   }
 }
 
@@ -645,9 +645,11 @@ async function main(): Promise<void> {
     }
 
     if (!dryRun) {
-      // Upload image to R2
+      // Upload PNG and SVG to R2
       const imageKey = `plotter/${itemId}.png`;
-      await uploadImage(config, imageKey, pngBuffer);
+      const svgKey = `plotter/${itemId}.svg`;
+      await uploadFile(config, imageKey, pngBuffer, "image/png");
+      await uploadFile(config, svgKey, Buffer.from(svgContent, "utf-8"), "image/svg+xml");
 
       // Push item to feed
       const feedItemId = await pushItem(config, {
@@ -661,12 +663,14 @@ async function main(): Promise<void> {
           composition: preset.composition,
           presetName: preset.name,
           values: preset.values,
+          camera: preset.camera ?? null,
+          svg_key: svgKey,
           stats,
           tags: preset.tags,
         },
         available_actions: ["accept", "reject", "evolve", "defer"],
       });
-      console.log(`    Pushed: ${feedItemId}`);
+      console.log(`    Pushed: ${feedItemId} (png + svg)`);
     }
   }
 
