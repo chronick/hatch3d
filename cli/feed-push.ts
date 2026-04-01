@@ -27,6 +27,8 @@ import type { CompositionDefinition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
 import { buildSVGContent, computeExportLayout } from "./svg-export.js";
+import { generateBiasedPresets, logGeneration, collectFromFeedAPI, collectFromPrintQueue, loadAllObservations, computeModel } from "../src/preferences/index.js";
+import type { PreferenceModel, GeneratedPreset } from "../src/preferences/index.js";
 
 // ── Curated parameter presets for feed-worthy output ──
 
@@ -402,6 +404,8 @@ const { values: args } = parseArgs({
     "list-presets": { type: "boolean", default: false },
     "save-local": { type: "string" },
     scale: { type: "string", default: "4" },
+    "no-preferences": { type: "boolean", default: false },
+    exploration: { type: "string", default: "0.2" },
     help: { type: "boolean", short: "h", default: false },
   },
   strict: false,
@@ -420,6 +424,8 @@ Options:
   --save-local DIR       Also save renders to local directory
   --list-presets         Show all curated presets
   --scale N              PNG scale factor (default: 4)
+  --no-preferences       Disable preference model, use only curated presets
+  --exploration N        Exploration rate 0-1 (default: 0.2)
   -h, --help             Show this help
   `);
   process.exit(0);
@@ -610,11 +616,69 @@ async function main(): Promise<void> {
   const saveLocal = args["save-local"] as string | undefined;
   const forceComposition = args.composition as string | undefined;
 
+  const noPreferences = args["no-preferences"] ?? false;
+  const explorationRate = parseFloat(args.exploration || "0.2");
+
   const config = dryRun ? { url: "", token: "" } : getFeedConfig();
   const batch = new Date().toISOString().slice(0, 10);
-  const selected = selectPresets(count, forceComposition);
+  const modelPath = resolve(import.meta.dirname ?? __dirname, "../data/preferences/model.json");
+  const dataDir = resolve(import.meta.dirname ?? __dirname, "../data/preferences");
 
-  console.log(`Generating ${selected.length} feed items (batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
+  let selected: FeedPreset[];
+  let generatedPresets: GeneratedPreset[] | null = null;
+
+  // Auto-sync preferences before generation (unless --no-preferences)
+  if (!noPreferences && !dryRun) {
+    mkdirSync(dataDir, { recursive: true });
+    try {
+      console.log("Syncing preferences...");
+      const feedCount = config.token ? await collectFromFeedAPI(config) : 0;
+      const pqCount = collectFromPrintQueue(resolve(process.env.HOME || "~", "git/vault"));
+      if (feedCount + pqCount > 0) {
+        console.log(`  ${feedCount + pqCount} new observations`);
+      }
+      const observations = loadAllObservations();
+      if (observations.length > 0) {
+        const model = computeModel(observations);
+        writeFileSync(modelPath, JSON.stringify(model, null, 2));
+        console.log(`  Model updated (${observations.length} observations)\n`);
+      }
+    } catch (e) {
+      console.log(`  Preference sync failed (${e instanceof Error ? e.message : e}), continuing without\n`);
+    }
+  }
+
+  // Use preference model if available, fall back to curated presets
+  if (!noPreferences && existsSync(modelPath)) {
+    const model: PreferenceModel = JSON.parse(readFileSync(modelPath, "utf-8"));
+
+    const curatedAsGenerated: GeneratedPreset[] = FEED_PRESETS.map((p) => ({
+      ...p,
+      source: "preset" as const,
+      confidence: 0.5,
+    }));
+
+    generatedPresets = generateBiasedPresets(model, compositionRegistry, {
+      count,
+      explorationRate,
+      forceComposition,
+      curatedPresets: curatedAsGenerated,
+    });
+
+    selected = generatedPresets.map((gp) => ({
+      composition: gp.composition,
+      name: gp.name,
+      description: gp.description,
+      values: gp.values,
+      camera: gp.camera ?? undefined,
+      tags: gp.tags,
+    }));
+
+    console.log(`Generating ${selected.length} feed items via preference model (exploration: ${(explorationRate * 100).toFixed(0)}%, batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
+  } else {
+    selected = selectPresets(count, forceComposition);
+    console.log(`Generating ${selected.length} feed items from curated presets (batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
+  }
 
   if (saveLocal) {
     mkdirSync(resolve(saveLocal), { recursive: true });
@@ -636,6 +700,21 @@ async function main(): Promise<void> {
 
     const pngBuffer = await renderToPng(svgContent, scale);
     console.log(`    Rendered: ${stats.paths} paths, ${stats.lines} lines (${durationMs.toFixed(0)}ms), PNG ${(pngBuffer.length / 1024).toFixed(0)}KB`);
+
+    // Log observation for preference learning
+    try {
+      logGeneration(
+        itemId,
+        preset.composition,
+        preset.name,
+        preset.values,
+        preset.camera ?? null,
+        preset.tags,
+        stats as { lines: number; verts: number; paths: number },
+        generatedPresets?.[i]?.source,
+        generatedPresets?.[i]?.parentId,
+      );
+    } catch { /* non-critical */ }
 
     // Save locally if requested
     if (saveLocal) {

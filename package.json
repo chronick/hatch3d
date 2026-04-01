@@ -17,7 +17,12 @@
     "render:info": "tsx cli/render.ts --info",
     "feed": "tsx cli/feed-push.ts",
     "feed:dry": "tsx cli/feed-push.ts --dry-run",
-    "feed:presets": "tsx cli/feed-push.ts --list-presets"
+    "feed:presets": "tsx cli/feed-push.ts --list-presets",
+    "feed:no-pref": "tsx cli/feed-push.ts --no-preferences",
+    "pref:sync": "tsx cli/preference-sync.ts",
+    "pref:collect": "tsx cli/preference-sync.ts --collect",
+    "pref:learn": "tsx cli/preference-sync.ts --learn",
+    "pref:stats": "tsx cli/preference-sync.ts --stats"
   },
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",

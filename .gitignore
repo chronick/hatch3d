@@ -24,3 +24,6 @@ dist-ssr
 
 # Rust/WASM build artifacts (keep pkg/ tracked for CI; only ignore target/)
 src/wasm/target/
+
+# Preference learning data (local, not committed)
+data/preferences/
