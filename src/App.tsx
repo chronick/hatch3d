@@ -119,7 +119,9 @@ export default function App() {
 
   // Shape
   const [surfaceKey, setSurfaceKey] = useState(INITIAL.surfaceKey);
-  const [compositionKey, setCompositionKey] = useState(INITIAL.compositionKey);
+  const [compositionKey, setCompositionKey] = useState(
+    compositionRegistry.has(INITIAL.compositionKey) ? INITIAL.compositionKey : DEFAULTS.compositionKey,
+  );
 
   // Hash-based routing: sync compositionKey with URL hash
   useHashRoute(
@@ -227,8 +229,9 @@ export default function App() {
     setTheme(prev => prev === "auto" ? "light" : prev === "light" ? "dark" : "auto");
   }, []);
 
-  // Current composition helpers — use registry
-  const comp = compositionRegistry.get(compositionKey)!;
+  // Current composition helpers — use registry (fall back if stale localStorage/hash)
+  const comp = compositionRegistry.get(compositionKey)
+    ?? compositionRegistry.get(DEFAULTS.compositionKey)!;
   const is2d = is2DComposition(comp);
   const controlDefaults = useMemo(() => getControlDefaults(comp.controls), [comp.controls]);
   const macroDefaults = useMemo(() => getMacroDefaults(comp.macros), [comp.macros]);
