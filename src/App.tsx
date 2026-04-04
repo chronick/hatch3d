@@ -24,6 +24,7 @@ import { RenderButton } from "./components/RenderButton";
 import type { HatchGroupConfig } from "./components/HatchGroupControls";
 import { configHash } from "./utils/config-hash";
 import { exportPng, PNG_THEMES } from "./utils/export-png";
+import { clipSVGPath, type Rect } from "./utils/clip";
 import { useHashRoute } from "./hooks/useHashRoute";
 import {
   getPresetsForComposition,
@@ -591,17 +592,21 @@ export default function App() {
   // Build SVG content string (shared between SVG and PNG export)
   const buildSVGContent = useCallback(() => {
     const { pageW, pageH, contentW, contentH, scale, cx, cy } = exportLayout;
+
+    // Clip paths to the margin boundary so plotters don't draw off-paper
+    const clipRect: Rect = {
+      xMin: margin + clipInset,
+      yMin: margin + clipInset,
+      xMax: margin + contentW - clipInset,
+      yMax: margin + contentH - clipInset,
+    };
+    const transform = { cx, cy, scale };
+    const clippedPaths = svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
+
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
-  <defs>
-    <clipPath id="margin-clip">
-      <rect x="${margin + clipInset}" y="${margin + clipInset}" width="${contentW - clipInset * 2}" height="${contentH - clipInset * 2}"/>
-    </clipPath>
-  </defs>
-  <g clip-path="url(#margin-clip)">
-    <g transform="translate(${cx},${cy}) scale(${scale})" fill="none" stroke="black" stroke-width="${strokeWidth / scale}" stroke-linecap="round" stroke-linejoin="round">
-      ${svgPaths.map((d) => `<path d="${d}"/>`).join("\n      ")}
-    </g>
+  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">
+    ${clippedPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}
   </g>${previewBorderPaths.length > 0 ? `\n  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">\n    ${previewBorderPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}\n  </g>` : ""}
 </svg>`;
   }, [svgPaths, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths]);
