@@ -37,10 +37,10 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly generate_voronoi: (a: number, b: number) => [number, number];
-    readonly generate_ink_vortex: (a: number, b: number) => [number, number];
     readonly generate_reaction_diffusion: (a: number, b: number) => [number, number];
     readonly generate_all_layers: (a: number, b: number) => [number, number];
     readonly generate_flow_field: (a: number, b: number) => [number, number];
+    readonly generate_ink_vortex: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

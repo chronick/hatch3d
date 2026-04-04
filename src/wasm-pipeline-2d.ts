@@ -118,6 +118,16 @@ export function wasmGenerateReactionDiffusion(
   return deserialize2DPolylines(result);
 }
 
+// Morphology string → numeric index for WASM
+const MORPHOLOGY_MAP: Record<string, number> = {
+  warp: 0,
+  ridged: 1,
+  curl: 2,
+  radial: 3,
+  spiral: 4,
+  uniform: 5,
+};
+
 export function wasmGenerateFlowField(
   input: Composition2DInput,
 ): { x: number; y: number }[][] | null {
@@ -128,12 +138,17 @@ export function wasmGenerateFlowField(
   const data = new Float64Array([
     input.width,
     input.height,
+    MORPHOLOGY_MAP[v.morphology as string] ?? 0,
     v.noiseScale as number,
     Math.round(v.noiseOctaves as number),
+    v.warpAmount as number,
+    v.noiseBlend as number,
+    (v.uniformAngle as number) * (Math.PI / 180),
+    v.separation as number,
     v.stepLength as number,
     Math.round(v.maxSteps as number),
-    v.seedSpacing as number,
-    v.minDistance as number,
+    Math.round(v.minLength as number),
+    v.margin as number,
   ]);
 
   const result = mod.generate_flow_field(data);

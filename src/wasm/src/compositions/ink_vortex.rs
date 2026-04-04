@@ -1,5 +1,5 @@
 //! Fluid dynamics streamlines via point vortex fields (Biot-Savart law)
-//! with Jobard-Lefer evenly-spaced seeding.
+//! with shared streamline tracer.
 //!
 //! ## Input protocol (13 f64s):
 //! ```text
@@ -11,7 +11,9 @@
 use noise::OpenSimplex;
 use wasm_bindgen::prelude::*;
 
-use super::common::{encode_polylines_2d, simplex2d, SpatialHash};
+use super::common::{
+    encode_polylines_2d, simplex2d, trace_streamlines, StreamlineParams,
+};
 
 struct Vortex {
     x: f64,
@@ -127,35 +129,21 @@ pub fn generate_ink_vortex(input: &[f64]) -> Box<[f64]> {
     let step_len = input[7];
     let max_steps = input[8] as usize;
     let min_len = input[9] as usize;
-    let curl_noise = input[10];
+    let curl_noise_amt = input[10];
     let noise_scale = input[11];
     let margin = input[12];
 
-    let x0 = margin;
-    let y0 = margin;
-    let x1 = width - margin;
-    let y1 = height - margin;
-
-    // Extended trace region
-    let buf = width.max(height) * 0.5;
-    let tx0 = -buf;
-    let ty0 = -buf;
-    let tx1 = width + buf;
-    let ty1 = height + buf;
-
     let vortices = generate_vortices(arrangement_id, vortex_count, circulation_range, width, height);
+    let epsilon_sq = epsilon * epsilon;
+    let two_pi = std::f64::consts::PI * 2.0;
 
-    let noise = if curl_noise > 0.0 {
+    let noise = if curl_noise_amt > 0.0 {
         Some(OpenSimplex::new(0))
     } else {
         None
     };
 
-    let epsilon_sq = epsilon * epsilon;
-    let two_pi = std::f64::consts::PI * 2.0;
-
-    // Velocity function: Biot-Savart + optional curl noise
-    let velocity_at = |px: f64, py: f64| -> (f64, f64) {
+    let velocity_at = move |px: f64, py: f64| -> (f64, f64) {
         let mut vx = 0.0;
         let mut vy = 0.0;
 
@@ -168,7 +156,7 @@ pub fn generate_ink_vortex(input: &[f64]) -> Box<[f64]> {
             vy += dx * factor;
         }
 
-        if curl_noise > 0.0 {
+        if curl_noise_amt > 0.0 {
             if let Some(ref n) = noise {
                 let eps_curl = 1.0;
                 let nn = simplex2d(n, px * noise_scale, (py + eps_curl) * noise_scale);
@@ -177,145 +165,25 @@ pub fn generate_ink_vortex(input: &[f64]) -> Box<[f64]> {
                 let nw = simplex2d(n, (px - eps_curl) * noise_scale, py * noise_scale);
                 let cnx = (nn - ns) / (2.0 * eps_curl);
                 let cny = -(ne - nw) / (2.0 * eps_curl);
-                vx = vx * (1.0 - curl_noise) + cnx * curl_noise;
-                vy = vy * (1.0 - curl_noise) + cny * curl_noise;
+                vx = vx * (1.0 - curl_noise_amt) + cnx * curl_noise_amt;
+                vy = vy * (1.0 - curl_noise_amt) + cny * curl_noise_amt;
             }
         }
 
         (vx, vy)
     };
 
-    // Spatial hash for streamline distance queries
-    // Extended region for the spatial hash to handle trace overflow
-    let hash_width = width + buf * 2.0;
-    let hash_height = height + buf * 2.0;
-    let mut hash = SpatialHash::new(d_sep, hash_width, hash_height);
-
-    // Offset to convert from trace coords to hash coords (shift by buf)
-    let hash_offset = buf;
-
-    let in_trace_bounds = |x: f64, y: f64| -> bool {
-        x >= tx0 && x <= tx1 && y >= ty0 && y <= ty1
+    let params = StreamlineParams {
+        width,
+        height,
+        d_sep,
+        step_len,
+        max_steps,
+        min_len,
+        margin,
     };
 
-    let in_seed_bounds = |x: f64, y: f64| -> bool { x >= x0 && x <= x1 && y >= y0 && y <= y1 };
-
-    // RK2 trace in one direction
-    let trace_direction = |sx: f64, sy: f64, dir: f64, hash: &SpatialHash| -> Vec<(f64, f64)> {
-        let mut pts = Vec::new();
-        let mut x = sx;
-        let mut y = sy;
-
-        for step in 0..max_steps {
-            if !in_trace_bounds(x, y) {
-                break;
-            }
-            if step > 2 && hash.nearest_distance(x + hash_offset, y + hash_offset) < d_sep * 0.5 {
-                break;
-            }
-
-            pts.push((x, y));
-
-            // RK2 midpoint
-            let (v0x, v0y) = velocity_at(x, y);
-            let mag0 = (v0x * v0x + v0y * v0y).sqrt();
-            if mag0 < 1e-8 {
-                break;
-            }
-
-            let nx0 = (v0x / mag0) * dir;
-            let ny0 = (v0y / mag0) * dir;
-            let mx = x + nx0 * step_len * 0.5;
-            let my = y + ny0 * step_len * 0.5;
-
-            let (v1x, v1y) = velocity_at(mx, my);
-            let mag1 = (v1x * v1x + v1y * v1y).sqrt();
-            if mag1 < 1e-8 {
-                break;
-            }
-
-            x += (v1x / mag1) * dir * step_len;
-            y += (v1y / mag1) * dir * step_len;
-        }
-
-        pts
-    };
-
-    let mut polylines: Vec<Vec<(f64, f64)>> = Vec::new();
-
-    // Seed queue
-    let mut seed_queue: Vec<(f64, f64)> = Vec::new();
-    seed_queue.push((width / 2.0, height / 2.0));
-
-    // Dense grid seeds for full-page coverage
-    let grid_step = d_sep * 3.0;
-    let mut gy = y0;
-    while gy <= y1 {
-        let mut gx = x0;
-        while gx <= x1 {
-            seed_queue.push((gx, gy));
-            gx += grid_step;
-        }
-        gy += grid_step;
-    }
-
-    let mut queue_idx = 0;
-    while queue_idx < seed_queue.len() {
-        let (sx, sy) = seed_queue[queue_idx];
-        queue_idx += 1;
-
-        if hash.nearest_distance(sx + hash_offset, sy + hash_offset) < d_sep * 0.8 {
-            continue;
-        }
-
-        let forward = trace_direction(sx, sy, 1.0, &hash);
-        let backward = trace_direction(sx, sy, -1.0, &hash);
-
-        let mut combined = Vec::with_capacity(forward.len() + backward.len());
-        for i in (0..backward.len()).rev() {
-            combined.push(backward[i]);
-        }
-        let skip = if !backward.is_empty() { 1 } else { 0 };
-        for i in skip..forward.len() {
-            combined.push(forward[i]);
-        }
-
-        if combined.len() < min_len {
-            continue;
-        }
-
-        // Register points in spatial hash
-        for &(px, py) in &combined {
-            hash.insert(px + hash_offset, py + hash_offset);
-        }
-
-        // Generate perpendicular seed candidates (Jobard-Lefer)
-        let seed_interval = 4usize.max(combined.len() / 20);
-        let mut i = 0;
-        while i < combined.len().saturating_sub(1) {
-            let p0 = combined[i];
-            let p1 = combined[i + 1];
-            let dx = p1.0 - p0.0;
-            let dy = p1.1 - p0.1;
-            let len = (dx * dx + dy * dy).sqrt();
-            if len > 1e-8 {
-                let px = -dy / len;
-                let py = dx / len;
-                let left = (p0.0 + px * d_sep, p0.1 + py * d_sep);
-                let right = (p0.0 - px * d_sep, p0.1 - py * d_sep);
-                if in_seed_bounds(left.0, left.1) {
-                    seed_queue.push(left);
-                }
-                if in_seed_bounds(right.0, right.1) {
-                    seed_queue.push(right);
-                }
-            }
-            i += seed_interval;
-        }
-
-        polylines.push(combined);
-    }
-
+    let polylines = trace_streamlines(velocity_at, &params);
     encode_polylines_2d(&polylines).into_boxed_slice()
 }
 

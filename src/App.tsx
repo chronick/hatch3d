@@ -86,7 +86,7 @@ const DEFAULTS = {
   margin: 15,
   borderEnabled: false,
   borderStyle: "simple" as "simple" | "double" | "ticked" | "cropmarks",
-  densityFilterEnabled: false,
+  densityFilterEnabled: true,
   densityMax: 20,
   densityCellSize: 40,
 };

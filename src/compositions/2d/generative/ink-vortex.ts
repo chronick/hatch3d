@@ -1,44 +1,7 @@
 import { createNoise2D } from "simplex-noise";
 import type { Composition2DDefinition } from "../../types";
 import { wasmGenerateInkVortex } from "../../../wasm-pipeline-2d";
-
-// ── Spatial Hash for efficient nearest-distance queries ──
-
-class SpatialHash {
-  cells = new Map<string, { x: number; y: number }[]>();
-  cellSize: number;
-  constructor(cellSize: number) {
-    this.cellSize = cellSize;
-  }
-
-  key(x: number, y: number): string {
-    return `${Math.floor(x / this.cellSize)},${Math.floor(y / this.cellSize)}`;
-  }
-
-  insert(x: number, y: number) {
-    const k = this.key(x, y);
-    const bucket = this.cells.get(k);
-    if (bucket) bucket.push({ x, y });
-    else this.cells.set(k, [{ x, y }]);
-  }
-
-  nearestDistance(x: number, y: number): number {
-    const gx = Math.floor(x / this.cellSize);
-    const gy = Math.floor(y / this.cellSize);
-    let best = Infinity;
-    for (let dy = -2; dy <= 2; dy++) {
-      for (let dx = -2; dx <= 2; dx++) {
-        const bucket = this.cells.get(`${gx + dx},${gy + dy}`);
-        if (!bucket) continue;
-        for (const p of bucket) {
-          const d = Math.hypot(p.x - x, p.y - y);
-          if (d < best) best = d;
-        }
-      }
-    }
-    return best;
-  }
-}
+import { traceStreamlines, curlNoise, type VelocityFn } from "./streamline-tracer";
 
 // ── Vortex generation presets ──
 
@@ -275,35 +238,8 @@ const inkVortex: Composition2DDefinition = {
     const vortexCount = Math.round(values.vortexCount as number);
     const circulationRange = values.circulationRange as number;
     const epsilon = values.epsilon as number;
-    const dSep = values.separation as number;
-    const stepLen = values.stepLength as number;
-    const maxSteps = Math.round(values.maxSteps as number);
-    const minLen = Math.round(values.minLength as number);
-    const curlNoise = values.curlNoise as number;
+    const curlNoiseAmt = values.curlNoise as number;
     const noiseScale = values.noiseScale as number;
-    const margin = values.margin as number;
-
-    // Visible region (seeds placed here)
-    const x0 = margin;
-    const y0 = margin;
-    const x1 = width - margin;
-    const y1 = height - margin;
-
-    // Extended trace region — streamlines can arc past the canvas so edge
-    // lines don't terminate prematurely. SVG viewBox clips the overflow.
-    const buf = Math.max(width, height) * 0.5;
-    const tx0 = -buf;
-    const ty0 = -buf;
-    const tx1 = width + buf;
-    const ty1 = height + buf;
-
-    function inTraceBounds(x: number, y: number): boolean {
-      return x >= tx0 && x <= tx1 && y >= ty0 && y <= ty1;
-    }
-
-    function inSeedBounds(x: number, y: number): boolean {
-      return x >= x0 && x <= x1 && y >= y0 && y <= y1;
-    }
 
     // Generate vortex configuration
     const vortices = generateVortices(
@@ -314,166 +250,44 @@ const inkVortex: Composition2DDefinition = {
       height,
     );
 
-    // Optional curl noise for organic turbulence
-    const noise2D = curlNoise > 0 ? createNoise2D() : null;
+    const epsilonSq = epsilon * epsilon;
+    const twoPi = Math.PI * 2;
 
-    function curlField(x: number, y: number): { vx: number; vy: number } {
-      if (!noise2D) return { vx: 0, vy: 0 };
-      const eps = 1;
-      const n = noise2D(x * noiseScale, (y + eps) * noiseScale);
-      const s = noise2D(x * noiseScale, (y - eps) * noiseScale);
-      const e = noise2D((x + eps) * noiseScale, y * noiseScale);
-      const w = noise2D((x - eps) * noiseScale, y * noiseScale);
-      // Curl of scalar noise field: perpendicular to gradient
-      return { vx: (n - s) / (2 * eps), vy: -(e - w) / (2 * eps) };
-    }
+    // Optional curl noise for organic turbulence
+    const noise2D = curlNoiseAmt > 0 ? createNoise2D() : null;
 
     // Biot-Savart velocity from all vortices + optional curl noise
-    function velocityAt(
-      px: number,
-      py: number,
-    ): { vx: number; vy: number } {
+    const velocityAt: VelocityFn = (px, py) => {
       let vx = 0;
       let vy = 0;
 
       for (const v of vortices) {
         const dx = px - v.x;
         const dy = py - v.y;
-        const r2 = dx * dx + dy * dy + epsilon * epsilon; // regularized
-        const factor = v.gamma / (2 * Math.PI * r2);
-        // Perpendicular velocity (counter-clockwise for positive gamma)
+        const r2 = dx * dx + dy * dy + epsilonSq;
+        const factor = v.gamma / (twoPi * r2);
         vx += -dy * factor;
         vy += dx * factor;
       }
 
-      // Blend with curl noise
-      if (curlNoise > 0) {
-        const cn = curlField(px, py);
-        vx = vx * (1 - curlNoise) + cn.vx * curlNoise;
-        vy = vy * (1 - curlNoise) + cn.vy * curlNoise;
+      if (curlNoiseAmt > 0 && noise2D) {
+        const cn = curlNoise(noise2D, px, py, noiseScale, 1);
+        vx = vx * (1 - curlNoiseAmt) + cn.vx * curlNoiseAmt;
+        vy = vy * (1 - curlNoiseAmt) + cn.vy * curlNoiseAmt;
       }
 
       return { vx, vy };
-    }
+    };
 
-    // Spatial hash for streamline distance queries
-    const hash = new SpatialHash(dSep);
-
-    // RK2 (midpoint method) integration in one direction
-    function traceDirection(
-      sx: number,
-      sy: number,
-      dir: 1 | -1,
-    ): { x: number; y: number }[] {
-      const pts: { x: number; y: number }[] = [];
-      let x = sx;
-      let y = sy;
-
-      for (let step = 0; step < maxSteps; step++) {
-        if (!inTraceBounds(x, y)) break;
-
-        // After initial segment, check distance to existing streamlines
-        if (step > 2 && hash.nearestDistance(x, y) < dSep * 0.5) break;
-
-        pts.push({ x, y });
-
-        // RK2 midpoint: evaluate velocity at start, step to midpoint, re-evaluate
-        const v0 = velocityAt(x, y);
-        const mag0 = Math.hypot(v0.vx, v0.vy);
-        if (mag0 < 1e-8) break; // stagnation point
-
-        const nx0 = (v0.vx / mag0) * dir;
-        const ny0 = (v0.vy / mag0) * dir;
-        const mx = x + nx0 * stepLen * 0.5;
-        const my = y + ny0 * stepLen * 0.5;
-
-        const v1 = velocityAt(mx, my);
-        const mag1 = Math.hypot(v1.vx, v1.vy);
-        if (mag1 < 1e-8) break;
-
-        x += (v1.vx / mag1) * dir * stepLen;
-        y += (v1.vy / mag1) * dir * stepLen;
-      }
-
-      return pts;
-    }
-
-    // Full bidirectional streamline from a seed
-    function traceStreamline(
-      sx: number,
-      sy: number,
-    ): { x: number; y: number }[] | null {
-      const forward = traceDirection(sx, sy, 1);
-      const backward = traceDirection(sx, sy, -1);
-
-      const combined = [
-        ...backward.reverse(),
-        ...forward.slice(backward.length > 0 ? 1 : 0),
-      ];
-
-      if (combined.length < minLen) return null;
-
-      // Register all points in spatial hash
-      for (const p of combined) {
-        hash.insert(p.x, p.y);
-      }
-
-      return combined;
-    }
-
-    // ── Jobard-Lefer evenly-spaced streamline seeding ──
-
-    const polylines: { x: number; y: number }[][] = [];
-
-    // Seed queue: candidate seed points from perpendicular offsets
-    const seedQueue: { x: number; y: number }[] = [];
-
-    // Initial seed at center
-    seedQueue.push({ x: width / 2, y: height / 2 });
-
-    // Dense grid seeds to ensure full-page coverage
-    const gridStep = dSep * 3;
-    for (let gy = y0; gy <= y1; gy += gridStep) {
-      for (let gx = x0; gx <= x1; gx += gridStep) {
-        seedQueue.push({ x: gx, y: gy });
-      }
-    }
-
-    while (seedQueue.length > 0) {
-      const seed = seedQueue.shift()!;
-
-      // Skip if too close to existing streamlines
-      if (hash.nearestDistance(seed.x, seed.y) < dSep * 0.8) continue;
-
-      const line = traceStreamline(seed.x, seed.y);
-      if (!line) continue;
-
-      polylines.push(line);
-
-      // Generate candidate seeds perpendicular to this streamline
-      const seedInterval = Math.max(4, Math.floor(line.length / 20));
-      for (let i = 0; i < line.length - 1; i += seedInterval) {
-        const p0 = line[i];
-        const p1 = line[i + 1];
-        const dx = p1.x - p0.x;
-        const dy = p1.y - p0.y;
-        const len = Math.hypot(dx, dy);
-        if (len < 1e-8) continue;
-
-        // Unit perpendicular
-        const px = -dy / len;
-        const py = dx / len;
-
-        // Seeds on both sides at distance dSep
-        const left = { x: p0.x + px * dSep, y: p0.y + py * dSep };
-        const right = { x: p0.x - px * dSep, y: p0.y - py * dSep };
-
-        if (inSeedBounds(left.x, left.y)) seedQueue.push(left);
-        if (inSeedBounds(right.x, right.y)) seedQueue.push(right);
-      }
-    }
-
-    return polylines;
+    return traceStreamlines(velocityAt, {
+      width,
+      height,
+      separation: values.separation as number,
+      stepLength: values.stepLength as number,
+      maxSteps: Math.round(values.maxSteps as number),
+      minLength: Math.round(values.minLength as number),
+      margin: values.margin as number,
+    });
   },
 };
 

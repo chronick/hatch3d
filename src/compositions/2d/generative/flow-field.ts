@@ -1,13 +1,121 @@
 import { createNoise2D } from "simplex-noise";
 import type { Composition2DDefinition } from "../../types";
 import { wasmGenerateFlowField } from "../../../wasm-pipeline-2d";
+import {
+  traceStreamlines,
+  fbm,
+  curlNoise,
+  type VelocityFn,
+  type StreamlineParams,
+} from "./streamline-tracer";
+
+// ── Field generators ──
+
+type FieldFn = (x: number, y: number) => { vx: number; vy: number };
+
+/**
+ * Domain-warped curl noise: warp the input coordinates through a secondary
+ * noise field before computing curl. Produces folded, geological, organic
+ * patterns impossible with point vortices.
+ */
+function makeDomainWarpField(
+  noise2D: (x: number, y: number) => number,
+  noiseScale: number,
+  octaves: number,
+  warpAmount: number,
+): FieldFn {
+  // Second noise instance for warp (offset seed coordinates)
+  const warpOffsetX = 5.2;
+  const warpOffsetY = 1.3;
+
+  return (x: number, y: number) => {
+    // Warp coordinates using noise
+    const wx = x + fbm(noise2D, x * noiseScale + warpOffsetX, y * noiseScale + warpOffsetY, octaves) * warpAmount;
+    const wy = y + fbm(noise2D, x * noiseScale + 9.7, y * noiseScale + 2.8, octaves) * warpAmount;
+    return curlNoise(noise2D, wx, wy, noiseScale, octaves);
+  };
+}
+
+/**
+ * Ridged noise field: abs(noise) creates sharp convergence ridges.
+ * Lines cluster along ridge edges — engraving-like emphasis lines.
+ */
+function makeRidgedField(
+  noise2D: (x: number, y: number) => number,
+  noiseScale: number,
+  octaves: number,
+): FieldFn {
+  function ridgedFbm(x: number, y: number): number {
+    let value = 0;
+    let amp = 1;
+    let freq = 1;
+    let norm = 0;
+    for (let o = 0; o < octaves; o++) {
+      // Ridged: invert abs to create sharp peaks
+      const n = 1 - Math.abs(noise2D(x * freq, y * freq));
+      value += amp * n * n; // square for sharper ridges
+      norm += amp;
+      amp *= 0.5;
+      freq *= 2;
+    }
+    return value / norm;
+  }
+
+  // Curl of ridged field
+  return (x: number, y: number) => {
+    const eps = 1;
+    const sx = x * noiseScale;
+    const sy = y * noiseScale;
+    const ens = eps * noiseScale;
+    const n = ridgedFbm(sx, sy + ens);
+    const s = ridgedFbm(sx, sy - ens);
+    const e = ridgedFbm(sx + ens, sy);
+    const w = ridgedFbm(sx - ens, sy);
+    const inv = 1 / (2 * ens);
+    return { vx: (n - s) * inv, vy: -(e - w) * inv };
+  };
+}
+
+function makeRadialField(cx: number, cy: number, twist: number): FieldFn {
+  return (x: number, y: number) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    const r = Math.hypot(dx, dy) + 1e-8;
+    const radX = dx / r;
+    const radY = dy / r;
+    const tanX = -dy / r;
+    const tanY = dx / r;
+    return {
+      vx: radX * (1 - twist) + tanX * twist,
+      vy: radY * (1 - twist) + tanY * twist,
+    };
+  };
+}
+
+function makeSpiralField(cx: number, cy: number, tightness: number): FieldFn {
+  return (x: number, y: number) => {
+    const dx = x - cx;
+    const dy = y - cy;
+    const r = Math.hypot(dx, dy) + 1e-8;
+    const tanX = -dy / r;
+    const tanY = dx / r;
+    const inX = -dx / r;
+    const inY = -dy / r;
+    return {
+      vx: tanX + inX * tightness,
+      vy: tanY + inY * tightness,
+    };
+  };
+}
+
+// ── Composition definition ──
 
 const flowField: Composition2DDefinition = {
   id: "flowField",
   name: "Flow Field",
   description:
-    "Noise-driven vector field with particle tracing and path separation enforcement",
-  tags: ["generative", "noise", "flow", "field"],
+    "Noise-driven vector field with domain warping, ridged noise, and variable density. Produces organic landscapes, geological folds, and tonal gradients.",
+  tags: ["generative", "noise", "flow", "field", "streamlines", "landscape"],
   category: "2d",
   type: "2d",
 
@@ -16,30 +124,88 @@ const flowField: Composition2DDefinition = {
       label: "Density",
       default: 0.5,
       targets: [
-        { param: "seedSpacing", fn: "linear", strength: -0.6 },
-        { param: "minDistance", fn: "linear", strength: -0.4 },
+        { param: "separation", fn: "linear", strength: -0.7 },
+        { param: "maxSteps", fn: "linear", strength: 0.5 },
+      ],
+    },
+    turbulence: {
+      label: "Turbulence",
+      default: 0.3,
+      targets: [
+        { param: "noiseScale", fn: "linear", strength: 0.6 },
+        { param: "noiseOctaves", fn: "linear", strength: 0.8 },
       ],
     },
   },
 
   controls: {
+    morphology: {
+      type: "select",
+      label: "Morphology",
+      default: "warp",
+      options: [
+        { label: "Domain Warp", value: "warp" },
+        { label: "Ridged", value: "ridged" },
+        { label: "Curl Noise", value: "curl" },
+        { label: "Radial", value: "radial" },
+        { label: "Spiral", value: "spiral" },
+        { label: "Uniform + Noise", value: "uniform" },
+      ],
+      group: "Field",
+    },
     noiseScale: {
       type: "slider",
       label: "Noise Scale",
-      default: 0.004,
-      min: 0.001,
-      max: 0.01,
+      default: 0.003,
+      min: 0.0005,
+      max: 0.015,
       step: 0.0005,
       group: "Field",
     },
     noiseOctaves: {
       type: "slider",
       label: "Octaves",
-      default: 2,
+      default: 3,
       min: 1,
       max: 8,
       step: 1,
       group: "Field",
+    },
+    warpAmount: {
+      type: "slider",
+      label: "Warp Amount",
+      default: 200,
+      min: 0,
+      max: 800,
+      step: 10,
+      group: "Field",
+    },
+    noiseBlend: {
+      type: "slider",
+      label: "Noise Blend",
+      default: 0.5,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      group: "Field",
+    },
+    uniformAngle: {
+      type: "slider",
+      label: "Flow Angle",
+      default: 0,
+      min: 0,
+      max: 360,
+      step: 1,
+      group: "Field",
+    },
+    separation: {
+      type: "slider",
+      label: "Separation",
+      default: 7,
+      min: 3,
+      max: 30,
+      step: 1,
+      group: "Streamlines",
     },
     stepLength: {
       type: "slider",
@@ -48,154 +214,102 @@ const flowField: Composition2DDefinition = {
       min: 1,
       max: 10,
       step: 0.5,
-      group: "Tracing",
+      group: "Streamlines",
     },
     maxSteps: {
       type: "slider",
       label: "Max Steps",
-      default: 200,
+      default: 400,
       min: 50,
       max: 2000,
       step: 10,
-      group: "Tracing",
+      group: "Streamlines",
     },
-    seedSpacing: {
+    minLength: {
       type: "slider",
-      label: "Seed Spacing",
+      label: "Min Length",
       default: 15,
-      min: 5,
-      max: 80,
-      step: 1,
-      group: "Density",
-    },
-    minDistance: {
-      type: "slider",
-      label: "Min Distance",
-      default: 8,
       min: 3,
       max: 50,
       step: 1,
-      group: "Density",
+      group: "Streamlines",
+    },
+    margin: {
+      type: "slider",
+      label: "Margin",
+      default: 20,
+      min: 0,
+      max: 80,
+      step: 1,
+      group: "Layout",
     },
   },
 
   wasmGenerate: wasmGenerateFlowField,
 
   generate({ width, height, values }) {
+    const morphology = values.morphology as string;
     const noiseScale = values.noiseScale as number;
     const octaves = Math.round(values.noiseOctaves as number);
-    const stepLength = values.stepLength as number;
-    const maxSteps = Math.round(values.maxSteps as number);
-    const seedSpacing = values.seedSpacing as number;
-    const minDistance = values.minDistance as number;
+    const warpAmount = values.warpAmount as number;
+    const noiseBlend = values.noiseBlend as number;
+    const uniformAngle = (values.uniformAngle as number) * (Math.PI / 180);
+
+    const cx = width / 2;
+    const cy = height / 2;
 
     const noise2D = createNoise2D();
 
-    // Fractal noise helper
-    function fbm(x: number, y: number): number {
-      let value = 0;
-      let amp = 1;
-      let freq = 1;
-      let norm = 0;
-      for (let o = 0; o < octaves; o++) {
-        value += amp * noise2D(x * freq, y * freq);
-        norm += amp;
-        amp *= 0.5;
-        freq *= 2;
+    // Build primary field based on morphology
+    let primaryField: FieldFn;
+    switch (morphology) {
+      case "warp":
+        primaryField = makeDomainWarpField(noise2D, noiseScale, octaves, warpAmount);
+        break;
+      case "ridged":
+        primaryField = makeRidgedField(noise2D, noiseScale, octaves);
+        break;
+      case "radial":
+        primaryField = makeRadialField(cx, cy, 0.6);
+        break;
+      case "spiral":
+        primaryField = makeSpiralField(cx, cy, 0.3);
+        break;
+      case "uniform": {
+        const ux = Math.cos(uniformAngle);
+        const uy = Math.sin(uniformAngle);
+        primaryField = () => ({ vx: ux, vy: uy });
+        break;
       }
-      return value / norm;
+      default:
+        // "curl" — pure curl noise
+        primaryField = (px, py) => curlNoise(noise2D, px, py, noiseScale, octaves);
+        break;
     }
 
-    // Spatial occupancy grid
-    const cellSize = minDistance;
-    const gridW = Math.ceil(width / cellSize);
-    const gridH = Math.ceil(height / cellSize);
-    const occupied = new Uint8Array(gridW * gridH);
+    // For structured morphologies (radial/spiral/uniform), blend with noise
+    const velocityAt: VelocityFn = (morphology === "warp" || morphology === "ridged" || morphology === "curl")
+      ? primaryField
+      : (px, py) => {
+          const base = primaryField(px, py);
+          const noise = curlNoise(noise2D, px, py, noiseScale, octaves);
+          return {
+            vx: base.vx * (1 - noiseBlend) + noise.vx * noiseBlend,
+            vy: base.vy * (1 - noiseBlend) + noise.vy * noiseBlend,
+          };
+        };
 
-    function isOccupied(x: number, y: number): boolean {
-      const gx = Math.floor(x / cellSize);
-      const gy = Math.floor(y / cellSize);
-      // Check 3x3 neighborhood
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const nx = gx + dx;
-          const ny = gy + dy;
-          if (nx >= 0 && nx < gridW && ny >= 0 && ny < gridH) {
-            if (occupied[ny * gridW + nx]) return true;
-          }
-        }
-      }
-      return false;
-    }
+    const params: StreamlineParams = {
+      width,
+      height,
+      separation: values.separation as number,
+      stepLength: values.stepLength as number,
+      maxSteps: Math.round(values.maxSteps as number),
+      minLength: Math.round(values.minLength as number),
+      margin: values.margin as number,
+    };
 
-    function markOccupied(x: number, y: number) {
-      const gx = Math.floor(x / cellSize);
-      const gy = Math.floor(y / cellSize);
-      if (gx >= 0 && gx < gridW && gy >= 0 && gy < gridH) {
-        occupied[gy * gridW + gx] = 1;
-      }
-    }
-
-    function inBounds(x: number, y: number): boolean {
-      return x >= 0 && x < width && y >= 0 && y < height;
-    }
-
-    // Trace a single streamline in one direction
-    function trace(
-      startX: number,
-      startY: number,
-      direction: 1 | -1,
-    ): { x: number; y: number }[] {
-      const pts: { x: number; y: number }[] = [];
-      let x = startX;
-      let y = startY;
-
-      for (let step = 0; step < maxSteps; step++) {
-        if (!inBounds(x, y)) break;
-        if (step > 2 && isOccupied(x, y)) break;
-
-        pts.push({ x, y });
-        markOccupied(x, y);
-
-        const angle =
-          fbm(x * noiseScale, y * noiseScale) * Math.PI * 2 * direction;
-        x += Math.cos(angle) * stepLength;
-        y += Math.sin(angle) * stepLength;
-      }
-
-      return pts;
-    }
-
-    const polylines: { x: number; y: number }[][] = [];
-
-    // Seed points on regular grid
-    const cols = Math.floor(width / seedSpacing);
-    const rows = Math.floor(height / seedSpacing);
-
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const sx = (col + 0.5) * seedSpacing;
-        const sy = (row + 0.5) * seedSpacing;
-
-        if (isOccupied(sx, sy)) continue;
-
-        // Trace forward and backward from seed
-        const forward = trace(sx, sy, 1);
-        const backward = trace(sx, sy, -1);
-
-        // Combine: reverse backward + forward (skip duplicate seed point)
-        const combined = [
-          ...backward.reverse(),
-          ...forward.slice(backward.length > 0 ? 1 : 0),
-        ];
-
-        if (combined.length >= 3) {
-          polylines.push(combined);
-        }
-      }
-    }
-
-    return polylines;
+    return traceStreamlines(velocityAt, params);
   },
 };
 
