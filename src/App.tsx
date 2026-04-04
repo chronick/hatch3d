@@ -37,6 +37,7 @@ const PAGE_SIZES: Record<string, { label: string; w: number; h: number }> = {
   a4: { label: "A4", w: 297, h: 210 },
   a5: { label: "A5", w: 210, h: 148 },
   letter: { label: '8.5\u00d711"', w: 279.4, h: 215.9 },
+  tabloid: { label: '11\u00d717"', w: 431.8, h: 279.4 },
 };
 
 const BORDER_STYLES: Record<string, string> = {
