@@ -5,8 +5,8 @@ const multiTechnique: Composition3DDefinition = {
   id: "multiTechnique",
   name: "Multi-Technique Surface",
   description:
-    "Single surface divided into UV regions, each rendered with a different hatch family and density for visual contrast",
-  tags: ["study", "technique", "multi-hatch", "educational"],
+    "Surface divided into UV regions with contrasting hatch techniques — density gradients create depth and visual rhythm",
+  tags: ["surface", "multi-hatch", "contrast", "technique"],
   category: "3d",
   hatchGroups: ["Region A", "Region B", "Region C", "Region D"],
 
@@ -29,13 +29,24 @@ const multiTechnique: Composition3DDefinition = {
         { param: "height", fn: "linear", strength: 1.0 },
       ],
     },
+    complexity: {
+      label: "Complexity",
+      default: 0.5,
+      targets: [
+        { param: "countA", fn: "linear", strength: 0.7 },
+        { param: "countB", fn: "linear", strength: 0.6 },
+        { param: "countC", fn: "linear", strength: 0.5 },
+        { param: "countD", fn: "linear", strength: 0.4 },
+        { param: "samples", fn: "linear", strength: 0.3 },
+      ],
+    },
   },
 
   controls: {
     surfaceType: {
       type: "select",
       label: "Surface",
-      default: "hyperboloid",
+      default: "torus",
       options: [
         { label: "Hyperboloid", value: "hyperboloid" },
         { label: "Torus", value: "torus" },
@@ -48,7 +59,7 @@ const multiTechnique: Composition3DDefinition = {
     radius: {
       type: "slider",
       label: "Radius",
-      default: 2.0,
+      default: 2.5,
       min: 0.8,
       max: 6.0,
       group: "Surface",
@@ -56,7 +67,7 @@ const multiTechnique: Composition3DDefinition = {
     height: {
       type: "slider",
       label: "Height",
-      default: 3.5,
+      default: 4.0,
       min: 1.0,
       max: 10.0,
       group: "Surface",
@@ -75,7 +86,7 @@ const multiTechnique: Composition3DDefinition = {
     boundary: {
       type: "slider",
       label: "Region Boundary",
-      default: 0.5,
+      default: 0.45,
       min: 0.2,
       max: 0.8,
       step: 0.05,
@@ -91,6 +102,8 @@ const multiTechnique: Composition3DDefinition = {
         { label: "Diagonal", value: "diagonal" },
         { label: "Crosshatch", value: "crosshatch" },
         { label: "Rings", value: "rings" },
+        { label: "Hex", value: "hex" },
+        { label: "Spiral", value: "spiral" },
         { label: "Wave", value: "wave" },
       ],
       group: "Techniques",
@@ -98,13 +111,15 @@ const multiTechnique: Composition3DDefinition = {
     familyB: {
       type: "select",
       label: "Region B Family",
-      default: "crosshatch",
+      default: "rings",
       options: [
         { label: "U-lines", value: "u" },
         { label: "V-lines", value: "v" },
         { label: "Diagonal", value: "diagonal" },
         { label: "Crosshatch", value: "crosshatch" },
         { label: "Rings", value: "rings" },
+        { label: "Hex", value: "hex" },
+        { label: "Spiral", value: "spiral" },
         { label: "Wave", value: "wave" },
       ],
       group: "Techniques",
@@ -119,6 +134,8 @@ const multiTechnique: Composition3DDefinition = {
         { label: "Diagonal", value: "diagonal" },
         { label: "Crosshatch", value: "crosshatch" },
         { label: "Rings", value: "rings" },
+        { label: "Hex", value: "hex" },
+        { label: "Spiral", value: "spiral" },
         { label: "Wave", value: "wave" },
       ],
       group: "Techniques",
@@ -126,13 +143,15 @@ const multiTechnique: Composition3DDefinition = {
     familyD: {
       type: "select",
       label: "Region D Family",
-      default: "wave",
+      default: "spiral",
       options: [
         { label: "U-lines", value: "u" },
         { label: "V-lines", value: "v" },
         { label: "Diagonal", value: "diagonal" },
         { label: "Crosshatch", value: "crosshatch" },
         { label: "Rings", value: "rings" },
+        { label: "Hex", value: "hex" },
+        { label: "Spiral", value: "spiral" },
         { label: "Wave", value: "wave" },
       ],
       group: "Techniques",
@@ -140,7 +159,7 @@ const multiTechnique: Composition3DDefinition = {
     countA: {
       type: "slider",
       label: "Density A",
-      default: 25,
+      default: 35,
       min: 5,
       max: 100,
       step: 1,
@@ -149,7 +168,7 @@ const multiTechnique: Composition3DDefinition = {
     countB: {
       type: "slider",
       label: "Density B",
-      default: 20,
+      default: 25,
       min: 5,
       max: 100,
       step: 1,
@@ -158,7 +177,7 @@ const multiTechnique: Composition3DDefinition = {
     countC: {
       type: "slider",
       label: "Density C",
-      default: 30,
+      default: 20,
       min: 5,
       max: 100,
       step: 1,
@@ -176,7 +195,7 @@ const multiTechnique: Composition3DDefinition = {
     samples: {
       type: "slider",
       label: "Samples",
-      default: 60,
+      default: 80,
       min: 20,
       max: 200,
       step: 1,
