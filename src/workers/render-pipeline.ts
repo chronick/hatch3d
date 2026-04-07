@@ -15,12 +15,12 @@ import {
 } from "../projection";
 import { renderDepthBufferOffscreen, clipPolylineByDepth } from "../occlusion";
 import { filterByProjectedDensity } from "../density";
+import { compositionRegistry } from "../compositions/registry";
 import {
-  compositionRegistry,
   type Composition3DDefinition,
   type LayerConfig,
   is2DComposition,
-} from "../compositions";
+} from "../compositions/types";
 import {
   isWasmReady,
   generateLayersWasm,
