@@ -24,6 +24,7 @@ import { RenderButton } from "./components/RenderButton";
 import type { HatchGroupConfig } from "./components/HatchGroupControls";
 import { configHash } from "./utils/config-hash";
 import { exportPng, PNG_THEMES } from "./utils/export-png";
+import { sendToQueue, isPrintQueueEnabled } from "./utils/print-queue-client";
 import { clipSVGPath, type Rect } from "./utils/clip";
 import { useHashRoute } from "./hooks/useHashRoute";
 import {
@@ -639,6 +640,28 @@ export default function App() {
     }
   }, [buildSVGContent, fileBasename]);
 
+  // Send to print queue
+  const handleSendToQueue = useCallback(async () => {
+    const svgContent = buildSVGContent();
+    let pngBlob: Blob | undefined;
+    try {
+      pngBlob = await exportPng(svgContent, PNG_THEMES.dark, 2);
+    } catch {
+      // PNG preview is optional
+    }
+    const result = await sendToQueue({
+      compositionKey,
+      presetName: fileBasename,
+      svgContent,
+      pngBlob,
+      values: { ...compSlice, ...macroSlice },
+      camera: is2d ? null : { theta: camTheta, phi: camPhi, dist: camDist },
+    });
+    if (!result.ok) {
+      throw new Error(result.error || "Failed to send to queue");
+    }
+  }, [buildSVGContent, compositionKey, fileBasename, compSlice, macroSlice, is2d, camTheta, camPhi, camDist]);
+
   // Export modal state
   const [exportModalOpen, setExportModalOpen] = useState(false);
 
@@ -1207,6 +1230,7 @@ export default function App() {
         onClose={() => setExportModalOpen(false)}
         onExportSVG={handleExportSVG}
         onExportPNG={handleExportPNG}
+        onSendToQueue={isPrintQueueEnabled ? handleSendToQueue : undefined}
         currentTheme={theme}
       />
     </div>

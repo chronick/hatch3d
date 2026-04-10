@@ -28,7 +28,7 @@ import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
 import { buildSVGContent, computeExportLayout } from "./svg-export.js";
 import { generateBiasedPresets, logGeneration, collectFromFeedAPI, collectFromPrintQueue, loadAllObservations, computeModel } from "../src/preferences/index.js";
-import type { PreferenceModel, GeneratedPreset } from "../src/preferences/index.js";
+import type { PreferenceModel, GeneratedPreset, Observation } from "../src/preferences/index.js";
 
 // ── Curated parameter presets for feed-worthy output ──
 
@@ -406,6 +406,7 @@ const { values: args } = parseArgs({
     scale: { type: "string", default: "4" },
     "no-preferences": { type: "boolean", default: false },
     exploration: { type: "string", default: "0.2" },
+    queue: { type: "boolean", short: "q", default: false },
     help: { type: "boolean", short: "h", default: false },
   },
   strict: false,
@@ -426,6 +427,7 @@ Options:
   --scale N              PNG scale factor (default: 4)
   --no-preferences       Disable preference model, use only curated presets
   --exploration N        Exploration rate 0-1 (default: 0.2)
+  -q, --queue            Also add items to the print queue
   -h, --help             Show this help
   `);
   process.exit(0);
@@ -626,6 +628,7 @@ async function main(): Promise<void> {
 
   let selected: FeedPreset[];
   let generatedPresets: GeneratedPreset[] | null = null;
+  let allObservations: Observation[] = [];
 
   // Auto-sync preferences before generation (unless --no-preferences)
   if (!noPreferences && !dryRun) {
@@ -637,16 +640,23 @@ async function main(): Promise<void> {
       if (feedCount + pqCount > 0) {
         console.log(`  ${feedCount + pqCount} new observations`);
       }
-      const observations = loadAllObservations();
-      if (observations.length > 0) {
-        const model = computeModel(observations);
+      allObservations = loadAllObservations();
+      if (allObservations.length > 0) {
+        const model = computeModel(allObservations);
         writeFileSync(modelPath, JSON.stringify(model, null, 2));
-        console.log(`  Model updated (${observations.length} observations)\n`);
+        console.log(`  Model updated (${allObservations.length} observations)\n`);
       }
     } catch (e) {
       console.log(`  Preference sync failed (${e instanceof Error ? e.message : e}), continuing without\n`);
     }
+  } else if (!noPreferences) {
+    // Dry run or already synced — still load observations for mutation
+    allObservations = loadAllObservations();
   }
+
+  const acceptedObservations = allObservations.filter(
+    (o) => o.outcome === "accepted" || o.outcome === "evolved",
+  );
 
   // Use preference model if available, fall back to curated presets
   if (!noPreferences && existsSync(modelPath)) {
@@ -663,6 +673,7 @@ async function main(): Promise<void> {
       explorationRate,
       forceComposition,
       curatedPresets: curatedAsGenerated,
+      acceptedObservations,
     });
 
     selected = generatedPresets.map((gp) => ({
@@ -674,7 +685,11 @@ async function main(): Promise<void> {
       tags: gp.tags,
     }));
 
-    console.log(`Generating ${selected.length} feed items via preference model (exploration: ${(explorationRate * 100).toFixed(0)}%, batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
+    const mutationCount = generatedPresets.filter((p) => p.source === "mutation").length;
+    const sourceBreakdown = mutationCount > 0
+      ? `, mutation: ${mutationCount}/${selected.length} from ${acceptedObservations.length} accepted`
+      : "";
+    console.log(`Generating ${selected.length} feed items via preference model (exploration: ${(explorationRate * 100).toFixed(0)}%${sourceBreakdown}, batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
   } else {
     selected = selectPresets(count, forceComposition);
     console.log(`Generating ${selected.length} feed items from curated presets (batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
@@ -750,6 +765,39 @@ async function main(): Promise<void> {
         available_actions: ["accept", "reject", "evolve", "defer"],
       });
       console.log(`    Pushed: ${feedItemId} (png + svg)`);
+
+      // Also add to print queue if --queue flag is set
+      if (args.queue) {
+        const queueResp = await fetch(`${config.url}/print-queue`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${config.token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            id: itemId,
+            title: preset.name,
+            composition: preset.composition,
+            svg_key: svgKey,
+            png_key: imageKey,
+            config: JSON.stringify({
+              composition: preset.composition,
+              presetName: preset.name,
+              values: preset.values,
+              camera: preset.camera ?? null,
+              svg_key: svgKey,
+              tags: preset.tags,
+            }),
+            source: "hatch3d",
+            feed_item_id: itemId,
+          }),
+        });
+        if (queueResp.ok) {
+          console.log(`    Queued for printing`);
+        } else {
+          console.log(`    Queue failed: ${queueResp.status}`);
+        }
+      }
     }
   }
 
