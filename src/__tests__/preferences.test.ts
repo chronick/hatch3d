@@ -3,7 +3,7 @@ import type { Composition2DDefinition, Composition3DDefinition, SliderControl, M
 import { CompositionRegistry } from "../compositions/registry";
 import { extractFeatures, macrosToValues } from "../preferences/features";
 import { computeModel, summarizeModel } from "../preferences/learner";
-import { generateBiasedPresets } from "../preferences/generator";
+import { generateBiasedPresets, mutatePreset } from "../preferences/generator";
 import type { Observation, PreferenceModel } from "../preferences/types";
 
 // ── Test fixtures ──
@@ -290,5 +290,141 @@ describe("generateBiasedPresets", () => {
         expect(p.values.maxSteps as number).toBeLessThanOrEqual(1000);
       }
     }
+  });
+
+  it("uses mutation when acceptedObservations provided", () => {
+    const observations = [
+      makeObservation({ outcome: "accepted", composition: "testFlow" }),
+      makeObservation({ outcome: "accepted", composition: "testFlow" }),
+    ];
+
+    const presets = generateBiasedPresets(makeModel(), makeRegistry(), {
+      count: 20,
+      mutationRate: 1.0, // Force all exploitation slots to mutation
+      explorationRate: 0,
+      acceptedObservations: observations,
+      forceComposition: "testFlow",
+    });
+
+    const mutationPresets = presets.filter((p) => p.source === "mutation");
+    expect(mutationPresets.length).toBeGreaterThan(0);
+
+    for (const p of mutationPresets) {
+      expect(p.parentId).toBeTruthy();
+      expect(p.tags).toContain("mutation");
+    }
+  });
+
+  it("falls back to preference when no accepted observations available", () => {
+    const presets = generateBiasedPresets(makeModel(), makeRegistry(), {
+      count: 5,
+      mutationRate: 1.0,
+      explorationRate: 0,
+      acceptedObservations: [], // No parents available
+      forceComposition: "testFlow",
+    });
+
+    // Should all be preference since mutation has no parents
+    for (const p of presets) {
+      expect(p.source).not.toBe("mutation");
+    }
+  });
+});
+
+// ── Mutation tests ──
+
+describe("mutatePreset", () => {
+  it("preserves composition and produces nearby values", () => {
+    const comp = makeComp2D();
+    const parent = makeObservation({ composition: "testFlow" });
+
+    const mutant = mutatePreset(comp, parent);
+
+    expect(mutant.composition).toBe("testFlow");
+    expect(mutant.source).toBe("mutation");
+    expect(mutant.parentId).toBe(parent.id);
+    expect(mutant.tags).toContain("mutation");
+  });
+
+  it("keeps slider values within control ranges", () => {
+    const comp = makeComp2D();
+    const parent = makeObservation({ composition: "testFlow" });
+
+    // Run many mutations to test bounds
+    for (let i = 0; i < 50; i++) {
+      const mutant = mutatePreset(comp, parent);
+      expect(mutant.values.seedSpacing as number).toBeGreaterThanOrEqual(2);
+      expect(mutant.values.seedSpacing as number).toBeLessThanOrEqual(30);
+      expect(mutant.values.maxSteps as number).toBeGreaterThanOrEqual(50);
+      expect(mutant.values.maxSteps as number).toBeLessThanOrEqual(1000);
+      expect(mutant.values.noiseScale as number).toBeGreaterThanOrEqual(0.001);
+      expect(mutant.values.noiseScale as number).toBeLessThanOrEqual(0.02);
+    }
+  });
+
+  it("produces varied outputs across mutations", () => {
+    const comp = makeComp2D();
+    const parent = makeObservation({ composition: "testFlow" });
+
+    const seedSpacings = new Set<number>();
+    for (let i = 0; i < 20; i++) {
+      const mutant = mutatePreset(comp, parent);
+      seedSpacings.add(mutant.values.seedSpacing as number);
+    }
+
+    // With 20 mutations, we should get more than 1 distinct value
+    expect(seedSpacings.size).toBeGreaterThan(1);
+  });
+
+  it("respects step quantization", () => {
+    const comp = makeComp2D();
+    const parent = makeObservation({ composition: "testFlow" });
+
+    for (let i = 0; i < 20; i++) {
+      const mutant = mutatePreset(comp, parent);
+      // seedSpacing has step=1, should be integer
+      expect(Number.isInteger(mutant.values.seedSpacing as number)).toBe(true);
+      // maxSteps has step=10, should be multiple of 10
+      expect((mutant.values.maxSteps as number) % 10).toBe(0);
+    }
+  });
+
+  it("small radius produces values closer to parent", () => {
+    const comp = makeComp2D();
+    const parent = makeObservation({
+      composition: "testFlow",
+      values: { seedSpacing: 15, maxSteps: 500, noiseScale: 0.01, arrangement: "random" },
+    });
+    // Recompute features for the new values
+    parent.features = extractFeatures(comp, parent.values, parent.stats);
+
+    let totalDrift = 0;
+    const n = 50;
+    for (let i = 0; i < n; i++) {
+      const mutant = mutatePreset(comp, parent, 0.05); // 5% radius
+      // Measure normalized drift for seedSpacing: range is 28
+      const drift = Math.abs((mutant.values.seedSpacing as number) - 15) / 28;
+      totalDrift += drift;
+    }
+
+    const avgDrift = totalDrift / n;
+    // With 5% radius, average drift should be small (well under 15%)
+    expect(avgDrift).toBeLessThan(0.15);
+  });
+
+  it("handles 3D compositions with camera perturbation", () => {
+    const comp = makeComp3D();
+    const parent = makeObservation({
+      composition: "testCage",
+      values: { ribbons: 12, twist: 3 },
+      camera: { theta: 0.6, phi: 0.3, dist: 8 },
+    });
+    parent.features = extractFeatures(comp, parent.values, parent.stats);
+
+    const mutant = mutatePreset(comp, parent);
+    expect(mutant.camera).not.toBeNull();
+    expect(mutant.camera!.theta).toBeGreaterThan(0);
+    expect(mutant.camera!.phi).toBeGreaterThan(0);
+    expect(mutant.camera!.dist).toBeGreaterThan(0);
   });
 });

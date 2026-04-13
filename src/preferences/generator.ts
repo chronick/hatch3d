@@ -1,30 +1,38 @@
 /**
  * Preference-biased preset generator.
  *
- * Replaces the simple selectPresets() in feed-push.ts with preference-aware
- * generation. Balances exploitation (more of what's liked) with exploration
- * (surprise and discovery).
+ * Three generation strategies:
+ *   1. Preference — sample from learned preference distributions
+ *   2. Mutation — perturb accepted presets to explore nearby parameter space
+ *   3. Exploration — random parameter sampling for discovery
  *
  * Extension points for future evolution engine:
  *   - swap `sampleMacroValues()` for genetic crossover / LLM-guided mutation
  *   - swap `scorePreset()` for a learned quality predictor
- *   - add `mutate()` for parameter perturbation
  */
 
 import type { CompositionDefinition, SliderControl } from "../compositions/types.js";
 import { is2DComposition } from "../compositions/types.js";
 import type { CompositionRegistry } from "../compositions/registry.js";
-import type { PreferenceModel, GeneratedPreset } from "./types.js";
+import type { Observation, PreferenceModel, GeneratedPreset, IntentVector } from "./types.js";
 import { macrosToValues } from "./features.js";
 
 interface GeneratorOptions {
   count: number;
   /** 0 = pure exploitation, 1 = pure exploration. Default 0.2 */
   explorationRate?: number;
+  /** Fraction of exploitation slots that use mutation vs preference. Default 0.4 */
+  mutationRate?: number;
+  /** Accepted observations to use as mutation parents */
+  acceptedObservations?: Observation[];
   /** Force a specific composition */
   forceComposition?: string;
   /** Existing hand-curated presets to mix in */
   curatedPresets?: GeneratedPreset[];
+  /** Creative brief intent vector — biases composition + parameter selection */
+  intent?: IntentVector;
+  /** All observations (for staleness detection). If omitted, no staleness correction. */
+  allObservations?: Observation[];
 }
 
 /**
@@ -35,16 +43,42 @@ export function generateBiasedPresets(
   registry: CompositionRegistry,
   options: GeneratorOptions,
 ): GeneratedPreset[] {
-  const { count, explorationRate = 0.2, forceComposition, curatedPresets = [] } = options;
+  const {
+    count,
+    mutationRate = 0.4,
+    acceptedObservations = [],
+    forceComposition,
+    curatedPresets = [],
+    intent,
+    allObservations = [],
+  } = options;
+
+  // Staleness detection: boost exploration when observations cluster tightly
+  const stalenessBoost = detectStaleness(allObservations);
+  const baseExploration = intent?.explorationOverride ?? options.explorationRate ?? 0.2;
+  const explorationRate = Math.min(0.8, baseExploration + stalenessBoost);
+
+  if (stalenessBoost > 0) {
+    console.log(`  Staleness detected: exploration boosted by +${(stalenessBoost * 100).toFixed(0)}% → ${(explorationRate * 100).toFixed(0)}%`);
+  }
+
   const results: GeneratedPreset[] = [];
   const usedCompositions = new Set<string>();
+  const usedParents = new Set<string>();
   const allComps = [...registry.getAll().entries()];
 
   for (let i = 0; i < count; i++) {
-    const isExplore = Math.random() < explorationRate;
+    const roll = Math.random();
+    const isExplore = roll < explorationRate;
+    const isDirected = !isExplore && intent != null;
+    const isMutate = !isExplore && !isDirected && roll < explorationRate + mutationRate * (1 - explorationRate);
 
     // 1. Select composition
-    const compId = forceComposition ?? selectComposition(model, allComps, usedCompositions, isExplore);
+    const compId = forceComposition ?? (
+      isDirected
+        ? selectDirectedComposition(model, allComps, usedCompositions, intent!)
+        : selectComposition(model, allComps, usedCompositions, isExplore)
+    );
     const comp = registry.get(compId);
     if (!comp) continue;
     usedCompositions.add(compId);
@@ -60,6 +94,21 @@ export function generateBiasedPresets(
     }
 
     // 2. Generate parameters
+    if (isDirected) {
+      results.push(generateDirectedPreset(comp, model, intent!));
+      continue;
+    }
+
+    if (isMutate && acceptedObservations.length > 0) {
+      const parent = selectParent(acceptedObservations, compId, usedParents);
+      if (parent) {
+        usedParents.add(parent.id);
+        results.push(mutatePreset(comp, parent));
+        continue;
+      }
+      // No suitable parent — fall through to preference
+    }
+
     const preset = isExplore
       ? generateExploratoryPreset(comp)
       : generatePreferredPreset(comp, model);
@@ -68,6 +117,142 @@ export function generateBiasedPresets(
   }
 
   return results;
+}
+
+// ── Mutation ──
+
+/** Default perturbation radius: fraction of each parameter's range */
+const DEFAULT_PERTURBATION_RADIUS = 0.15;
+/** Probability of flipping a toggle during mutation */
+const TOGGLE_FLIP_PROBABILITY = 0.1;
+/** Probability of switching a select option during mutation */
+const SELECT_SWITCH_PROBABILITY = 0.15;
+/** Perturbation radius for camera angles (radians) */
+const CAMERA_ANGLE_PERTURBATION = 0.15;
+/** Perturbation radius for camera distance (fraction) */
+const CAMERA_DIST_PERTURBATION = 0.15;
+
+/**
+ * Select a parent observation for mutation.
+ * Prefers: same composition, recent, not already used in this batch.
+ * Falls back to any accepted observation if none match the composition.
+ */
+function selectParent(
+  observations: Observation[],
+  preferredCompId: string,
+  usedParents: Set<string>,
+): Observation | null {
+  // Filter to accepted/evolved only, exclude already-used parents
+  const eligible = observations.filter(
+    (o) => (o.outcome === "accepted" || o.outcome === "evolved") && !usedParents.has(o.id),
+  );
+  if (eligible.length === 0) return null;
+
+  // Prefer same composition
+  const sameComp = eligible.filter((o) => o.composition === preferredCompId);
+  const pool = sameComp.length > 0 ? sameComp : eligible;
+
+  // Weight by recency: more recent observations get higher weight
+  const now = Date.now();
+  const weights = pool.map((o) => {
+    const ageMs = now - new Date(o.timestamp).getTime();
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    // Half-life of 14 days: recent observations weighted more
+    return Math.exp(-0.693 * ageDays / 14);
+  });
+
+  return pool[weightedRandomIndex(weights)];
+}
+
+/**
+ * Mutate an accepted observation to explore nearby parameter space.
+ *
+ * Each parameter is independently perturbed by a small Gaussian offset
+ * (default ±15% of range). Discrete controls (toggle, select) have a
+ * small probability of switching. Camera angles get a small nudge.
+ */
+export function mutatePreset(
+  comp: CompositionDefinition,
+  parent: Observation,
+  radius: number = DEFAULT_PERTURBATION_RADIUS,
+): GeneratedPreset {
+  const values: Record<string, unknown> = { ...parent.values };
+
+  if (comp.controls) {
+    for (const [key, ctrl] of Object.entries(comp.controls)) {
+      const current = values[key];
+      switch (ctrl.type) {
+        case "slider": {
+          if (typeof current !== "number") break;
+          const range = ctrl.max - ctrl.min;
+          const std = radius * range;
+          let nudged = current + gaussianNoise() * std;
+          if (ctrl.step) nudged = Math.round(nudged / ctrl.step) * ctrl.step;
+          values[key] = Math.max(ctrl.min, Math.min(ctrl.max, nudged));
+          break;
+        }
+        case "toggle": {
+          if (Math.random() < TOGGLE_FLIP_PROBABILITY) {
+            values[key] = !current;
+          }
+          break;
+        }
+        case "select": {
+          if (Math.random() < SELECT_SWITCH_PROBABILITY) {
+            const others = ctrl.options.filter((o) => o.value !== current);
+            if (others.length > 0) {
+              values[key] = others[Math.floor(Math.random() * others.length)].value;
+            }
+          }
+          break;
+        }
+        case "xy": {
+          if (Array.isArray(current) && current.length === 2) {
+            const range = ctrl.max - ctrl.min;
+            const std = radius * range;
+            values[key] = [
+              Math.max(ctrl.min, Math.min(ctrl.max, (current[0] as number) + gaussianNoise() * std)),
+              Math.max(ctrl.min, Math.min(ctrl.max, (current[1] as number) + gaussianNoise() * std)),
+            ];
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Perturb camera for 3D compositions
+  let camera = parent.camera;
+  if (!is2DComposition(comp) && camera) {
+    camera = {
+      theta: clamp((camera.theta ?? 0.5) + gaussianNoise() * CAMERA_ANGLE_PERTURBATION, 0.1, 1.2),
+      phi: clamp((camera.phi ?? 0.3) + gaussianNoise() * CAMERA_ANGLE_PERTURBATION, 0.05, 0.8),
+      dist: clamp((camera.dist ?? 8) * (1 + gaussianNoise() * CAMERA_DIST_PERTURBATION), 4, 20),
+    };
+  }
+
+  return {
+    composition: comp.id,
+    name: `Mutant: ${comp.name} #${Math.floor(Math.random() * 1000)}`,
+    description: `Mutated from ${parent.presetName ?? parent.id} (radius: ${(radius * 100).toFixed(0)}%)`,
+    values,
+    camera: is2DComposition(comp) ? null : camera,
+    tags: [...(comp.tags ?? []), "mutation"],
+    source: "mutation",
+    confidence: 0.7, // Higher than exploration, slightly lower than pure preference
+    parentId: parent.id,
+  };
+}
+
+/** Single sample from standard normal distribution (Box-Muller) */
+function gaussianNoise(): number {
+  const u1 = Math.random();
+  const u2 = Math.random();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+function clamp(val: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, val));
 }
 
 // ── Composition selection ──
@@ -100,6 +285,143 @@ function selectComposition(
   }
 
   return allComps[weightedRandomIndex(weights)][0];
+}
+
+// ── Staleness detection ──
+
+/** Number of recent observations to check for convergence */
+const STALENESS_WINDOW = 15;
+/** If >70% of recent observations are the same composition, that's stale */
+const COMPOSITION_DOMINANCE_THRESHOLD = 0.7;
+/** If recent reject rate exceeds this, boost exploration (fatigue signal) */
+const REJECT_FATIGUE_THRESHOLD = 0.6;
+/** If parameter variance (normalized) drops below this, we're stuck in a local optimum */
+const PARAMETER_VARIANCE_FLOOR = 0.02;
+
+/**
+ * Detect staleness in recent observations.
+ * Returns a boost to add to the exploration rate (0 = fine, up to 0.3 = very stale).
+ */
+export function detectStaleness(observations: Observation[]): number {
+  if (observations.length < STALENESS_WINDOW) return 0;
+
+  const recent = observations.slice(-STALENESS_WINDOW);
+  const withSignal = recent.filter((o) => o.outcome !== "unseen");
+  if (withSignal.length < 5) return 0;
+
+  let boost = 0;
+
+  // 1. Composition dominance: one composition appearing too often
+  const compCounts = new Map<string, number>();
+  for (const obs of recent) {
+    compCounts.set(obs.composition, (compCounts.get(obs.composition) ?? 0) + 1);
+  }
+  const maxCompFraction = Math.max(...compCounts.values()) / recent.length;
+  if (maxCompFraction > COMPOSITION_DOMINANCE_THRESHOLD) {
+    boost += 0.15;
+  }
+
+  // 2. Reject fatigue: high reject rate means current direction isn't working
+  const rejectCount = withSignal.filter((o) => o.outcome === "rejected").length;
+  if (rejectCount / withSignal.length > REJECT_FATIGUE_THRESHOLD) {
+    boost += 0.15;
+  }
+
+  // 3. Parameter convergence: low variance across recent accepted observations
+  const accepted = recent.filter((o) => o.outcome === "accepted" || o.outcome === "evolved");
+  if (accepted.length >= 3) {
+    const variances = computeParameterVariance(accepted);
+    if (variances.length > 0) {
+      const meanVariance = variances.reduce((a, b) => a + b, 0) / variances.length;
+      if (meanVariance < PARAMETER_VARIANCE_FLOOR) {
+        boost += 0.1;
+      }
+    }
+  }
+
+  return Math.min(0.3, boost);
+}
+
+/**
+ * Compute normalized variance of slider parameters across observations.
+ * Returns an array of per-parameter variances (0-1 scale).
+ */
+function computeParameterVariance(observations: Observation[]): number[] {
+  if (observations.length < 2) return [];
+
+  // Collect all numeric control values
+  const paramValues = new Map<string, number[]>();
+  for (const obs of observations) {
+    for (const [key, val] of Object.entries(obs.features?.controlPositions ?? {})) {
+      if (typeof val === "number") {
+        if (!paramValues.has(key)) paramValues.set(key, []);
+        paramValues.get(key)!.push(val);
+      }
+    }
+  }
+
+  const variances: number[] = [];
+  for (const [, values] of paramValues) {
+    if (values.length < 2) continue;
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const variance = values.reduce((a, v) => a + (v - mean) ** 2, 0) / values.length;
+    variances.push(variance);
+  }
+  return variances;
+}
+
+// ── Directed composition selection (intent-biased) ──
+
+function selectDirectedComposition(
+  model: PreferenceModel,
+  allComps: [string, CompositionDefinition][],
+  usedCompositions: Set<string>,
+  intent: IntentVector,
+): string {
+  // Combine preference scores with intent weights
+  const weights = allComps.map(([id]) => {
+    const prefScore = model.compositionScores[id]?.score ?? 0.6;
+    const intentWeight = intent.compositionWeights[id] ?? 1.0;
+    // Multiply: intent amplifies or suppresses the preference score
+    return prefScore * intentWeight;
+  });
+
+  // Penalize already-used compositions in this batch
+  for (let i = 0; i < allComps.length; i++) {
+    if (usedCompositions.has(allComps[i][0])) {
+      weights[i] *= 0.2;
+    }
+  }
+
+  return allComps[weightedRandomIndex(weights)][0];
+}
+
+// ── Directed parameter generation ──
+
+function generateDirectedPreset(
+  comp: CompositionDefinition,
+  model: PreferenceModel,
+  intent: IntentVector,
+): GeneratedPreset {
+  // Start from preferred preset, then nudge based on tag affinities
+  const base = generatePreferredPreset(comp, model);
+
+  // Override source and add brief metadata
+  return {
+    ...base,
+    name: `Directed: ${comp.name} #${Math.floor(Math.random() * 1000)}`,
+    description: `Brief: "${intent.brief}" → ${comp.name}`,
+    source: "directed",
+    brief: intent.brief,
+    tags: [...base.tags.filter((t) => t !== "preference-generated"), "directed", ...matchingBriefTags(intent)],
+  };
+}
+
+/** Extract tags from intent that had positive affinity */
+function matchingBriefTags(intent: IntentVector): string[] {
+  return Object.entries(intent.tagAffinities)
+    .filter(([, v]) => v > 0)
+    .map(([k]) => `brief:${k}`);
 }
 
 // ── Parameter generation ──

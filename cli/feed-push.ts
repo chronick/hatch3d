@@ -27,7 +27,7 @@ import type { CompositionDefinition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
 import { buildSVGContent, computeExportLayout } from "./svg-export.js";
-import { generateBiasedPresets, logGeneration, collectFromFeedAPI, collectFromPrintQueue, loadAllObservations, computeModel } from "../src/preferences/index.js";
+import { generateBiasedPresets, logGeneration, collectFromFeedAPI, collectFromPrintQueue, loadAllObservations, computeModel, briefToIntent } from "../src/preferences/index.js";
 import type { PreferenceModel, GeneratedPreset, Observation } from "../src/preferences/index.js";
 
 // ── Curated parameter presets for feed-worthy output ──
@@ -406,6 +406,7 @@ const { values: args } = parseArgs({
     scale: { type: "string", default: "4" },
     "no-preferences": { type: "boolean", default: false },
     exploration: { type: "string", default: "0.2" },
+    brief: { type: "string", short: "b" },
     queue: { type: "boolean", short: "q", default: false },
     help: { type: "boolean", short: "h", default: false },
   },
@@ -427,6 +428,7 @@ Options:
   --scale N              PNG scale factor (default: 4)
   --no-preferences       Disable preference model, use only curated presets
   --exploration N        Exploration rate 0-1 (default: 0.2)
+  -b, --brief TEXT       Creative brief to guide generation (e.g. "sparse organic flowing")
   -q, --queue            Also add items to the print queue
   -h, --help             Show this help
   `);
@@ -620,6 +622,7 @@ async function main(): Promise<void> {
 
   const noPreferences = args["no-preferences"] ?? false;
   const explorationRate = parseFloat(args.exploration || "0.2");
+  const briefText = args.brief as string | undefined;
 
   const config = dryRun ? { url: "", token: "" } : getFeedConfig();
   const batch = new Date().toISOString().slice(0, 10);
@@ -668,12 +671,27 @@ async function main(): Promise<void> {
       confidence: 0.5,
     }));
 
+    // Parse creative brief into intent vector if provided
+    const intent = briefText ? briefToIntent(briefText, compositionRegistry) : undefined;
+    if (intent) {
+      const boosted = Object.entries(intent.compositionWeights)
+        .filter(([, w]) => w > 1.5)
+        .map(([id]) => id)
+        .slice(0, 5);
+      console.log(`Brief: "${briefText}"`);
+      if (boosted.length > 0) console.log(`  Boosted compositions: ${boosted.join(", ")}`);
+      if (intent.explorationOverride != null) console.log(`  Exploration override: ${(intent.explorationOverride * 100).toFixed(0)}%`);
+      console.log();
+    }
+
     generatedPresets = generateBiasedPresets(model, compositionRegistry, {
       count,
       explorationRate,
       forceComposition,
       curatedPresets: curatedAsGenerated,
       acceptedObservations,
+      intent,
+      allObservations,
     });
 
     selected = generatedPresets.map((gp) => ({
@@ -685,11 +703,10 @@ async function main(): Promise<void> {
       tags: gp.tags,
     }));
 
-    const mutationCount = generatedPresets.filter((p) => p.source === "mutation").length;
-    const sourceBreakdown = mutationCount > 0
-      ? `, mutation: ${mutationCount}/${selected.length} from ${acceptedObservations.length} accepted`
-      : "";
-    console.log(`Generating ${selected.length} feed items via preference model (exploration: ${(explorationRate * 100).toFixed(0)}%${sourceBreakdown}, batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
+    const sourceCounts = { mutation: 0, directed: 0, preference: 0, exploration: 0, preset: 0 };
+    for (const p of generatedPresets) sourceCounts[p.source] = (sourceCounts[p.source] ?? 0) + 1;
+    const breakdown = Object.entries(sourceCounts).filter(([, n]) => n > 0).map(([s, n]) => `${s}: ${n}`).join(", ");
+    console.log(`Generating ${selected.length} feed items via preference model (${breakdown}, batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
   } else {
     selected = selectPresets(count, forceComposition);
     console.log(`Generating ${selected.length} feed items from curated presets (batch: ${batch})${dryRun ? " [DRY RUN]" : ""}\n`);
@@ -761,6 +778,8 @@ async function main(): Promise<void> {
           svg_key: svgKey,
           stats,
           tags: preset.tags,
+          ...(generatedPresets?.[i]?.brief ? { brief: generatedPresets[i].brief } : {}),
+          ...(generatedPresets?.[i]?.source ? { source: generatedPresets[i].source } : {}),
         },
         available_actions: ["accept", "reject", "evolve", "defer"],
       });

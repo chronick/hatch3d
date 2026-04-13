@@ -86,6 +86,19 @@ export interface SyncState {
   lastPrintQueueScan: string | null;
 }
 
+// ── Intent (creative brief → generation bias) ──
+
+export interface IntentVector {
+  /** Original brief text */
+  brief: string;
+  /** Per-composition weight multipliers (1.0 = neutral) */
+  compositionWeights: Record<string, number>;
+  /** Per-tag affinity scores (-1 to 1, 0 = neutral) */
+  tagAffinities: Record<string, number>;
+  /** Override exploration rate if set (0-1) */
+  explorationOverride?: number;
+}
+
 // ── Generation ──
 
 export interface GeneratedPreset {
@@ -96,9 +109,11 @@ export interface GeneratedPreset {
   camera: { theta?: number; phi?: number; dist?: number } | null;
   tags: string[];
   /** How this preset was produced */
-  source: "preference" | "exploration" | "mutation" | "preset";
+  source: "preference" | "exploration" | "mutation" | "preset" | "directed";
   /** Confidence score from preference model (0-1) */
   confidence: number;
   /** Parent preset/observation for lineage */
   parentId?: string;
+  /** Creative brief that guided generation, if any */
+  brief?: string;
 }
