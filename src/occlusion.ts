@@ -140,7 +140,16 @@ function sampleDepthBuffer(depthBuffer: DepthBuffer, x: number, y: number): numb
   // Alpha < 128 means the clear value (no mesh rendered here) → far depth
   if (depthData[idx + 3] < 128) return 1.0;
 
-  return depthData[idx + 2] / 255.0;
+  // The fragment shader packs depth across two channels for precision:
+  //   R = floor(d * 255) / 255                       — high byte
+  //   G = floor((d * 255 - floor(d * 255)) * 255)/255 — low byte
+  // Reading only B (which round-trips to 8 bits through the RGBA8 target)
+  // was wasting the shader's 16-bit encoding. Reconstruct both for ~65k
+  // depth levels — crucial for multi-face compositions (e.g. stepped
+  // heightfields) where many faces live within a narrow depth range.
+  const r = depthData[idx] / 255.0;
+  const g = depthData[idx + 1] / (255.0 * 255.0);
+  return r + g;
 }
 
 export function clipPolylineByDepth(
