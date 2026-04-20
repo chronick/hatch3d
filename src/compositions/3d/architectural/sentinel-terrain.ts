@@ -82,8 +82,11 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
           { x: x0, y, z: z1 },
         ],
       });
+      // Perimeter walls drop to y=0 (ground plane), not below — keeps the
+      // terrain visually sitting on a plane rather than framed by a tall box.
+      const edgeBottom = 0;
       // South wall at z=z1 (normal +z).
-      const ySouth = j + 1 < N ? h(i, j + 1) : -heightScale;
+      const ySouth = j + 1 < N ? h(i, j + 1) : edgeBottom;
       if (ySouth < y) {
         faces.push({
           kind: "wallNS",
@@ -96,7 +99,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
         });
       }
       // North wall at z=z0 (normal -z).
-      const yNorth = j > 0 ? h(i, j - 1) : -heightScale;
+      const yNorth = j > 0 ? h(i, j - 1) : edgeBottom;
       if (yNorth < y) {
         faces.push({
           kind: "wallNS",
@@ -109,7 +112,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
         });
       }
       // East wall at x=x1 (normal +x).
-      const yEast = i + 1 < N ? h(i + 1, j) : -heightScale;
+      const yEast = i + 1 < N ? h(i + 1, j) : edgeBottom;
       if (yEast < y) {
         faces.push({
           kind: "wallEW",
@@ -122,7 +125,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
         });
       }
       // West wall at x=x0 (normal -x).
-      const yWest = i > 0 ? h(i - 1, j) : -heightScale;
+      const yWest = i > 0 ? h(i - 1, j) : edgeBottom;
       if (yWest < y) {
         faces.push({
           kind: "wallEW",
@@ -321,12 +324,16 @@ const sentinelTerrain3D: Composition3DDefinition = {
     const heights = generateHeightfield(N, maxH, splits, plateauBias, rng);
     const faces = buildFaces(heights, N, cellSize, heightScale);
 
-    // Inflate each face slightly in its own plane so adjacent faces overlap
-    // at shared edges — otherwise the per-face meshes leave 1-pixel cracks in
-    // the depth buffer and back-face hatches leak through. The overlap is
-    // small enough that double-drawn boundary lines are invisible under
-    // typical pen-plotter line widths.
-    const edgeInflation = Math.max(0.002, cellSize * 0.02);
+    // Inflate each face in its plane so adjacent faces overlap at shared
+    // edges. Without this, per-face meshes leave 1-2 pixel cracks in the
+    // rasterized depth buffer and back-face hatches leak through them.
+    // Needs to be generous: at the default 512px depth buffer with the
+    // terrain spanning ~340px and N cells across, each face is only
+    // 340/N pixels wide. 10% of cellSize gives 2-3 pixels of overlap per
+    // edge — enough to close cracks even at modest depth resolutions.
+    // Adjacent-face boundary hatches double-draw by this amount, invisible
+    // under typical pen widths.
+    const edgeInflation = Math.max(0.01, cellSize * 0.1);
 
     const layers: LayerConfig[] = [];
     for (const f of faces) {
@@ -354,12 +361,12 @@ const sentinelTerrain3D: Composition3DDefinition = {
           angle,
           count,
           samples,
-          // Pull the hatch uv range slightly inward so lines stay inside the
-          // original (un-inflated) face — only the mesh itself is inflated,
-          // so the depth buffer gets full coverage without lines drifting
-          // outside the visually intended face area.
-          uRange: [0.02, 0.98],
-          vRange: [0.02, 0.98],
+          // Pull hatch uvRange in to match the inflation — lines stay within
+          // the visually intended face area while the mesh extends beyond.
+          // The 0.1 inset matches edgeInflation = cellSize*0.1 (so the
+          // uvRange endpoints correspond to the original face corners).
+          uRange: [0.1, 0.9],
+          vRange: [0.1, 0.9],
         },
         group,
       });
