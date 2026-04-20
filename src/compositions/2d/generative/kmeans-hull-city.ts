@@ -149,39 +149,57 @@ const kmeansHullCity: Composition2DDefinition = {
     hatchSpacing: {
       type: "slider",
       label: "Hatch Spacing",
-      default: 3.5,
+      default: 5.5,
       min: 1.5,
-      max: 12,
+      max: 14,
       step: 0.1,
       group: "Texture",
     },
     stippleSpacing: {
       type: "slider",
       label: "Stipple Spacing",
-      default: 6,
+      default: 9,
       min: 3,
-      max: 20,
+      max: 22,
       step: 0.5,
       group: "Texture",
     },
     angleJitter: {
       type: "slider",
       label: "Angle Jitter",
-      default: 0.6,
+      default: 0.4,
       min: 0,
       max: 1,
       step: 0.01,
       group: "Texture",
     },
+    emptyCellProbability: {
+      type: "slider",
+      label: "Empty Cells",
+      default: 0.35,
+      min: 0,
+      max: 0.7,
+      step: 0.01,
+      group: "Texture",
+    },
+    edgeInset: {
+      type: "slider",
+      label: "Hatch Edge Inset",
+      default: 4,
+      min: 0,
+      max: 12,
+      step: 0.5,
+      group: "Texture",
+    },
     textureMix: {
       type: "select",
       label: "Texture Mix",
-      default: "all",
+      default: "parallel-stipple",
       options: [
-        { label: "All (parallel+cross+stipple+diag)", value: "all" },
+        { label: "Parallel + Stipple (refined)", value: "parallel-stipple" },
         { label: "Parallel only", value: "parallel" },
         { label: "Parallel + Cross", value: "parallel-cross" },
-        { label: "Parallel + Stipple", value: "parallel-stipple" },
+        { label: "All four (busy)", value: "all" },
       ],
       group: "Texture",
     },
@@ -246,6 +264,8 @@ const kmeansHullCity: Composition2DDefinition = {
     const hatchSpacing = values.hatchSpacing as number;
     const stippleSpacing = values.stippleSpacing as number;
     const angleJitter = values.angleJitter as number;
+    const emptyCellProbability = values.emptyCellProbability as number;
+    const edgeInset = values.edgeInset as number;
     const textureMix = values.textureMix as string;
     const borderMode = values.borderMode as string;
     const borderWidth = values.borderWidth as number;
@@ -295,6 +315,10 @@ const kmeansHullCity: Composition2DDefinition = {
     const finalCells = voronoiCellsInCircle(points, cx, cy, radius);
 
     // ── 4. Road gap inset + cell outlines + texture fills ───────────────────
+    //   Restraint: ~emptyCellProbability of cells get NO fill (just outline).
+    //   This is the negative-space rhythm the original Lost cities relies on.
+    //   Hatching is done on a further-inset polygon (edgeInset) so strokes
+    //   don't touch the cell outline — keeps each cell visually crisp.
     const allowedTextures = resolveTextureMix(textureMix);
     for (let i = 0; i < finalCells.length; i++) {
       const cellRaw = finalCells[i];
@@ -302,15 +326,24 @@ const kmeansHullCity: Composition2DDefinition = {
       const cell = inwardOffset(cellRaw, roadGap / 2);
       if (cell.length < 3) continue;
 
-      // Outline as a closed polyline.
+      // Outline as a closed polyline (every cell, even empty).
       polylines.push([...cell, cell[0]]);
 
-      // Pick texture mode deterministically per cell (seed+index).
+      // Empty cells skip fill — gives the eye places to rest.
+      if (hashRand(seed + 7, i) < emptyCellProbability) continue;
+
       const pickIdx = Math.floor(hashRand(seed, i) * allowedTextures.length);
       const mode = allowedTextures[pickIdx] ?? "parallel";
-      const baseAngle = hashRand(seed + 101, i) * Math.PI + (rand() - 0.5) * angleJitter * Math.PI;
+      const baseAngle =
+        hashRand(seed + 101, i) * Math.PI +
+        (rand() - 0.5) * angleJitter * Math.PI;
 
-      fillCell(cell, mode, baseAngle, hatchSpacing, stippleSpacing, rand, polylines);
+      // Inset the fill region inside the cell outline so strokes don't
+      // collide with the cell border.
+      const fillPoly = edgeInset > 0 ? inwardOffset(cell, edgeInset) : cell;
+      if (fillPoly.length < 3) continue;
+
+      fillCell(fillPoly, mode, baseAngle, hatchSpacing, stippleSpacing, rand, polylines);
     }
 
     // ── 5. City circle boundary ─────────────────────────────────────────────
@@ -447,16 +480,18 @@ function fillCell(
       hatchPolygon(cell, angle, hatchSpacing, out);
       break;
     case "crosshatch":
-      hatchPolygon(cell, angle, hatchSpacing, out);
-      hatchPolygon(cell, angle + Math.PI / 2, hatchSpacing * 1.1, out);
+      // Open weave — wider spacing in the second direction so the cross
+      // reads as a grid, not a solid black block.
+      hatchPolygon(cell, angle, hatchSpacing * 1.4, out);
+      hatchPolygon(cell, angle + Math.PI / 2, hatchSpacing * 1.7, out);
       break;
     case "stipple":
       stipplePolygon(cell, stippleSpacing, rand, out);
       break;
     case "diagonal":
-      // Two light diagonals at ±45° off the cell angle.
-      hatchPolygon(cell, angle + Math.PI / 4, hatchSpacing * 1.4, out);
-      hatchPolygon(cell, angle - Math.PI / 4, hatchSpacing * 1.4, out);
+      // Single diagonal stripe — the previous double-cross was redundant
+      // with crosshatch and added noise.
+      hatchPolygon(cell, angle + Math.PI / 4, hatchSpacing * 1.2, out);
       break;
   }
 }
@@ -840,8 +875,10 @@ function reactionDiffusionBorder(opts: {
     [v, vNext] = [vNext, v];
   }
 
-  // March squares, emit contours only where the grid cell centre falls
-  // inside the annulus.
+  // March squares across the whole grid (no annulus mask here — masking
+  // mid-march fragments contours into open zigzags). We chain segments into
+  // complete polylines first, then keep whole polylines whose centroid sits
+  // in the annulus. This trades a bit of work for clean, closed contour bands.
   const scaleX = width / N;
   const scaleY = height / N;
   const segs: { x1: number; y1: number; x2: number; y2: number }[] = [];
@@ -857,13 +894,6 @@ function reactionDiffusionBorder(opts: {
         (v01 >= threshold ? 4 : 0) |
         (v11 >= threshold ? 8 : 0);
       if (cfg === 0 || cfg === 15) continue;
-      // Annulus mask on the cell centre.
-      const mx = (x + 0.5) * scaleX;
-      const my = (y + 0.5) * scaleY;
-      const dx = mx - cx;
-      const dy = my - cy;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < innerR * innerR || d2 > outerR * outerR) continue;
 
       const lerp = (a: number, b: number): number => {
         const d = b - a;
@@ -903,7 +933,11 @@ function reactionDiffusionBorder(opts: {
 
   // Chain segments into polylines (same logic as reaction-diffusion.ts).
   const used = new Uint8Array(segs.length);
-  const eps = Math.max(scaleX, scaleY) * 0.75;
+  // Marching-squares shared vertices are produced from the same lerp() call
+  // on the same input values, so exact float equality is OK. Use a tiny eps
+  // to guard against drift; a generous eps causes cross-blob chaining and
+  // produces sprawling wrong contours.
+  const eps = Math.min(scaleX, scaleY) * 0.05;
   const polys: Point[][] = [];
   for (let i = 0; i < segs.length; i++) {
     if (used[i]) continue;
@@ -956,7 +990,47 @@ function reactionDiffusionBorder(opts: {
     }
     if (chain.length >= 2) polys.push(chain);
   }
-  return polys;
+
+  // Annulus filter — keep contour polylines that sit fully (or near-fully)
+  // in the border ring. We test every Nth point and require ≥80% inside the
+  // annulus *and* the polyline's bounding box must fit within the outer
+  // radius. Sprawling whole-grid contours fail both checks and get dropped.
+  const inner2 = innerR * innerR;
+  const outer2 = outerR * outerR;
+  const outerSlack = outerR * 1.05;
+  const kept: Point[][] = [];
+  for (const poly of polys) {
+    if (poly.length < 3) continue;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let inAnnulus = 0;
+    let total = 0;
+    const stride = Math.max(1, Math.floor(poly.length / 10));
+    for (let i = 0; i < poly.length; i += stride) {
+      const p = poly[i];
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+      const dx = p.x - cx;
+      const dy = p.y - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= inner2 && d2 <= outer2) inAnnulus++;
+      total++;
+    }
+    if (total === 0 || inAnnulus / total < 0.8) continue;
+    if (
+      minX < cx - outerSlack ||
+      maxX > cx + outerSlack ||
+      minY < cy - outerSlack ||
+      maxY > cy + outerSlack
+    )
+      continue;
+    kept.push(poly);
+  }
+  return kept;
 }
 
 // ── Radial dash fallback border ─────────────────────────────────────────────
