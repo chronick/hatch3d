@@ -321,9 +321,17 @@ const sentinelTerrain3D: Composition3DDefinition = {
     const heights = generateHeightfield(N, maxH, splits, plateauBias, rng);
     const faces = buildFaces(heights, N, cellSize, heightScale);
 
+    // Inflate each face slightly in its own plane so adjacent faces overlap
+    // at shared edges — otherwise the per-face meshes leave 1-pixel cracks in
+    // the depth buffer and back-face hatches leak through. The overlap is
+    // small enough that double-drawn boundary lines are invisible under
+    // typical pen-plotter line widths.
+    const edgeInflation = Math.max(0.002, cellSize * 0.02);
+
     const layers: LayerConfig[] = [];
     for (const f of faces) {
-      const [p00, p10, p11, p01] = f.corners;
+      const inflated = inflateFaceInPlane(f.corners, edgeInflation);
+      const [p00, p10, p11, p01] = inflated;
       const { angle, count, group } = faceClassHatch(f.kind, {
         angleTops,
         angleNS,
@@ -346,8 +354,12 @@ const sentinelTerrain3D: Composition3DDefinition = {
           angle,
           count,
           samples,
-          uRange: [0, 1],
-          vRange: [0, 1],
+          // Pull the hatch uv range slightly inward so lines stay inside the
+          // original (un-inflated) face — only the mesh itself is inflated,
+          // so the depth buffer gets full coverage without lines drifting
+          // outside the visually intended face area.
+          uRange: [0.02, 0.98],
+          vRange: [0.02, 0.98],
         },
         group,
       });
@@ -355,6 +367,39 @@ const sentinelTerrain3D: Composition3DDefinition = {
     return layers;
   },
 };
+
+function inflateFaceInPlane(
+  corners: [Vec3, Vec3, Vec3, Vec3],
+  eps: number,
+): [Vec3, Vec3, Vec3, Vec3] {
+  const [p00, p10, p11, p01] = corners;
+  const uAxis = normalize(sub(p10, p00));
+  const vAxis = normalize(sub(p01, p00));
+  const dNeg = scaleV(uAxis, -eps);
+  const dPos = scaleV(uAxis, eps);
+  const dVNeg = scaleV(vAxis, -eps);
+  const dVPos = scaleV(vAxis, eps);
+  return [
+    add(p00, add(dNeg, dVNeg)),
+    add(p10, add(dPos, dVNeg)),
+    add(p11, add(dPos, dVPos)),
+    add(p01, add(dNeg, dVPos)),
+  ];
+}
+
+function sub(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
+}
+function add(a: Vec3, b: Vec3): Vec3 {
+  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
+}
+function scaleV(v: Vec3, s: number): Vec3 {
+  return { x: v.x * s, y: v.y * s, z: v.z * s };
+}
+function normalize(v: Vec3): Vec3 {
+  const l = Math.hypot(v.x, v.y, v.z) || 1;
+  return { x: v.x / l, y: v.y / l, z: v.z / l };
+}
 
 function faceClassHatch(
   kind: FaceKind,
