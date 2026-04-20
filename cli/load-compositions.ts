@@ -27,11 +27,13 @@ import multiTechnique from "../src/compositions/3d/studies/multi-technique.js";
 // 2D compositions
 import differentialGrowth from "../src/compositions/2d/generative/differential-growth.js";
 import flowField from "../src/compositions/2d/generative/flow-field.js";
+import grainsGlitchCA from "../src/compositions/2d/generative/grains-glitch-ca.js";
 import growthOnSurface from "../src/compositions/2d/generative/growth-on-surface.js";
 import kmeansHullCity from "../src/compositions/2d/generative/kmeans-hull-city.js";
 import inkVortex from "../src/compositions/2d/generative/ink-vortex.js";
 import photoHalftone from "../src/compositions/2d/generative/photo-halftone.js";
 import reactionDiffusion from "../src/compositions/2d/generative/reaction-diffusion.js";
+import sentinelTerrain from "../src/compositions/2d/generative/sentinel-terrain.js";
 import strangeAttractor from "../src/compositions/2d/generative/strange-attractor.js";
 import tspArt from "../src/compositions/2d/generative/tsp-art.js";
 import voronoiTexture from "../src/compositions/2d/generative/voronoi-texture.js";
@@ -49,8 +51,8 @@ const allCompositions: CompositionDefinition[] = [
   totemStack, towerAndBase, crystalSpire, phyllotaxisGarden, ribbonCage,
   dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique,
   // 2D
-  differentialGrowth, flowField, growthOnSurface, inkVortex, kmeansHullCity,
-  photoHalftone, reactionDiffusion, strangeAttractor, tspArt, voronoiTexture, waterArcos,
+  differentialGrowth, flowField, grainsGlitchCA, growthOnSurface, inkVortex, kmeansHullCity,
+  photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor, tspArt, voronoiTexture, waterArcos,
   opArtSphere, guillocheRosette, hilbertFill, moireCircles, spirograph, truchetMaze,
 ];
 
