@@ -1,3 +1,4 @@
+import type * as THREE from "three";
 import type { HatchParams } from "../hatch";
 
 // ── Control type system ──
@@ -115,6 +116,24 @@ export interface Composition3DDefinition extends CompositionMetadata {
   controls?: Record<string, ControlDef>;
   hatchGroups?: string[];
   layers: (input: CompositionInput) => LayerConfig[];
+  /**
+   * Optional unified-mesh override for the HLR depth buffer.
+   *
+   * By default the render pipeline accumulates one BufferGeometry per
+   * layer (via buildSurfaceMesh) and feeds the concatenated list to
+   * renderDepthBuffer. For compositions that emit many small layers
+   * meeting at shared edges (heightfield terrains, voxel structures),
+   * the independent per-face meshes leave 1-2 pixel cracks at those
+   * edges in the rasterized depth buffer — back-face hatches leak
+   * through the cracks.
+   *
+   * When this callback is present, the pipeline uses its single
+   * returned BufferGeometry for the depth buffer instead of combining
+   * per-layer meshes. Per-layer meshes still get built for mesh-
+   * overlay display; hatching still runs per-layer through the UV
+   * path. Return null to fall back to the default per-layer accumulation.
+   */
+  buildDepthMesh?: (input: CompositionInput) => THREE.BufferGeometry | null;
 }
 
 export interface Composition2DDefinition extends CompositionMetadata {

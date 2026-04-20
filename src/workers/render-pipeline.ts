@@ -103,14 +103,19 @@ export function runPipeline(req: RenderRequest): RenderResult {
   };
 
   let layers: LayerConfig[];
+  let unifiedDepthMesh: THREE.BufferGeometry | null = null;
   if (req.compositionKey !== "single") {
     const comp3d = comp as Composition3DDefinition;
-    layers = comp3d.layers({
+    const compInput = {
       surface: req.surfaceKey,
       surfaceParams: req.surfaceParams,
       hatchParams,
       values: req.resolvedValues,
-    });
+    };
+    layers = comp3d.layers(compInput);
+    if (comp3d.buildDepthMesh) {
+      unifiedDepthMesh = comp3d.buildDepthMesh(compInput);
+    }
   } else {
     layers = [
       {
@@ -219,7 +224,13 @@ export function runPipeline(req: RenderRequest): RenderResult {
   }
 
   // ── Occlusion ──
-  if (req.useOcclusion && meshGeometries.length > 0) {
+  // Prefer the composition's unified depth mesh (if provided) over the
+  // per-layer meshes. Eliminates inter-face cracks that leak back hatches
+  // through HLR on many-layer compositions like sentinelTerrain3D.
+  const depthMeshes: THREE.BufferGeometry[] = unifiedDepthMesh
+    ? [unifiedDepthMesh]
+    : meshGeometries;
+  if (req.useOcclusion && depthMeshes.length > 0) {
     try {
       const { contentW, contentH, scale: fitScale } = req.exportLayout;
       const extRatioW = Math.max(1, contentW / (fitScale * req.width));
@@ -257,7 +268,7 @@ export function runPipeline(req: RenderRequest): RenderResult {
       (extCamera as THREE.PerspectiveCamera | THREE.OrthographicCamera).updateProjectionMatrix();
 
       const depthBuffer = renderDepthBufferOffscreen(
-        meshGeometries,
+        depthMeshes,
         extCamera,
         depthW,
         depthH

@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import type { Composition3DDefinition, LayerConfig } from "../../types";
 
 type Vec3 = { x: number; y: number; z: number };
@@ -324,21 +325,9 @@ const sentinelTerrain3D: Composition3DDefinition = {
     const heights = generateHeightfield(N, maxH, splits, plateauBias, rng);
     const faces = buildFaces(heights, N, cellSize, heightScale);
 
-    // Inflate each face in its plane so adjacent faces overlap at shared
-    // edges. Without this, per-face meshes leave 1-2 pixel cracks in the
-    // rasterized depth buffer and back-face hatches leak through them.
-    // Needs to be generous: at the default 512px depth buffer with the
-    // terrain spanning ~340px and N cells across, each face is only
-    // 340/N pixels wide. 10% of cellSize gives 2-3 pixels of overlap per
-    // edge — enough to close cracks even at modest depth resolutions.
-    // Adjacent-face boundary hatches double-draw by this amount, invisible
-    // under typical pen widths.
-    const edgeInflation = Math.max(0.01, cellSize * 0.1);
-
     const layers: LayerConfig[] = [];
     for (const f of faces) {
-      const inflated = inflateFaceInPlane(f.corners, edgeInflation);
-      const [p00, p10, p11, p01] = inflated;
+      const [p00, p10, p11, p01] = f.corners;
       const { angle, count, group } = faceClassHatch(f.kind, {
         angleTops,
         angleNS,
@@ -361,52 +350,71 @@ const sentinelTerrain3D: Composition3DDefinition = {
           angle,
           count,
           samples,
-          // Pull hatch uvRange in to match the inflation — lines stay within
-          // the visually intended face area while the mesh extends beyond.
-          // The 0.1 inset matches edgeInflation = cellSize*0.1 (so the
-          // uvRange endpoints correspond to the original face corners).
-          uRange: [0.1, 0.9],
-          vRange: [0.1, 0.9],
         },
         group,
       });
     }
     return layers;
   },
+
+  // Unified depth-buffer mesh: all terrain faces in ONE BufferGeometry with
+  // shared vertices at face boundaries. Eliminates inter-face rasterisation
+  // cracks that otherwise let back-face hatches leak through HLR. Hatching
+  // still runs per-layer (unchanged) — this only replaces the depth path.
+  buildDepthMesh: (input) => {
+    const v = input.values;
+    const N = Math.max(4, Math.floor((v.gridResolution as number) ?? 10));
+    const maxH = Math.max(1, Math.floor((v.maxHeight as number) ?? 6));
+    const splits = Math.max(1, Math.floor((v.splitIterations as number) ?? 60));
+    const plateauBias = Math.max(0, Math.min(1, (v.plateauBias as number) ?? 0.6));
+    const cellSize = Math.max(0.05, (v.cellSize as number) ?? 0.3);
+    const heightScale = Math.max(0.05, (v.heightScale as number) ?? 0.3);
+    const seed = Math.floor((v.terrainSeed as number) ?? 42);
+
+    const rng = mulberry32(seed);
+    const heights = generateHeightfield(N, maxH, splits, plateauBias, rng);
+    const faces = buildFaces(heights, N, cellSize, heightScale);
+
+    // Vertex dedup — two faces that share a corner in world space get the
+    // same index in the mesh. Key by quantised coord so floating-point
+    // imprecision doesn't split physically-identical vertices. Quant unit
+    // is 1/10000 of a world unit — safe below any face size we generate.
+    const key = (p: Vec3) =>
+      `${Math.round(p.x * 10000)},${Math.round(p.y * 10000)},${Math.round(p.z * 10000)}`;
+    const vertexMap = new Map<string, number>();
+    const vertices: number[] = [];
+    const indices: number[] = [];
+
+    const getIndex = (p: Vec3) => {
+      const k = key(p);
+      let idx = vertexMap.get(k);
+      if (idx === undefined) {
+        idx = vertices.length / 3;
+        vertices.push(p.x, p.y, p.z);
+        vertexMap.set(k, idx);
+      }
+      return idx;
+    };
+
+    for (const f of faces) {
+      const [p00, p10, p11, p01] = f.corners;
+      const i00 = getIndex(p00);
+      const i10 = getIndex(p10);
+      const i11 = getIndex(p11);
+      const i01 = getIndex(p01);
+      // Two triangles per quad, CCW as viewed along the face normal.
+      indices.push(i00, i10, i11, i00, i11, i01);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(new Float32Array(vertices), 3),
+    );
+    geo.setIndex(indices);
+    return geo;
+  },
 };
-
-function inflateFaceInPlane(
-  corners: [Vec3, Vec3, Vec3, Vec3],
-  eps: number,
-): [Vec3, Vec3, Vec3, Vec3] {
-  const [p00, p10, p11, p01] = corners;
-  const uAxis = normalize(sub(p10, p00));
-  const vAxis = normalize(sub(p01, p00));
-  const dNeg = scaleV(uAxis, -eps);
-  const dPos = scaleV(uAxis, eps);
-  const dVNeg = scaleV(vAxis, -eps);
-  const dVPos = scaleV(vAxis, eps);
-  return [
-    add(p00, add(dNeg, dVNeg)),
-    add(p10, add(dPos, dVNeg)),
-    add(p11, add(dPos, dVPos)),
-    add(p01, add(dNeg, dVPos)),
-  ];
-}
-
-function sub(a: Vec3, b: Vec3): Vec3 {
-  return { x: a.x - b.x, y: a.y - b.y, z: a.z - b.z };
-}
-function add(a: Vec3, b: Vec3): Vec3 {
-  return { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z };
-}
-function scaleV(v: Vec3, s: number): Vec3 {
-  return { x: v.x * s, y: v.y * s, z: v.z * s };
-}
-function normalize(v: Vec3): Vec3 {
-  const l = Math.hypot(v.x, v.y, v.z) || 1;
-  return { x: v.x / l, y: v.y / l, z: v.z / l };
-}
 
 function faceClassHatch(
   kind: FaceKind,
