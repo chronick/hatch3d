@@ -6,6 +6,14 @@ export interface SurfaceDefinition {
   name: string;
   fn: SurfaceFn;
   defaults: Record<string, number>;
+  /**
+   * Optional override for UV-grid segment count used by `buildSurfaceMesh`.
+   * Flat parametric surfaces like `rectFace` only need 1x1 (2 triangles)
+   * to rasterize correctly, so requesting the default 24x24 (1152 tris)
+   * is 576× wasted work per layer. Curved surfaces leave this undefined
+   * and get the engine default.
+   */
+  meshSegs?: [number, number];
 }
 
 function twistedRibbon(u: number, v: number, params: Record<string, number>): THREE.Vector3 {
@@ -106,5 +114,10 @@ export const SURFACES: Record<string, SurfaceDefinition> = {
       p11x: 1, p11y: 0, p11z: 1,
       p01x: 0, p01y: 0, p01z: 1,
     },
+    // Flat quad — a single 1x1 subdivision (2 triangles) rasterizes to
+    // the exact same depth buffer as 24x24 (1152 triangles). Compositions
+    // that emit hundreds of rectFace layers (e.g. sentinelTerrain3D) go
+    // from ~700k total triangles to ~1.2k.
+    meshSegs: [1, 1],
   },
 };

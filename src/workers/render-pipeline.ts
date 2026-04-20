@@ -162,7 +162,8 @@ export function runPipeline(req: RenderRequest): RenderResult {
     const lParams = layer.params || req.surfaceParams;
     const fn = sf.fn;
 
-    const meshGeo = buildSurfaceMesh(fn, lParams, 24, 24);
+    const [uSegs, vSegs] = sf.meshSegs ?? [24, 24];
+    const meshGeo = buildSurfaceMesh(fn, lParams, uSegs, vSegs);
     if (layer.transform) {
       meshGeo.translate(
         layer.transform.x || 0,

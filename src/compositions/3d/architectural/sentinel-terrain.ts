@@ -186,9 +186,9 @@ const sentinelTerrain3D: Composition3DDefinition = {
     gridResolution: {
       type: "slider",
       label: "Grid Resolution",
-      default: 14,
+      default: 10,
       min: 6,
-      max: 24,
+      max: 20,
       step: 1,
       group: "Terrain",
     },
