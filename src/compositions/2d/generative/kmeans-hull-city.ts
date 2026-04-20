@@ -27,8 +27,33 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-const TEXTURE_MODES = ["parallel", "crosshatch", "stipple", "diagonal"] as const;
+const TEXTURE_MODES = [
+  // Geometric / generic
+  "parallel",
+  "crosshatch",
+  "diagonal",
+  // Organic — read as plants / growth / topography
+  "stipple",
+  "concentricRings",
+  "wavyHatch",
+  // Mechanical — read as buildings / city blocks
+  "windows",
+  "bricks",
+] as const;
 type TextureMode = (typeof TEXTURE_MODES)[number];
+
+const ORGANIC_MODES: TextureMode[] = [
+  "stipple",
+  "concentricRings",
+  "wavyHatch",
+  "diagonal",
+];
+const MECHANICAL_MODES: TextureMode[] = [
+  "windows",
+  "bricks",
+  "parallel",
+  "crosshatch",
+];
 
 const kmeansHullCity: Composition2DDefinition = {
   id: "kmeansHullCity",
@@ -194,13 +219,25 @@ const kmeansHullCity: Composition2DDefinition = {
     textureMix: {
       type: "select",
       label: "Texture Mix",
-      default: "parallel-stipple",
+      default: "mixed",
       options: [
-        { label: "Parallel + Stipple (refined)", value: "parallel-stipple" },
+        { label: "Mixed (plants + buildings)", value: "mixed" },
+        { label: "Organic only (plants)", value: "organic" },
+        { label: "Mechanical only (buildings)", value: "mechanical" },
+        { label: "Parallel + Stipple (refined v2)", value: "parallel-stipple" },
         { label: "Parallel only", value: "parallel" },
         { label: "Parallel + Cross", value: "parallel-cross" },
-        { label: "All four (busy)", value: "all" },
+        { label: "All (busy)", value: "all" },
       ],
+      group: "Texture",
+    },
+    mechanicalRatio: {
+      type: "slider",
+      label: "Building/Plant Ratio",
+      default: 0.5,
+      min: 0,
+      max: 1,
+      step: 0.05,
       group: "Texture",
     },
     borderMode: {
@@ -267,6 +304,7 @@ const kmeansHullCity: Composition2DDefinition = {
     const emptyCellProbability = values.emptyCellProbability as number;
     const edgeInset = values.edgeInset as number;
     const textureMix = values.textureMix as string;
+    const mechanicalRatio = values.mechanicalRatio as number;
     const borderMode = values.borderMode as string;
     const borderWidth = values.borderWidth as number;
     const rdIterations = Math.round(values.rdIterations as number);
@@ -319,7 +357,6 @@ const kmeansHullCity: Composition2DDefinition = {
     //   This is the negative-space rhythm the original Lost cities relies on.
     //   Hatching is done on a further-inset polygon (edgeInset) so strokes
     //   don't touch the cell outline — keeps each cell visually crisp.
-    const allowedTextures = resolveTextureMix(textureMix);
     for (let i = 0; i < finalCells.length; i++) {
       const cellRaw = finalCells[i];
       if (cellRaw.length < 3) continue;
@@ -332,8 +369,7 @@ const kmeansHullCity: Composition2DDefinition = {
       // Empty cells skip fill — gives the eye places to rest.
       if (hashRand(seed + 7, i) < emptyCellProbability) continue;
 
-      const pickIdx = Math.floor(hashRand(seed, i) * allowedTextures.length);
-      const mode = allowedTextures[pickIdx] ?? "parallel";
+      const mode = pickTextureMode(textureMix, mechanicalRatio, seed, i);
       const baseAngle =
         hashRand(seed + 101, i) * Math.PI +
         (rand() - 0.5) * angleJitter * Math.PI;
@@ -393,17 +429,44 @@ function hashRand(seed: number, i: number): number {
   return x - Math.floor(x);
 }
 
-function resolveTextureMix(mix: string): TextureMode[] {
-  switch (mix) {
-    case "parallel":
-      return ["parallel"];
-    case "parallel-cross":
-      return ["parallel", "crosshatch"];
-    case "parallel-stipple":
-      return ["parallel", "stipple"];
-    default:
-      return [...TEXTURE_MODES];
+function pickTextureMode(
+  mix: string,
+  mechanicalRatio: number,
+  seed: number,
+  cellIdx: number,
+): TextureMode {
+  // "mixed" is the headline mode — split organic vs mechanical by the ratio
+  // slider, with a per-cell stable hash so the same seed gives the same
+  // building-vs-plant assignment.
+  if (mix === "mixed") {
+    const orgPick = hashRand(seed + 311, cellIdx);
+    const mechPick = hashRand(seed + 593, cellIdx);
+    if (orgPick < mechanicalRatio) {
+      return MECHANICAL_MODES[Math.floor(mechPick * MECHANICAL_MODES.length)];
+    }
+    return ORGANIC_MODES[Math.floor(mechPick * ORGANIC_MODES.length)];
   }
+  let pool: TextureMode[];
+  switch (mix) {
+    case "organic":
+      pool = ORGANIC_MODES;
+      break;
+    case "mechanical":
+      pool = MECHANICAL_MODES;
+      break;
+    case "parallel":
+      pool = ["parallel"];
+      break;
+    case "parallel-cross":
+      pool = ["parallel", "crosshatch"];
+      break;
+    case "parallel-stipple":
+      pool = ["parallel", "stipple"];
+      break;
+    default:
+      pool = [...TEXTURE_MODES];
+  }
+  return pool[Math.floor(hashRand(seed, cellIdx) * pool.length)] ?? "parallel";
 }
 
 function circlePolyline(cx: number, cy: number, r: number, segments: number): Point[] {
@@ -493,7 +556,222 @@ function fillCell(
       // with crosshatch and added noise.
       hatchPolygon(cell, angle + Math.PI / 4, hatchSpacing * 1.2, out);
       break;
+    // ── Organic ─────────────────────────────────────────────────────────
+    case "concentricRings":
+      concentricRingsPolygon(cell, hatchSpacing * 1.6, out);
+      break;
+    case "wavyHatch":
+      wavyHatchPolygon(cell, angle, hatchSpacing * 1.2, out);
+      break;
+    // ── Mechanical ──────────────────────────────────────────────────────
+    case "windows":
+      windowsPolygon(cell, hatchSpacing * 1.8, rand, out);
+      break;
+    case "bricks":
+      bricksPolygon(cell, angle, hatchSpacing * 1.6, out);
+      break;
   }
+}
+
+// ── Organic textures ────────────────────────────────────────────────────────
+
+// Concentric polygon insets — reads as growth rings or topographic contours.
+// Each ring is a closed polyline at a progressively smaller inset.
+function concentricRingsPolygon(
+  cell: Point[],
+  spacing: number,
+  out: Point[][],
+): void {
+  if (cell.length < 3 || spacing <= 0) return;
+  let current = cell;
+  // Cap on rings so degenerate cells don't loop forever.
+  for (let i = 0; i < 12; i++) {
+    const next = inwardOffset(current, spacing);
+    if (next.length < 3) break;
+    // Stop when the ring has collapsed too far — checking bounding-box area
+    // gives a cheap "is it still big enough to plot" test.
+    const bb = polygonBounds(next);
+    if ((bb.maxX - bb.minX) < spacing * 1.5 || (bb.maxY - bb.minY) < spacing * 1.5)
+      break;
+    out.push([...next, next[0]]);
+    current = next;
+  }
+}
+
+// Sinusoidal hatching — straight scan lines bent into sin curves perpendicular
+// to the line direction. Subdivide each segment and perturb interior points.
+function wavyHatchPolygon(
+  cell: Point[],
+  angleRad: number,
+  spacing: number,
+  out: Point[][],
+): void {
+  if (cell.length < 3 || spacing <= 0) return;
+  // Reuse the straight-line clipping, then resample each segment.
+  const straight: Point[][] = [];
+  hatchPolygon(cell, angleRad, spacing, straight);
+  const ca = Math.cos(angleRad);
+  const sa = Math.sin(angleRad);
+  // Perpendicular direction for the wave displacement.
+  const nx = -sa;
+  const ny = ca;
+  const amplitude = spacing * 0.45;
+  // Wave length proportional to spacing so denser hatch reads as finer waves.
+  const waveLen = spacing * 3.5;
+  for (const [a, b] of straight) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len < spacing * 0.5) {
+      out.push([a, b]);
+      continue;
+    }
+    const segments = Math.max(6, Math.round(len / Math.max(1, waveLen / 6)));
+    const wave: Point[] = [];
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const px = a.x + dx * t;
+      const py = a.y + dy * t;
+      const phase = (t * len) / waveLen * Math.PI * 2;
+      // Taper the wave near the endpoints so it doesn't kick outside the cell.
+      const taper = Math.sin(t * Math.PI);
+      const w = Math.sin(phase) * amplitude * taper;
+      wave.push({ x: px + nx * w, y: py + ny * w });
+    }
+    out.push(wave);
+  }
+}
+
+// ── Mechanical textures ─────────────────────────────────────────────────────
+
+// City-block windows — staggered grid of small squares clipped to the cell.
+// Some "lit" (with a small inner cross), some empty. Reads as building windows.
+function windowsPolygon(
+  cell: Point[],
+  spacing: number,
+  rand: () => number,
+  out: Point[][],
+): void {
+  if (cell.length < 3 || spacing <= 0) return;
+  const bb = polygonBounds(cell);
+  const cellW = bb.maxX - bb.minX;
+  const cellH = bb.maxY - bb.minY;
+  if (cellW < spacing * 1.5 || cellH < spacing * 1.5) return;
+  const cols = Math.max(2, Math.floor(cellW / spacing));
+  const rows = Math.max(2, Math.floor(cellH / spacing));
+  const stepX = cellW / cols;
+  const stepY = cellH / rows;
+  // Window itself is a square of this size, centred in the grid cell.
+  const sq = Math.min(stepX, stepY) * 0.55;
+  const half = sq / 2;
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const px = bb.minX + (i + 0.5) * stepX;
+      const py = bb.minY + (j + 0.5) * stepY;
+      if (!pointInPolygon({ x: px, y: py }, cell)) continue;
+      // 70% of windows are drawn — leaves negative space within the cell.
+      if (hashRand(Math.floor(px * 17 + py * 31), 0) > 0.7) continue;
+      // Outline square.
+      out.push([
+        { x: px - half, y: py - half },
+        { x: px + half, y: py - half },
+        { x: px + half, y: py + half },
+        { x: px - half, y: py + half },
+        { x: px - half, y: py - half },
+      ]);
+      // ~30% of drawn windows get an inner "lit" cross.
+      if (rand() < 0.3) {
+        out.push([
+          { x: px - half * 0.5, y: py },
+          { x: px + half * 0.5, y: py },
+        ]);
+        out.push([
+          { x: px, y: py - half * 0.5 },
+          { x: px, y: py + half * 0.5 },
+        ]);
+      }
+    }
+  }
+}
+
+// Staggered brick courses — horizontal stripes of clipped segments with
+// vertical "mortar" gaps offset between rows. Reads as masonry / wall.
+function bricksPolygon(
+  cell: Point[],
+  angleRad: number,
+  spacing: number,
+  out: Point[][],
+): void {
+  if (cell.length < 3 || spacing <= 0) return;
+  // Brick courses run along `angleRad` (could be any rotation).
+  const ca = Math.cos(angleRad);
+  const sa = Math.sin(angleRad);
+  const nx = -sa;
+  const ny = ca;
+  const bb = polygonBounds(cell);
+  const cellCx = (bb.minX + bb.maxX) / 2;
+  const cellCy = (bb.minY + bb.maxY) / 2;
+  const extent = Math.sqrt((bb.maxX - bb.minX) ** 2 + (bb.maxY - bb.minY) ** 2);
+  const rowSpacing = spacing;
+  const brickLen = spacing * 2.4;
+  const mortar = spacing * 0.35;
+  const rows = Math.ceil(extent / rowSpacing);
+
+  for (let row = -rows; row <= rows; row++) {
+    const offset = row * rowSpacing;
+    // Centre line of this brick course.
+    const ox = cellCx + nx * offset;
+    const oy = cellCy + ny * offset;
+    // Stagger every other row by half a brick length.
+    const stagger = (row & 1) === 0 ? 0 : brickLen / 2;
+    // Sweep along the course direction in brickLen+mortar steps.
+    const start = -extent + stagger;
+    const end = extent;
+    for (let t = start; t < end; t += brickLen + mortar) {
+      const a = { x: ox + ca * t, y: oy + sa * t };
+      const b = { x: ox + ca * (t + brickLen), y: oy + sa * (t + brickLen) };
+      // Clip this brick segment to the polygon.
+      const clipped = clipSegmentToPolygon(a, b, cell);
+      for (const seg of clipped) out.push(seg);
+    }
+  }
+}
+
+// Clip a 2-point segment to a polygon; returns 0..N segments inside.
+// Uses the same scan-line intersection helper machinery as hatchPolygon.
+function clipSegmentToPolygon(
+  a: Point,
+  b: Point,
+  poly: Point[],
+): Point[][] {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const ts: number[] = [0, 1];
+  for (let j = 0; j < poly.length; j++) {
+    const k = (j + 1) % poly.length;
+    const x1 = poly[j].x;
+    const y1 = poly[j].y;
+    const x2 = poly[k].x;
+    const y2 = poly[k].y;
+    const denom = dx * (y1 - y2) - dy * (x1 - x2);
+    if (Math.abs(denom) < 1e-10) continue;
+    const t = ((a.x - x1) * (y1 - y2) - (a.y - y1) * (x1 - x2)) / denom;
+    const u = -((dx) * (a.y - y1) - (dy) * (a.x - x1)) / denom;
+    if (t > 0 && t < 1 && u >= 0 && u <= 1) ts.push(t);
+  }
+  ts.sort((p, q) => p - q);
+  const out: Point[][] = [];
+  for (let i = 0; i + 1 < ts.length; i++) {
+    const t1 = ts[i];
+    const t2 = ts[i + 1];
+    const mid = { x: a.x + dx * (t1 + t2) / 2, y: a.y + dy * (t1 + t2) / 2 };
+    if (!pointInPolygon(mid, poly)) continue;
+    out.push([
+      { x: a.x + dx * t1, y: a.y + dy * t1 },
+      { x: a.x + dx * t2, y: a.y + dy * t2 },
+    ]);
+  }
+  return out;
 }
 
 function polygonBounds(poly: Point[]): { minX: number; maxX: number; minY: number; maxY: number } {
