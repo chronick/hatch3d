@@ -35,6 +35,7 @@ import reactionDiffusion from "../src/compositions/2d/generative/reaction-diffus
 import strangeAttractor from "../src/compositions/2d/generative/strange-attractor.js";
 import tspArt from "../src/compositions/2d/generative/tsp-art.js";
 import voronoiTexture from "../src/compositions/2d/generative/voronoi-texture.js";
+import waterArcos from "../src/compositions/2d/generative/water-arcos.js";
 import opArtSphere from "../src/compositions/2d/optical/op-art-sphere.js";
 import guillocheRosette from "../src/compositions/2d/patterns/guilloche-rosette.js";
 import hilbertFill from "../src/compositions/2d/patterns/hilbert-fill.js";
@@ -49,7 +50,7 @@ const allCompositions: CompositionDefinition[] = [
   dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique,
   // 2D
   differentialGrowth, flowField, growthOnSurface, inkVortex, kmeansHullCity,
-  photoHalftone, reactionDiffusion, strangeAttractor, tspArt, voronoiTexture,
+  photoHalftone, reactionDiffusion, strangeAttractor, tspArt, voronoiTexture, waterArcos,
   opArtSphere, guillocheRosette, hilbertFill, moireCircles, spirograph, truchetMaze,
 ];
 
