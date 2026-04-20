@@ -1,5 +1,6 @@
 import { createNoise2D } from "simplex-noise";
 import type { Composition2DDefinition } from "../../types";
+import { wasmGenerateGrainsGlitchCA } from "../../../wasm-pipeline-2d";
 
 type Point = { x: number; y: number };
 
@@ -387,6 +388,12 @@ const grainsGlitchCA: Composition2DDefinition = {
 
     return lines;
   },
+
+  // Rust/WASM fast path — ~5-10× faster for the inner CA loop so large
+  // grid sizes (gridCols ≥ 200) stay interactive. Returns null when the
+  // WASM module isn't loaded, and the worker falls back to the TS
+  // `generate` above.
+  wasmGenerate: wasmGenerateGrainsGlitchCA,
 };
 
 function wrap(v: number, n: number): number {

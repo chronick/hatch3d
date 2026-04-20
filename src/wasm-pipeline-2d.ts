@@ -18,6 +18,7 @@ interface WasmModule2D {
   generate_flow_field: (input: Float64Array) => Float64Array;
   generate_ink_vortex: (input: Float64Array) => Float64Array;
   generate_voronoi: (input: Float64Array) => Float64Array;
+  generate_grains_glitch_ca: (input: Float64Array) => Float64Array;
 }
 
 let wasmMod: WasmModule2D | null = null;
@@ -203,5 +204,43 @@ export function wasmGenerateVoronoi(
   ]);
 
   const result = mod.generate_voronoi(data);
+  return deserialize2DPolylines(result);
+}
+
+// Neighbourhood mode string → numeric index for the grainsGlitchCA WASM.
+const GRAINS_GLITCH_NEIGHBORHOOD_MAP: Record<string, number> = {
+  moore1: 0,
+  moore2: 1,
+  dir16: 2,
+  all: 3,
+};
+
+export function wasmGenerateGrainsGlitchCA(
+  input: Composition2DInput,
+): { x: number; y: number }[][] | null {
+  const mod = getWasmModuleSync();
+  if (!mod) return null;
+
+  const v = input.values;
+  const data = new Float64Array([
+    input.width,
+    input.height,
+    Math.round(v.gridCols as number),
+    Math.round(v.gridRows as number),
+    Math.round(v.numStates as number),
+    Math.round(v.caIterations as number),
+    GRAINS_GLITCH_NEIGHBORHOOD_MAP[v.neighborhoodMode as string] ?? 3,
+    v.ruleBlend as number,
+    v.shiftStrength as number,
+    v.tileHeight as number,
+    v.tileWidth as number,
+    v.hatchLineGap as number,
+    (v.joinSegments as boolean) ? 1.0 : 0.0,
+    v.joinTolerance as number,
+    v.seedNoise as number,
+    Math.round(v.seed as number),
+  ]);
+
+  const result = mod.generate_grains_glitch_ca(data);
   return deserialize2DPolylines(result);
 }

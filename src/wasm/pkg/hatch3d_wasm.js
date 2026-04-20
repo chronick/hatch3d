@@ -32,6 +32,19 @@ export function generate_flow_field(input) {
 }
 
 /**
+ * @param {Float64Array} input
+ * @returns {Float64Array}
+ */
+export function generate_grains_glitch_ca(input) {
+    const ptr0 = passArrayF64ToWasm0(input, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.generate_grains_glitch_ca(ptr0, len0);
+    var v2 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v2;
+}
+
+/**
  * WASM entry point for ink vortex.
  * @param {Float64Array} input
  * @returns {Float64Array}
