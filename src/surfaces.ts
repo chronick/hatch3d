@@ -69,10 +69,42 @@ function conoidSurface(u: number, v: number, params: Record<string, number>): TH
   );
 }
 
+// Bilinear-interpolated flat quad from 4 corners. Used as a building block
+// for compositions that assemble complex geometry from many flat faces —
+// e.g. heightfield terrains where each top cap and wall is one quad. Corner
+// order follows UV: p00 at (0,0), p10 at (1,0), p11 at (1,1), p01 at (0,1).
+function rectFace(u: number, v: number, params: Record<string, number>): THREE.Vector3 {
+  const {
+    p00x = 0, p00y = 0, p00z = 0,
+    p10x = 1, p10y = 0, p10z = 0,
+    p11x = 1, p11y = 0, p11z = 1,
+    p01x = 0, p01y = 0, p01z = 1,
+  } = params;
+  const a = (1 - u) * (1 - v);
+  const b = u * (1 - v);
+  const c = u * v;
+  const d = (1 - u) * v;
+  return new THREE.Vector3(
+    a * p00x + b * p10x + c * p11x + d * p01x,
+    a * p00y + b * p10y + c * p11y + d * p01y,
+    a * p00z + b * p10z + c * p11z + d * p01z,
+  );
+}
+
 export const SURFACES: Record<string, SurfaceDefinition> = {
   twistedRibbon: { name: "Twisted Ribbon", fn: twistedRibbon, defaults: { twist: 2, width: 1.2, height: 4, bulge: 0.3 } },
   hyperboloid: { name: "Hyperboloid", fn: ruledHyperboloid, defaults: { radius: 1.5, height: 3.5, twist: 1.2, waist: 0.4 } },
   canopy: { name: "Angular Canopy", fn: angularCanopy, defaults: { radius: 2, sag: 0.8, sharpness: 3, yOffset: 0 } },
   torus: { name: "Flat Torus", fn: flattenedTorus, defaults: { majorR: 2, minorR: 0.2, ySquish: 0.25 } },
   conoid: { name: "Conoid", fn: conoidSurface, defaults: { height: 3, spread: 2, fanAngle: 1.5 } },
+  rectFace: {
+    name: "Rect Face",
+    fn: rectFace,
+    defaults: {
+      p00x: 0, p00y: 0, p00z: 0,
+      p10x: 1, p10y: 0, p10z: 0,
+      p11x: 1, p11y: 0, p11z: 1,
+      p01x: 0, p01y: 0, p01z: 1,
+    },
+  },
 };

@@ -3,13 +3,14 @@ import * as THREE from "three";
 import { SURFACES } from "../surfaces";
 
 describe("surfaces", () => {
-  it("exports all five surfaces", () => {
+  it("exports all registered surfaces", () => {
     expect(Object.keys(SURFACES)).toEqual([
       "twistedRibbon",
       "hyperboloid",
       "canopy",
       "torus",
       "conoid",
+      "rectFace",
     ]);
   });
 

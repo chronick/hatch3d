@@ -13,6 +13,7 @@ import doubleRing from "../src/compositions/3d/geometric/double-ring.js";
 import nestedShells from "../src/compositions/3d/geometric/nested-shells.js";
 import starburst from "../src/compositions/3d/geometric/starburst.js";
 import vortexTunnel from "../src/compositions/3d/geometric/vortex-tunnel.js";
+import sentinelTerrain3D from "../src/compositions/3d/architectural/sentinel-terrain.js";
 import totemStack from "../src/compositions/3d/architectural/totem-stack.js";
 import towerAndBase from "../src/compositions/3d/architectural/tower-and-base.js";
 import crystalSpire from "../src/compositions/3d/organic/crystal-spire.js";
@@ -48,7 +49,7 @@ import truchetMaze from "../src/compositions/2d/patterns/truchet-maze.js";
 const allCompositions: CompositionDefinition[] = [
   // 3D
   single, crystalLattice, doubleRing, nestedShells, starburst, vortexTunnel,
-  totemStack, towerAndBase, crystalSpire, phyllotaxisGarden, ribbonCage,
+  sentinelTerrain3D, totemStack, towerAndBase, crystalSpire, phyllotaxisGarden, ribbonCage,
   dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique,
   // 2D
   differentialGrowth, flowField, grainsGlitchCA, growthOnSurface, inkVortex, kmeansHullCity,
