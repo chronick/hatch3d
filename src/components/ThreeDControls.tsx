@@ -89,7 +89,7 @@ export const ThreeDControls = memo(function ThreeDControls(props: ThreeDControls
               max={1024}
               step={64}
             />
-            <Slider label="Bias" value={depthBias} onChange={setDepthBias} min={0.0001} max={0.02} step={0.0001} />
+            <Slider label="Bias" value={depthBias} onChange={setDepthBias} min={0.0001} max={0.005} step={0.0001} />
           </>
         )}
       </Section>

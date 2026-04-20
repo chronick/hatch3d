@@ -73,7 +73,7 @@ const DEFAULTS = {
   hatchAngle: 0.7,
   useOcclusion: false,
   depthRes: 512,
-  depthBias: 0.01,
+  depthBias: 0.001,
   camTheta: 0.6,
   camPhi: 0.35,
   camDist: 8,
