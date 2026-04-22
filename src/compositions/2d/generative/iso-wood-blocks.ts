@@ -83,6 +83,15 @@ const isoWoodBlocks: Composition2DDefinition = {
       step: 0.01,
       group: "Layout",
     },
+    gridRegularity: {
+      type: "slider",
+      label: "Grid ↔ Random",
+      default: 1.0,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      group: "Layout",
+    },
     packingMargin: {
       type: "slider",
       label: "Packing Margin",
@@ -194,6 +203,10 @@ const isoWoodBlocks: Composition2DDefinition = {
       0,
       Math.min(0.5, (values.smallAccentProportion as number) ?? 0.2),
     );
+    const gridRegularity = Math.max(
+      0,
+      Math.min(1, (values.gridRegularity as number) ?? 1.0),
+    );
     const margin = Math.max(0, Math.min(0.3, (values.packingMargin as number) ?? 0.04));
     const isoAngle = ((values.isoAngle as number) ?? 30) * Math.PI / 180;
     const grainSpacing = Math.max(
@@ -259,46 +272,77 @@ const isoWoodBlocks: Composition2DDefinition = {
       sizes.push(cellScale * 0.35 * (1 - sizeVar + sizeVar * sizeNorm));
     }
 
-    // Largest-first greedy packing. Centre-biased radial sampling (u^1.5)
-    // concentrates density near the middle. Rejection tests a circle of
-    // radius ≈ edge against previously placed footprints.
+    // Grid anchors — one per block, used at gridRegularity=0 and blended
+    // with the rejection-sampled position otherwise. Row-major fill so
+    // blocks[0] is top-left and blocks[blockCount-1] is bottom-right.
+    const cols = Math.ceil(Math.sqrt(blockCount));
+    const rows = Math.ceil(blockCount / cols);
+    const gridCellW = (width * (1 - 2 * margin)) / cols;
+    const gridCellH = (height * (1 - 2 * margin)) / rows;
+    const gridOx = width * margin + gridCellW / 2;
+    const gridOy = height * margin + gridCellH / 2;
+    const gridAnchor = (k: number): Point => ({
+      x: gridOx + (k % cols) * gridCellW,
+      y: gridOy + Math.floor(k / cols) * gridCellH,
+    });
+
+    // Largest-first greedy packing for the random component. Centre-biased
+    // radial sampling (u^1.5) concentrates density near the middle.
+    // Rejection tests a circle of radius ≈ edge against previously placed
+    // footprints. Final position per block is lerp(grid, random, reg). At
+    // reg=0 no rejection happens — grid only. If rejection fails for a
+    // block at reg>0 we fall back to the grid anchor so we never drop it.
     const sizeOrder = sizes.map((_, i) => i).sort((a, b) => sizes[b] - sizes[a]);
     const placed: { x: number; y: number; r: number }[] = [];
-    const placedOrder: { edge: number; anchor: Point }[] = [];
+    const randomAnchors: (Point | null)[] = new Array(blockCount).fill(null);
     const centreBias = 1.5;
     const hexFootprintFactor = 0.95;
     const MAX_TRIES = 200;
-    for (const idx of sizeOrder) {
-      const edge = sizes[idx];
-      const r = edge * hexFootprintFactor * (1 + margin * 2);
-      let found = false;
-      for (let tri = 0; tri < MAX_TRIES; tri++) {
-        const u = Math.pow(rng(), centreBias);
-        const rr = u * usableR;
-        const theta = rng() * Math.PI * 2;
-        const cx = canvasCx + Math.cos(theta) * rr;
-        const cy = canvasCy + Math.sin(theta) * rr;
-        let overlap = false;
-        for (const pl of placed) {
-          const dx = pl.x - cx;
-          const dy = pl.y - cy;
-          const minD = pl.r + r;
-          if (dx * dx + dy * dy < minD * minD) {
-            overlap = true;
+    if (gridRegularity > 0) {
+      for (const idx of sizeOrder) {
+        const edge = sizes[idx];
+        const r = edge * hexFootprintFactor * (1 + margin * 2);
+        for (let tri = 0; tri < MAX_TRIES; tri++) {
+          const u = Math.pow(rng(), centreBias);
+          const rr = u * usableR;
+          const theta = rng() * Math.PI * 2;
+          const cx = canvasCx + Math.cos(theta) * rr;
+          const cy = canvasCy + Math.sin(theta) * rr;
+          let overlap = false;
+          for (const pl of placed) {
+            const dx = pl.x - cx;
+            const dy = pl.y - cy;
+            const minD = pl.r + r;
+            if (dx * dx + dy * dy < minD * minD) {
+              overlap = true;
+              break;
+            }
+          }
+          if (!overlap) {
+            placed.push({ x: cx, y: cy, r });
+            randomAnchors[idx] = { x: cx, y: cy };
             break;
           }
         }
-        if (!overlap) {
-          placed.push({ x: cx, y: cy, r });
-          placedOrder.push({ edge, anchor: { x: cx, y: cy } });
-          found = true;
-          break;
-        }
+        // If dart-throwing fails, we fall through to grid anchor below.
       }
-      // If dart-throwing fails after MAX_TRIES, drop this block — effective
-      // blockCount becomes "target, not guarantee". Better than forcing
-      // overlaps when packing gets tight.
-      if (!found) continue;
+    }
+
+    // Build final placements in original block order so grid reads top-left
+    // to bottom-right when regularity is low. Lerp between the grid anchor
+    // and the (successful) random anchor; fall back to grid on rejection
+    // failure or when regularity is 0.
+    const placedOrder: { edge: number; anchor: Point }[] = [];
+    for (let k = 0; k < blockCount; k++) {
+      const g = gridAnchor(k);
+      const r = randomAnchors[k];
+      const anchor: Point = r
+        ? {
+            x: g.x * (1 - gridRegularity) + r.x * gridRegularity,
+            y: g.y * (1 - gridRegularity) + r.y * gridRegularity,
+          }
+        : g;
+      placedOrder.push({ edge: sizes[k], anchor });
     }
 
     const blocks: Block[] = [];
