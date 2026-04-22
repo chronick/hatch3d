@@ -180,49 +180,84 @@ const isoWoodBlocks: Composition2DDefinition = {
     const rng = mulberry32(seed);
     const noise = createNoise2D(rng);
 
-    // ── LAYOUT — jittered grid pack with varied block footprints ──
-    // A greedy collision-avoidance loop would be more faithful to the
-    // reference, but for v1 a jittered grid of cells holding one block each
-    // produces a similar "packed but irregular" read with zero retry logic.
-    const cols = Math.ceil(Math.sqrt(blockCount));
-    const rows = Math.ceil(blockCount / cols);
-    const cellPxW = (width * (1 - 2 * margin)) / cols;
-    const cellPxH = (height * (1 - 2 * margin)) / rows;
-    const cellScale = Math.min(cellPxW, cellPxH);
-    const originX = width * margin + cellPxW / 2;
-    const originY = height * margin + cellPxH / 2;
+    // ── LAYOUT — greedy rejection-sampled organic packing ──
+    // Draw all block sizes first, then place largest-first to maximise the
+    // chance each one finds a spot. Candidate positions are sampled with a
+    // radial bias toward canvas centre (density concentrates in the middle,
+    // scatters at edges). Collision rejection uses a circle approximation
+    // of each block's isometric hex footprint (~edge in circumradius).
     // Isometric basis in 2D screen space — for a unit cube of edge length
     // `u`, the three isometric axes project as:
-    //   X → (+u cos(iso), -u sin(iso))    // right-down→right-up mix
-    //   Y → (0, -u)                        // straight up
-    //   Z → (-u cos(iso), -u sin(iso))     // left-up
-    // With default isoAngle=30°, this is the classic dimetric projection.
+    //   X → (+u cos(iso), -u sin(iso))
+    //   Y → (0, -u)
+    //   Z → (-u cos(iso), -u sin(iso))
     const cosI = Math.cos(isoAngle);
     const sinI = Math.sin(isoAngle);
+    const canvasCx = width / 2;
+    const canvasCy = height / 2;
+    const usableR = Math.min(width, height) * (0.5 - margin);
+    const cellScale = usableR / Math.max(3, Math.sqrt(blockCount));
 
-    const blocks: Block[] = [];
+    // Two-bucket size draw: a small-accent bucket (≈0.15–0.3) chosen with
+    // `smallAccentProportion` probability, otherwise a wide log-uniform
+    // draw (0.25–1.0, 4× range). Reference (watagua Blocks IV) reads as a
+    // population of regular blocks with scattered tiny accents, not a
+    // smooth distribution — the explicit bucket enforces that visual.
+    const sizes: number[] = [];
     for (let k = 0; k < blockCount; k++) {
-      const cx = k % cols;
-      const cy = Math.floor(k / cols);
-      // Two-bucket size draw: a small-accent bucket (≈0.15–0.3) chosen with
-      // `smallAccentProportion` probability, otherwise a wide log-uniform
-      // draw (0.25–1.0, 4× range). Reference (watagua Blocks IV) reads as a
-      // population of regular blocks with scattered tiny accents, not a
-      // smooth distribution — the explicit bucket enforces that visual.
       const accentRoll = rng();
       const t = rng();
       const sizeNorm =
         accentRoll < smallAccentProportion
           ? Math.exp(Math.log(0.15) * (1 - t) + Math.log(0.3) * t)
           : Math.exp(Math.log(0.25) * (1 - t) + Math.log(1.0) * t);
-      const edge = cellScale * 0.35 * (1 - sizeVar + sizeVar * sizeNorm);
-      // Jitter within the cell so the grid doesn't read as a regular lattice.
-      const jx = (rng() - 0.5) * cellPxW * 0.2;
-      const jy = (rng() - 0.5) * cellPxH * 0.2;
-      const anchor = {
-        x: originX + cx * cellPxW + jx,
-        y: originY + cy * cellPxH + jy,
-      };
+      sizes.push(cellScale * 0.35 * (1 - sizeVar + sizeVar * sizeNorm));
+    }
+
+    // Largest-first greedy packing. Centre-biased radial sampling (u^1.5)
+    // concentrates density near the middle. Rejection tests a circle of
+    // radius ≈ edge against previously placed footprints.
+    const sizeOrder = sizes.map((_, i) => i).sort((a, b) => sizes[b] - sizes[a]);
+    const placed: { x: number; y: number; r: number }[] = [];
+    const placedOrder: { edge: number; anchor: Point }[] = [];
+    const centreBias = 1.5;
+    const hexFootprintFactor = 0.95;
+    const MAX_TRIES = 200;
+    for (const idx of sizeOrder) {
+      const edge = sizes[idx];
+      const r = edge * hexFootprintFactor * (1 + margin * 2);
+      let found = false;
+      for (let tri = 0; tri < MAX_TRIES; tri++) {
+        const u = Math.pow(rng(), centreBias);
+        const rr = u * usableR;
+        const theta = rng() * Math.PI * 2;
+        const cx = canvasCx + Math.cos(theta) * rr;
+        const cy = canvasCy + Math.sin(theta) * rr;
+        let overlap = false;
+        for (const pl of placed) {
+          const dx = pl.x - cx;
+          const dy = pl.y - cy;
+          const minD = pl.r + r;
+          if (dx * dx + dy * dy < minD * minD) {
+            overlap = true;
+            break;
+          }
+        }
+        if (!overlap) {
+          placed.push({ x: cx, y: cy, r });
+          placedOrder.push({ edge, anchor: { x: cx, y: cy } });
+          found = true;
+          break;
+        }
+      }
+      // If dart-throwing fails after MAX_TRIES, drop this block — effective
+      // blockCount becomes "target, not guarantee". Better than forcing
+      // overlaps when packing gets tight.
+      if (!found) continue;
+    }
+
+    const blocks: Block[] = [];
+    for (const { edge, anchor } of placedOrder) {
       // Per-block 3D grain axis — blend between world-Y (vertical grain) and
       // a random direction. Higher axisRandom → more varied per-block.
       const theta = rng() * Math.PI * 2;
