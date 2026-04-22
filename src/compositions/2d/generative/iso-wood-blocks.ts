@@ -78,8 +78,8 @@ const isoWoodBlocks: Composition2DDefinition = {
       type: "slider",
       label: "Zoom",
       default: 1,
-      min: 0.3,
-      max: 3,
+      min: 0.1,
+      max: 10,
       step: 0.05,
       group: "Layout",
     },
@@ -108,6 +108,42 @@ const isoWoodBlocks: Composition2DDefinition = {
       min: -45,
       max: 45,
       step: 1,
+      group: "Layout",
+    },
+    cubeRotationAmplitude: {
+      type: "slider",
+      label: "Cube Rot Amplitude °",
+      default: 0,
+      min: 0,
+      max: 60,
+      step: 1,
+      group: "Layout",
+    },
+    cubeRotationWaveform: {
+      type: "slider",
+      label: "Cube Rot Waveform (0=sin 1=tri 2=sq 3=saw)",
+      default: 0,
+      min: 0,
+      max: 3,
+      step: 1,
+      group: "Layout",
+    },
+    cubeRotationRandomness: {
+      type: "slider",
+      label: "Cube Rot Randomness",
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      group: "Layout",
+    },
+    cubeRotationPhase: {
+      type: "slider",
+      label: "Cube Rot Phase",
+      default: 0,
+      min: 0,
+      max: 1,
+      step: 0.01,
       group: "Layout",
     },
     sizeVariance: {
@@ -253,10 +289,26 @@ const isoWoodBlocks: Composition2DDefinition = {
       Math.min(1, (values.gridRegularity as number) ?? 1.0),
     );
     const baseSize = Math.max(0.5, Math.min(3, (values.baseSize as number) ?? 1));
-    const zoom = Math.max(0.3, Math.min(3, (values.zoom as number) ?? 1));
+    const zoom = Math.max(0.1, Math.min(10, (values.zoom as number) ?? 1));
     const panX = Math.max(-0.5, Math.min(0.5, (values.panX as number) ?? 0));
     const panY = Math.max(-0.5, Math.min(0.5, (values.panY as number) ?? 0));
     const cubeRotation = ((values.cubeRotation as number) ?? 0) * Math.PI / 180;
+    const cubeRotAmp = Math.max(
+      0,
+      Math.min(60, (values.cubeRotationAmplitude as number) ?? 0),
+    ) * Math.PI / 180;
+    const cubeRotWave = Math.max(
+      0,
+      Math.min(3, Math.floor((values.cubeRotationWaveform as number) ?? 0)),
+    );
+    const cubeRotRand = Math.max(
+      0,
+      Math.min(1, (values.cubeRotationRandomness as number) ?? 0),
+    );
+    const cubeRotPhase = Math.max(
+      0,
+      Math.min(1, (values.cubeRotationPhase as number) ?? 0),
+    );
     const margin = Math.max(0, Math.min(0.3, (values.packingMargin as number) ?? 0.04));
     const isoAngle = ((values.isoAngle as number) ?? 30) * Math.PI / 180;
     const grainSpacing = Math.max(
@@ -415,7 +467,17 @@ const isoWoodBlocks: Composition2DDefinition = {
         y: defaultAxis.y * (1 - axisRandom) + randAxis.y * axisRandom,
         z: defaultAxis.z * (1 - axisRandom) + randAxis.z * axisRandom,
       });
-      blocks.push({ anchor, edge, grainAxis, seed: Math.floor(rng() * 1e6) });
+      // Per-block yaw = base + amplitude * (wave-driven + random mix), where
+      // the wave position is indexed by the block's order with phase offset.
+      const idx = blocks.length;
+      const tPos = idx / Math.max(1, placedOrder.length - 1);
+      const phaseAngle = ((tPos + cubeRotPhase) % 1) * Math.PI * 2;
+      const waveV = cubeRotWaveValue(cubeRotWave, phaseAngle);
+      const randV = rng() * 2 - 1;
+      const yaw =
+        cubeRotation +
+        cubeRotAmp * ((1 - cubeRotRand) * waveV + cubeRotRand * randV);
+      blocks.push({ anchor, edge, grainAxis, yaw, seed: Math.floor(rng() * 1e6) });
     }
 
     // Project a 3D point (X,Y,Z) relative to block anchor + edge length to 2D.
@@ -429,13 +491,13 @@ const isoWoodBlocks: Composition2DDefinition = {
     const outlines: Point[][] = [];
     for (const block of blocks) {
       const { anchor, edge, grainAxis } = block;
-      const faces = blockFaces(anchor, edge, project, cubeRotation);
+      const faces = blockFaces(anchor, edge, project, block.yaw);
       // Classify each face as end-grain (|normal · grainAxis| high) or
       // long-grain (low). Pass shading multipliers so darker faces get
-      // denser hatching. Face normals rotate with cubeRotation so the
-      // alignment test still works when the cube is yawed.
-      const cyRot = Math.cos(cubeRotation);
-      const syRot = Math.sin(cubeRotation);
+      // denser hatching. Face normals rotate with the per-block yaw so the
+      // alignment test still works when cubes spin independently.
+      const cyRot = Math.cos(block.yaw);
+      const syRot = Math.sin(block.yaw);
       const rotN = (n: Vec3): Vec3 => ({
         x: n.x * cyRot - n.z * syRot,
         y: n.y,
@@ -532,7 +594,25 @@ interface Block {
   anchor: Point;
   edge: number;
   grainAxis: Vec3;
+  yaw: number;
   seed: number;
+}
+
+function cubeRotWaveValue(shape: number, phase: number): number {
+  // phase in [0, 2π); returns [-1, 1].
+  const t = (phase / (Math.PI * 2)) % 1;
+  const u = t < 0 ? t + 1 : t;
+  switch (shape) {
+    case 1: // triangle
+      return u < 0.5 ? (4 * u - 1) : (3 - 4 * u);
+    case 2: // square
+      return u < 0.5 ? 1 : -1;
+    case 3: // saw
+      return 2 * u - 1;
+    case 0:
+    default:
+      return Math.sin(phase);
+  }
 }
 
 function blockFaces(
