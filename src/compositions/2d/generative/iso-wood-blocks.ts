@@ -492,22 +492,22 @@ const isoWoodBlocks: Composition2DDefinition = {
     for (const block of blocks) {
       const { anchor, edge, grainAxis } = block;
       const faces = blockFaces(anchor, edge, project, block.yaw);
-      // Classify each face as end-grain (|normal · grainAxis| high) or
-      // long-grain (low). Pass shading multipliers so darker faces get
-      // denser hatching. Face normals rotate with the per-block yaw so the
-      // alignment test still works when cubes spin independently.
+      // Grain is stored in cube-LOCAL space so the grain direction yaws with
+      // the cube. Alignment test uses local face normals against the local
+      // grain axis — clean and yaw-invariant. For screen-space long-grain
+      // direction we first rotate local grain to world by the block's yaw.
+      const faceNormals: Vec3[] = [
+        { x: 0, y: 1, z: 0 },  // top
+        { x: -1, y: 0, z: 0 }, // left
+        { x: 0, y: 0, z: 1 },  // right (front)
+      ];
       const cyRot = Math.cos(block.yaw);
       const syRot = Math.sin(block.yaw);
-      const rotN = (n: Vec3): Vec3 => ({
-        x: n.x * cyRot - n.z * syRot,
-        y: n.y,
-        z: n.x * syRot + n.z * cyRot,
-      });
-      const faceNormals: Vec3[] = [
-        rotN({ x: 0, y: 1, z: 0 }),  // top
-        rotN({ x: -1, y: 0, z: 0 }), // left
-        rotN({ x: 0, y: 0, z: 1 }),  // right (front)
-      ];
+      const grainWorld: Vec3 = {
+        x: grainAxis.x * cyRot - grainAxis.z * syRot,
+        y: grainAxis.y,
+        z: grainAxis.x * syRot + grainAxis.z * cyRot,
+      };
       // Lighting direction — from upper-left in world space so the top reads
       // lit and the right face reads shaded.
       const light = normalize({ x: -0.5, y: 0.8, z: -0.3 });
@@ -541,9 +541,10 @@ const isoWoodBlocks: Composition2DDefinition = {
           );
           hatchLines.push(...lines);
         } else {
-          // Long-grain direction in screen space — project the grain axis
-          // onto the face's 2D projection.
-          const dir = projectGrainDirection(grainAxis, fi, cosI, sinI);
+          // Long-grain direction in screen space — project the WORLD-space
+          // grain axis (local grain rotated by yaw) so the scan-line
+          // direction tracks the cube's rotation.
+          const dir = projectGrainDirection(grainWorld, fi, cosI, sinI);
           const faceKnots = flameLoopsOn
             ? makeFaceKnots(face, block.seed, fi, knotProb, maxExtraKnots)
             : [];
@@ -917,7 +918,13 @@ function longGrainHatches(
       }
       pl.push({ x: x0 + perp.x * offPerp, y: y0 + perp.y * offPerp });
     }
-    lines.push(pl);
+    // Clip the deflected polyline back to the face polygon — knot bulge
+    // and noise wobble can push endpoints outside the face, especially
+    // when the cube is yawed.
+    const clipped = clipPolygonPolyline(face, pl, false);
+    for (const c of clipped) {
+      if (c.length >= 2) lines.push(c);
+    }
   }
   return lines;
 }
