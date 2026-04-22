@@ -194,9 +194,9 @@ const isoWoodBlocks: Composition2DDefinition = {
     grainContourSpacing: {
       type: "slider",
       label: "Grain Contour Spacing",
-      default: 0.06,
+      default: 0.1,
       min: 0.02,
-      max: 0.18,
+      max: 0.25,
       step: 0.005,
       group: "Grain",
     },
@@ -524,7 +524,7 @@ const isoWoodBlocks: Composition2DDefinition = {
         const lum = Math.max(0, dot(normal, light));
         const densityBoost = 1 + shadingContrast * (0.7 - lum);
         const spacing = Math.max(
-          2,
+          1,
           grainSpacing * edge * shadingMul[fi] / Math.max(0.6, densityBoost),
         );
         if (isEndGrain) {
