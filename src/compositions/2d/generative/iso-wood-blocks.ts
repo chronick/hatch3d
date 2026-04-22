@@ -164,6 +164,12 @@ const isoWoodBlocks: Composition2DDefinition = {
       step: 0.01,
       group: "Grain",
     },
+    flameLoops: {
+      type: "toggle",
+      label: "Flame Loops on Long Grain",
+      default: true,
+      group: "Grain",
+    },
     outlineWeight: {
       type: "toggle",
       label: "Heavy Outline Pass",
@@ -212,6 +218,7 @@ const isoWoodBlocks: Composition2DDefinition = {
       0.05,
       Math.min(1, (values.knotSmoothness as number) ?? 0.4),
     );
+    const flameLoopsOn = (values.flameLoops as boolean) ?? true;
     const outlineOn = (values.outlineWeight as boolean) ?? true;
     const seed = Math.floor((values.seed as number) ?? 42);
 
@@ -370,8 +377,28 @@ const isoWoodBlocks: Composition2DDefinition = {
           // Long-grain direction in screen space — project the grain axis
           // onto the face's 2D projection.
           const dir = projectGrainDirection(grainAxis, fi, cosI, sinI);
-          const lines = longGrainHatches(face, dir, spacing, waviness, block.seed, noise);
+          const faceKnots = flameLoopsOn
+            ? makeFaceKnots(face, block.seed, fi, knotProb, maxExtraKnots)
+            : [];
+          const lines = longGrainHatches(
+            face,
+            dir,
+            spacing,
+            waviness,
+            faceKnots,
+            block.seed,
+            noise,
+          );
           hatchLines.push(...lines);
+          if (flameLoopsOn) {
+            for (const kn of faceKnots) {
+              const loop = flameLoop(kn, dir, waviness, block.seed, fi, noise);
+              const clipped = clipPolygonPolyline(face, loop, true);
+              for (const c of clipped) {
+                if (c.length >= 2) hatchLines.push(c);
+              }
+            }
+          }
         }
       }
 
@@ -474,30 +501,8 @@ function endGrainContours(
   const ymax = Math.max(...ys);
   const halfW = (xmax - xmin) / 2;
   const halfH = (ymax - ymin) / 2;
-  const cx0 = (xmin + xmax) / 2;
-  const cy0 = (ymin + ymax) / 2;
 
-  // Per-face deterministic rng so knot layout is reproducible but not
-  // shared between faces of the same block.
-  const faceRng = mulberry32((seed ^ ((faceIdx + 1) * 0x9e3779b1)) >>> 0);
-
-  interface Knot { cx: number; cy: number; rx: number; ry: number }
-  const knots: Knot[] = [];
-  knots.push({
-    cx: cx0 + (faceRng() - 0.5) * halfW * 0.2,
-    cy: cy0 + (faceRng() - 0.5) * halfH * 0.2,
-    rx: halfW * (0.3 + faceRng() * 0.2),
-    ry: halfH * (0.3 + faceRng() * 0.2),
-  });
-  for (let i = 0; i < maxExtraKnots; i++) {
-    if (faceRng() > knotProb) continue;
-    knots.push({
-      cx: cx0 + (faceRng() - 0.5) * halfW * 1.4,
-      cy: cy0 + (faceRng() - 0.5) * halfH * 1.4,
-      rx: halfW * (0.15 + faceRng() * 0.25),
-      ry: halfH * (0.15 + faceRng() * 0.25),
-    });
-  }
+  const knots = makeFaceKnots(face, seed, faceIdx, knotProb, maxExtraKnots);
 
   // Normalised ellipse distance (d=0 at centre, d=1 at boundary).
   // Rings at d = 1, 1.5, 2, ... equate to concentric ellipses scaled by
@@ -663,6 +668,7 @@ function longGrainHatches(
   dir: Point,
   spacing: number,
   waviness: number,
+  knots: Knot[],
   seed: number,
   noise: (x: number, y: number) => number,
 ): Point[][] {
@@ -672,24 +678,115 @@ function longGrainHatches(
   const hi = Math.max(...projs);
   const span = hi - lo;
   if (span < 1) return [];
+  // Pre-compute per-knot along/perp projections + Gaussian sigma.
+  const knotInfo = knots.map((k) => ({
+    kd: k.cx * dir.x + k.cy * dir.y,
+    kp: k.cx * perp.x + k.cy * perp.y,
+    sigma: Math.max(k.rx, k.ry) * 1.5,
+  }));
   const lines: Point[][] = [];
   for (let t = lo + spacing / 2; t < hi; t += spacing) {
     const seg = clipLineToPolygon(face, dir, perp, t);
     if (!seg) continue;
-    // Densify + wave-perturb along the direction.
+    // Densify + wave-perturb along the direction. Near each knot, add a
+    // Gaussian-falloff perp deflection so the scan-line band bulges
+    // outward around the knot site.
     const [a, b] = seg;
     const steps = Math.max(2, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 6));
     const pl: Point[] = [];
     for (let k = 0; k <= steps; k++) {
       const u = k / steps;
-      const x = a.x + (b.x - a.x) * u;
-      const y = a.y + (b.y - a.y) * u;
+      const x0 = a.x + (b.x - a.x) * u;
+      const y0 = a.y + (b.y - a.y) * u;
       const n = noise(seed * 0.0007 + t * 0.02 + u * 3, seed * 0.0003 + t * 0.01);
-      pl.push({ x: x + perp.x * n * waviness * spacing * 0.4, y: y + perp.y * n * waviness * spacing * 0.4 });
+      let offPerp = n * waviness * spacing * 0.4;
+      // Gaussian knot deflection: push this point's perp-coord `t` away
+      // from the knot's perp-coord `kp` with strength fading in `kd - cd`.
+      const cd = x0 * dir.x + y0 * dir.y;
+      for (const kn of knotInfo) {
+        const dAlong = cd - kn.kd;
+        const dPerp = t - kn.kp;
+        const r2 = dAlong * dAlong + dPerp * dPerp;
+        const g = Math.exp(-r2 / (2 * kn.sigma * kn.sigma));
+        const side = dPerp >= 0 ? 1 : -1;
+        offPerp += g * kn.sigma * 0.45 * side;
+      }
+      pl.push({ x: x0 + perp.x * offPerp, y: y0 + perp.y * offPerp });
     }
     lines.push(pl);
   }
   return lines;
+}
+
+function flameLoop(
+  knot: Knot,
+  dir: Point,
+  waviness: number,
+  seed: number,
+  faceIdx: number,
+  noise: (x: number, y: number) => number,
+): Point[] {
+  // Closed loop around the knot, elongated along the grain direction.
+  // Drawn as a separate primitive from the parallel scan-lines — traces
+  // the outer envelope of the Gaussian-bulged band.
+  const perp = { x: -dir.y, y: dir.x };
+  const base = Math.max(knot.rx, knot.ry);
+  const ra = base * 1.35;
+  const rb = base * 0.85;
+  const samples = 48;
+  const loop: Point[] = [];
+  const s = (seed ^ ((faceIdx + 1) * 0x85ebca6b)) >>> 0;
+  for (let k = 0; k <= samples; k++) {
+    const th = (k / samples) * Math.PI * 2;
+    const ca = Math.cos(th);
+    const sa = Math.sin(th);
+    const n = noise(s * 0.001 + ca * 2, s * 0.001 + sa * 2);
+    const wob = 1 + waviness * 0.3 * n;
+    loop.push({
+      x: knot.cx + (dir.x * ca * ra + perp.x * sa * rb) * wob,
+      y: knot.cy + (dir.y * ca * ra + perp.y * sa * rb) * wob,
+    });
+  }
+  return loop;
+}
+
+interface Knot { cx: number; cy: number; rx: number; ry: number }
+
+function makeFaceKnots(
+  face: Point[],
+  seed: number,
+  faceIdx: number,
+  knotProb: number,
+  maxExtraKnots: number,
+): Knot[] {
+  const xs = face.map((p) => p.x);
+  const ys = face.map((p) => p.y);
+  const xmin = Math.min(...xs);
+  const xmax = Math.max(...xs);
+  const ymin = Math.min(...ys);
+  const ymax = Math.max(...ys);
+  const halfW = (xmax - xmin) / 2;
+  const halfH = (ymax - ymin) / 2;
+  const cx0 = (xmin + xmax) / 2;
+  const cy0 = (ymin + ymax) / 2;
+  const rng = mulberry32((seed ^ ((faceIdx + 1) * 0x9e3779b1)) >>> 0);
+  const knots: Knot[] = [];
+  knots.push({
+    cx: cx0 + (rng() - 0.5) * halfW * 0.2,
+    cy: cy0 + (rng() - 0.5) * halfH * 0.2,
+    rx: halfW * (0.3 + rng() * 0.2),
+    ry: halfH * (0.3 + rng() * 0.2),
+  });
+  for (let i = 0; i < maxExtraKnots; i++) {
+    if (rng() > knotProb) continue;
+    knots.push({
+      cx: cx0 + (rng() - 0.5) * halfW * 1.4,
+      cy: cy0 + (rng() - 0.5) * halfH * 1.4,
+      rx: halfW * (0.15 + rng() * 0.25),
+      ry: halfH * (0.15 + rng() * 0.25),
+    });
+  }
+  return knots;
 }
 
 // Infinite line `{p: dot(p, perp) = t}`, parameterised along `dir`, clipped to polygon.
