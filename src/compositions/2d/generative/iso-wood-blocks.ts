@@ -61,15 +61,24 @@ const isoWoodBlocks: Composition2DDefinition = {
       label: "Block Count",
       default: 18,
       min: 4,
-      max: 192,
+      max: 576,
       step: 1,
+      group: "Layout",
+    },
+    baseSize: {
+      type: "slider",
+      label: "Base Size",
+      default: 1,
+      min: 0.5,
+      max: 3,
+      step: 0.05,
       group: "Layout",
     },
     zoom: {
       type: "slider",
       label: "Zoom",
       default: 1,
-      min: 0.5,
+      min: 0.3,
       max: 3,
       step: 0.05,
       group: "Layout",
@@ -216,7 +225,8 @@ const isoWoodBlocks: Composition2DDefinition = {
       0,
       Math.min(1, (values.gridRegularity as number) ?? 1.0),
     );
-    const zoom = Math.max(0.5, Math.min(3, (values.zoom as number) ?? 1));
+    const baseSize = Math.max(0.5, Math.min(3, (values.baseSize as number) ?? 1));
+    const zoom = Math.max(0.3, Math.min(3, (values.zoom as number) ?? 1));
     const margin = Math.max(0, Math.min(0.3, (values.packingMargin as number) ?? 0.04));
     const isoAngle = ((values.isoAngle as number) ?? 30) * Math.PI / 180;
     const grainSpacing = Math.max(
@@ -279,7 +289,7 @@ const isoWoodBlocks: Composition2DDefinition = {
         accentRoll < smallAccentProportion
           ? Math.exp(Math.log(0.15) * (1 - t) + Math.log(0.3) * t)
           : Math.exp(Math.log(0.25) * (1 - t) + Math.log(1.0) * t);
-      sizes.push(cellScale * 0.35 * zoom * (1 - sizeVar + sizeVar * sizeNorm));
+      sizes.push(cellScale * 0.35 * baseSize * (1 - sizeVar + sizeVar * sizeNorm));
     }
 
     // Grid anchors — one per block, used at gridRegularity=0 and blended
@@ -461,7 +471,17 @@ const isoWoodBlocks: Composition2DDefinition = {
       }
     }
 
-    return [...hatchLines, ...outlines];
+    // Zoom — uniform scale of all output polylines around canvas centre.
+    // Distinct from `baseSize` (which scales per-block edge during layout);
+    // zoom transforms the final rendered composition as a whole.
+    const all = [...hatchLines, ...outlines];
+    if (zoom === 1) return all;
+    return all.map((line) =>
+      line.map((p) => ({
+        x: canvasCx + (p.x - canvasCx) * zoom,
+        y: canvasCy + (p.y - canvasCy) * zoom,
+      })),
+    );
   },
 };
 
