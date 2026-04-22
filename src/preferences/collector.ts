@@ -12,11 +12,14 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, readdirSync } 
 import { resolve, join } from "node:path";
 import { compositionRegistry } from "../compositions/registry.js";
 import { extractFeatures } from "./features.js";
+import { loadCorrelationStore, saveCorrelationStore } from "./correlation-store.js";
+import { recordObservationCorrelations } from "./correlation-recorder.js";
 import type { Observation, Outcome, SyncState, NormalizedFeatures } from "./types.js";
 
 const DATA_DIR = resolve(import.meta.dirname ?? __dirname, "../../data/preferences");
 const OBSERVATIONS_PATH = join(DATA_DIR, "observations.jsonl");
 const SYNC_STATE_PATH = join(DATA_DIR, "sync-state.json");
+const CORRELATIONS_PATH = join(DATA_DIR, "correlations.json");
 
 // ── Feed API types ──
 
@@ -122,6 +125,7 @@ function buildObservation(
 export async function collectFromFeedAPI(config: { url: string; token: string }): Promise<number> {
   const state = loadSyncState();
   const existingIds = loadExistingIds();
+  let correlationStore = loadCorrelationStore(CORRELATIONS_PATH);
 
   let url = `${config.url}/actions`;
   if (state.lastActionSync) {
@@ -176,6 +180,7 @@ export async function collectFromFeedAPI(config: { url: string; token: string })
 
     if (obs) {
       appendObservation(obs);
+      correlationStore = recordObservationCorrelations(correlationStore, obs);
       existingIds.add(observationId);
       count++;
     }
@@ -187,6 +192,9 @@ export async function collectFromFeedAPI(config: { url: string; token: string })
 
   state.lastActionSync = latestTimestamp;
   saveSyncState(state);
+  if (count > 0) {
+    saveCorrelationStore(correlationStore, CORRELATIONS_PATH);
+  }
   return count;
 }
 
@@ -197,6 +205,7 @@ export function collectFromPrintQueue(vaultDir: string): number {
   if (!existsSync(printQueueDir)) return 0;
 
   const existingIds = loadExistingIds();
+  let correlationStore = loadCorrelationStore(CORRELATIONS_PATH);
   let count = 0;
 
   const dirs = readdirSync(printQueueDir, { withFileTypes: true })
@@ -225,11 +234,15 @@ export function collectFromPrintQueue(vaultDir: string): number {
 
       if (obs) {
         appendObservation(obs);
+        correlationStore = recordObservationCorrelations(correlationStore, obs);
         count++;
       }
     } catch { /* skip malformed */ }
   }
 
+  if (count > 0) {
+    saveCorrelationStore(correlationStore, CORRELATIONS_PATH);
+  }
   return count;
 }
 
