@@ -83,6 +83,33 @@ const isoWoodBlocks: Composition2DDefinition = {
       step: 0.05,
       group: "Layout",
     },
+    panX: {
+      type: "slider",
+      label: "Pan X",
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.01,
+      group: "Layout",
+    },
+    panY: {
+      type: "slider",
+      label: "Pan Y",
+      default: 0,
+      min: -0.5,
+      max: 0.5,
+      step: 0.01,
+      group: "Layout",
+    },
+    cubeRotation: {
+      type: "slider",
+      label: "Cube Rotation °",
+      default: 0,
+      min: -45,
+      max: 45,
+      step: 1,
+      group: "Layout",
+    },
     sizeVariance: {
       type: "slider",
       label: "Size Variance",
@@ -227,6 +254,9 @@ const isoWoodBlocks: Composition2DDefinition = {
     );
     const baseSize = Math.max(0.5, Math.min(3, (values.baseSize as number) ?? 1));
     const zoom = Math.max(0.3, Math.min(3, (values.zoom as number) ?? 1));
+    const panX = Math.max(-0.5, Math.min(0.5, (values.panX as number) ?? 0));
+    const panY = Math.max(-0.5, Math.min(0.5, (values.panY as number) ?? 0));
+    const cubeRotation = ((values.cubeRotation as number) ?? 0) * Math.PI / 180;
     const margin = Math.max(0, Math.min(0.3, (values.packingMargin as number) ?? 0.04));
     const isoAngle = ((values.isoAngle as number) ?? 30) * Math.PI / 180;
     const grainSpacing = Math.max(
@@ -271,8 +301,11 @@ const isoWoodBlocks: Composition2DDefinition = {
     //   Z → (-u cos(iso), -u sin(iso))
     const cosI = Math.cos(isoAngle);
     const sinI = Math.sin(isoAngle);
-    const canvasCx = width / 2;
-    const canvasCy = height / 2;
+    // Pan shifts the canvas centre used for both layout (centre-biased
+    // sampling) and the zoom pivot, so the two couple — zooming in on a
+    // panned point keeps that point visible.
+    const canvasCx = width / 2 + panX * width;
+    const canvasCy = height / 2 + panY * height;
     const usableR = Math.min(width, height) * (0.5 - margin);
     const cellScale = usableR / Math.max(3, Math.sqrt(blockCount));
 
@@ -299,8 +332,8 @@ const isoWoodBlocks: Composition2DDefinition = {
     const rows = Math.ceil(blockCount / cols);
     const gridCellW = (width * (1 - 2 * margin)) / cols;
     const gridCellH = (height * (1 - 2 * margin)) / rows;
-    const gridOx = width * margin + gridCellW / 2;
-    const gridOy = height * margin + gridCellH / 2;
+    const gridOx = width * margin + gridCellW / 2 + panX * width;
+    const gridOy = height * margin + gridCellH / 2 + panY * height;
     const gridAnchor = (k: number): Point => ({
       x: gridOx + (k % cols) * gridCellW,
       y: gridOy + Math.floor(k / cols) * gridCellH,
@@ -396,14 +429,22 @@ const isoWoodBlocks: Composition2DDefinition = {
     const outlines: Point[][] = [];
     for (const block of blocks) {
       const { anchor, edge, grainAxis } = block;
-      const faces = blockFaces(anchor, edge, project);
+      const faces = blockFaces(anchor, edge, project, cubeRotation);
       // Classify each face as end-grain (|normal · grainAxis| high) or
       // long-grain (low). Pass shading multipliers so darker faces get
-      // denser hatching.
+      // denser hatching. Face normals rotate with cubeRotation so the
+      // alignment test still works when the cube is yawed.
+      const cyRot = Math.cos(cubeRotation);
+      const syRot = Math.sin(cubeRotation);
+      const rotN = (n: Vec3): Vec3 => ({
+        x: n.x * cyRot - n.z * syRot,
+        y: n.y,
+        z: n.x * syRot + n.z * cyRot,
+      });
       const faceNormals: Vec3[] = [
-        { x: 0, y: 1, z: 0 },  // top
-        { x: -1, y: 0, z: 0 }, // left
-        { x: 0, y: 0, z: 1 },  // right (front)
+        rotN({ x: 0, y: 1, z: 0 }),  // top
+        rotN({ x: -1, y: 0, z: 0 }), // left
+        rotN({ x: 0, y: 0, z: 1 }),  // right (front)
       ];
       // Lighting direction — from upper-left in world space so the top reads
       // lit and the right face reads shaded.
@@ -498,10 +539,19 @@ function blockFaces(
   anchor: Point,
   edge: number,
   project: (origin: Point, edge: number, p: Vec3) => Point,
+  yaw = 0,
 ): Point[][] {
-  const p = (v: Vec3) => project(anchor, edge, v);
-  // The three visible faces of a unit cube anchored at origin (0,0,0) with
-  // near-corner at (+1, 0, +1), in CCW order as viewed from outside.
+  // Rotate cube corners around its own vertical axis (centred at 0.5,0.5,0.5)
+  // before projecting. At yaw=0 the unit cube is axis-aligned with corners
+  // at (0,0,0)–(1,1,1); at nonzero yaw each vertical slice spins in place.
+  const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const rot = (v: Vec3): Vec3 => {
+    const dx = v.x - 0.5;
+    const dz = v.z - 0.5;
+    return { x: 0.5 + dx * cy - dz * sy, y: v.y, z: 0.5 + dx * sy + dz * cy };
+  };
+  const p = (v: Vec3) => project(anchor, edge, rot(v));
   const top = [
     p({ x: 0, y: 1, z: 0 }),
     p({ x: 1, y: 1, z: 0 }),
