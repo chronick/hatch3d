@@ -39,6 +39,8 @@ const isoWoodBlocks: Composition2DDefinition = {
       targets: [
         { param: "grainWaviness", fn: "exp", strength: 0.9 },
         { param: "grainAxisRandomness", fn: "linear", strength: 0.6 },
+        { param: "knotProbability", fn: "linear", strength: 0.7 },
+        { param: "knotsPerFace", fn: "linear", strength: 0.5 },
       ],
     },
     scale: {
@@ -135,6 +137,33 @@ const isoWoodBlocks: Composition2DDefinition = {
       step: 0.01,
       group: "Grain",
     },
+    knotProbability: {
+      type: "slider",
+      label: "Knot Probability",
+      default: 0.5,
+      min: 0,
+      max: 1,
+      step: 0.01,
+      group: "Grain",
+    },
+    knotsPerFace: {
+      type: "slider",
+      label: "Max Extra Knots Per Face",
+      default: 2,
+      min: 0,
+      max: 4,
+      step: 1,
+      group: "Grain",
+    },
+    knotSmoothness: {
+      type: "slider",
+      label: "Knot Blend Smoothness",
+      default: 0.4,
+      min: 0.05,
+      max: 1,
+      step: 0.01,
+      group: "Grain",
+    },
     outlineWeight: {
       type: "toggle",
       label: "Heavy Outline Pass",
@@ -173,6 +202,15 @@ const isoWoodBlocks: Composition2DDefinition = {
     const axisRandom = Math.max(
       0,
       Math.min(1, (values.grainAxisRandomness as number) ?? 0.7),
+    );
+    const knotProb = Math.max(0, Math.min(1, (values.knotProbability as number) ?? 0.5));
+    const maxExtraKnots = Math.max(
+      0,
+      Math.min(4, Math.floor((values.knotsPerFace as number) ?? 2)),
+    );
+    const knotSmoothness = Math.max(
+      0.05,
+      Math.min(1, (values.knotSmoothness as number) ?? 0.4),
     );
     const outlineOn = (values.outlineWeight as boolean) ?? true;
     const seed = Math.floor((values.seed as number) ?? 42);
@@ -316,7 +354,17 @@ const isoWoodBlocks: Composition2DDefinition = {
           grainSpacing * edge * shadingMul[fi] / Math.max(0.6, densityBoost),
         );
         if (isEndGrain) {
-          const lines = endGrainContours(face, spacing, waviness, block.seed, noise);
+          const lines = endGrainContours(
+            face,
+            spacing,
+            waviness,
+            knotProb,
+            maxExtraKnots,
+            knotSmoothness,
+            block.seed,
+            fi,
+            noise,
+          );
           hatchLines.push(...lines);
         } else {
           // Long-grain direction in screen space — project the grain axis
@@ -405,45 +453,207 @@ function endGrainContours(
   face: Point[],
   spacing: number,
   waviness: number,
+  knotProb: number,
+  maxExtraKnots: number,
+  smoothness: number,
   seed: number,
+  faceIdx: number,
   noise: (x: number, y: number) => number,
 ): Point[][] {
-  // One ellipse centre per face, placed near the centre with small jitter.
-  // Rings grow outward from that centre at `spacing` px intervals, clipped
-  // to the face polygon.
-  const cx = face.reduce((s, p) => s + p.x, 0) / face.length;
-  const cy = face.reduce((s, p) => s + p.y, 0) / face.length;
-  // Ellipse aspect from the face's bbox (in-plane anisotropy).
+  // Multi-knot annual rings via a smooth union of ellipse SDFs.
+  // The union field is sampled on a grid and iso-contours are extracted
+  // via marching squares, stitched into polylines, wobble-perturbed, and
+  // clipped to the face. With multiple knots the rings bulge around each
+  // centre and blend smoothly between them — the multi-ring clustered
+  // pattern the reference shows.
   const xs = face.map((p) => p.x);
   const ys = face.map((p) => p.y);
-  const halfW = (Math.max(...xs) - Math.min(...xs)) / 2;
-  const halfH = (Math.max(...ys) - Math.min(...ys)) / 2;
-  const aspectX = halfW / Math.max(1e-6, Math.min(halfW, halfH));
-  const aspectY = halfH / Math.max(1e-6, Math.min(halfW, halfH));
-  const maxR = Math.hypot(halfW, halfH) * 1.5;
-  const samples = 48;
+  const xmin = Math.min(...xs);
+  const xmax = Math.max(...xs);
+  const ymin = Math.min(...ys);
+  const ymax = Math.max(...ys);
+  const halfW = (xmax - xmin) / 2;
+  const halfH = (ymax - ymin) / 2;
+  const cx0 = (xmin + xmax) / 2;
+  const cy0 = (ymin + ymax) / 2;
+
+  // Per-face deterministic rng so knot layout is reproducible but not
+  // shared between faces of the same block.
+  const faceRng = mulberry32((seed ^ ((faceIdx + 1) * 0x9e3779b1)) >>> 0);
+
+  interface Knot { cx: number; cy: number; rx: number; ry: number }
+  const knots: Knot[] = [];
+  knots.push({
+    cx: cx0 + (faceRng() - 0.5) * halfW * 0.2,
+    cy: cy0 + (faceRng() - 0.5) * halfH * 0.2,
+    rx: halfW * (0.3 + faceRng() * 0.2),
+    ry: halfH * (0.3 + faceRng() * 0.2),
+  });
+  for (let i = 0; i < maxExtraKnots; i++) {
+    if (faceRng() > knotProb) continue;
+    knots.push({
+      cx: cx0 + (faceRng() - 0.5) * halfW * 1.4,
+      cy: cy0 + (faceRng() - 0.5) * halfH * 1.4,
+      rx: halfW * (0.15 + faceRng() * 0.25),
+      ry: halfH * (0.15 + faceRng() * 0.25),
+    });
+  }
+
+  // Normalised ellipse distance (d=0 at centre, d=1 at boundary).
+  // Rings at d = 1, 1.5, 2, ... equate to concentric ellipses scaled by
+  // integer/half multiples of each knot's radii. Smooth-min with k fuses
+  // nearby knots into shared outer rings.
+  const kSmin = smoothness;
+  const field = (px: number, py: number): number => {
+    let d = Infinity;
+    for (const k of knots) {
+      const dx = (px - k.cx) / k.rx;
+      const dy = (py - k.cy) / k.ry;
+      const di = Math.sqrt(dx * dx + dy * dy);
+      d = smoothMin(d, di, kSmin);
+    }
+    return d;
+  };
+
+  // Grid resolution proportional to spacing — 2-3 samples per ring width
+  // in the tightest-radius direction keeps the iso-contour sharp enough
+  // that marching-squares linear interpolation reads cleanly.
+  const minR = Math.min(...knots.map((k) => Math.min(k.rx, k.ry)));
+  const gridStep = Math.max(2, Math.min(spacing * 0.5, minR * 0.3));
+  const pad = Math.max(halfW, halfH) * 0.1;
+  const gx0 = xmin - pad;
+  const gy0 = ymin - pad;
+  const gx1 = xmax + pad;
+  const gy1 = ymax + pad;
+  const gridW = Math.max(3, Math.ceil((gx1 - gx0) / gridStep) + 1);
+  const gridH = Math.max(3, Math.ceil((gy1 - gy0) / gridStep) + 1);
+  const vals = new Float64Array(gridW * gridH);
+  for (let j = 0; j < gridH; j++) {
+    for (let i = 0; i < gridW; i++) {
+      vals[j * gridW + i] = field(gx0 + i * gridStep, gy0 + j * gridStep);
+    }
+  }
+
+  // Ring iso-values. Start at d=1 (outermost ellipse boundary of smallest
+  // knot) and march outward. Spacing in normalised units derived from
+  // average knot radius so px spacing is honoured.
+  const avgR = knots.reduce((s, k) => s + (k.rx + k.ry) / 2, 0) / knots.length;
+  const ringStepNorm = Math.max(0.05, spacing / Math.max(1, avgR));
+  const maxIso = 4.0;
   const lines: Point[][] = [];
-  for (let r = spacing * 0.5; r <= maxR; r += spacing) {
-    const ring: Point[] = [];
-    for (let k = 0; k <= samples; k++) {
-      const th = (k / samples) * Math.PI * 2;
-      const nx = Math.cos(th);
-      const ny = Math.sin(th);
-      const wobble =
-        waviness * spacing * 0.4 * noise(
-          seed * 0.001 + r * 0.3 + Math.cos(th) * 2,
-          seed * 0.001 + Math.sin(th) * 2,
+  for (let iso = 1.0; iso <= maxIso; iso += ringStepNorm) {
+    const segs = marchingSquares(vals, gridW, gridH, gx0, gy0, gridStep, iso);
+    if (segs.length === 0) continue;
+    const stitched = stitchSegments(segs);
+    for (const pl of stitched) {
+      // Wobble along the contour — sample noise scaled to world space.
+      const perturbed = pl.map((p) => {
+        const n = noise(
+          seed * 0.001 + p.x * 0.02 + iso * 0.7,
+          seed * 0.001 + p.y * 0.02,
         );
-      const rr = r + wobble;
-      ring.push({
-        x: cx + nx * rr * aspectX,
-        y: cy + ny * rr * aspectY,
+        return {
+          x: p.x + n * waviness * spacing * 0.4,
+          y: p.y + n * waviness * spacing * 0.4,
+        };
       });
+      const clipped = clipPolygonPolyline(face, perturbed, false);
+      for (const c of clipped) {
+        if (c.length >= 2) lines.push(c);
+      }
     }
-    const clipped = clipPolygonPolyline(face, ring, true);
-    for (const c of clipped) {
-      if (c.length >= 2) lines.push(c);
+  }
+  return lines;
+}
+
+function smoothMin(a: number, b: number, k: number): number {
+  // Polynomial smooth-min (Inigo Quilez). Equivalent to `min(a,b)` when
+  // |a-b| >= k, blends smoothly inside that band.
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - (h * h * h * k) / 6;
+}
+
+function marchingSquares(
+  vals: Float64Array,
+  w: number,
+  h: number,
+  x0: number,
+  y0: number,
+  step: number,
+  iso: number,
+): [Point, Point][] {
+  const segs: [Point, Point][] = [];
+  for (let j = 0; j < h - 1; j++) {
+    for (let i = 0; i < w - 1; i++) {
+      const v00 = vals[j * w + i];
+      const v10 = vals[j * w + i + 1];
+      const v11 = vals[(j + 1) * w + i + 1];
+      const v01 = vals[(j + 1) * w + i];
+      let idx = 0;
+      if (v00 < iso) idx |= 1;
+      if (v10 < iso) idx |= 2;
+      if (v11 < iso) idx |= 4;
+      if (v01 < iso) idx |= 8;
+      if (idx === 0 || idx === 15) continue;
+      const xa = x0 + i * step;
+      const xb = x0 + (i + 1) * step;
+      const ya = y0 + j * step;
+      const yb = y0 + (j + 1) * step;
+      const lerp = (va: number, vb: number): number => {
+        const d = vb - va;
+        return Math.abs(d) < 1e-12 ? 0.5 : (iso - va) / d;
+      };
+      const eTop: Point = { x: xa + (xb - xa) * lerp(v00, v10), y: ya };
+      const eRight: Point = { x: xb, y: ya + (yb - ya) * lerp(v10, v11) };
+      const eBottom: Point = { x: xa + (xb - xa) * lerp(v01, v11), y: yb };
+      const eLeft: Point = { x: xa, y: ya + (yb - ya) * lerp(v00, v01) };
+      switch (idx) {
+        case 1: case 14: segs.push([eLeft, eTop]); break;
+        case 2: case 13: segs.push([eTop, eRight]); break;
+        case 3: case 12: segs.push([eLeft, eRight]); break;
+        case 4: case 11: segs.push([eRight, eBottom]); break;
+        case 5: segs.push([eLeft, eTop]); segs.push([eRight, eBottom]); break;
+        case 6: case 9: segs.push([eTop, eBottom]); break;
+        case 7: case 8: segs.push([eLeft, eBottom]); break;
+        case 10: segs.push([eTop, eRight]); segs.push([eLeft, eBottom]); break;
+      }
     }
+  }
+  return segs;
+}
+
+function stitchSegments(segs: [Point, Point][]): Point[][] {
+  if (segs.length === 0) return [];
+  const eps = 1e-3;
+  const used = new Array(segs.length).fill(false);
+  const near = (a: Point, b: Point) =>
+    Math.abs(a.x - b.x) < eps && Math.abs(a.y - b.y) < eps;
+  const lines: Point[][] = [];
+  for (let i = 0; i < segs.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    const line: Point[] = [segs[i][0], segs[i][1]];
+    let grew = true;
+    while (grew) {
+      grew = false;
+      const tail = line[line.length - 1];
+      for (let j = 0; j < segs.length; j++) {
+        if (used[j]) continue;
+        if (near(segs[j][0], tail)) { line.push(segs[j][1]); used[j] = true; grew = true; break; }
+        if (near(segs[j][1], tail)) { line.push(segs[j][0]); used[j] = true; grew = true; break; }
+      }
+    }
+    grew = true;
+    while (grew) {
+      grew = false;
+      const head = line[0];
+      for (let j = 0; j < segs.length; j++) {
+        if (used[j]) continue;
+        if (near(segs[j][1], head)) { line.unshift(segs[j][0]); used[j] = true; grew = true; break; }
+        if (near(segs[j][0], head)) { line.unshift(segs[j][1]); used[j] = true; grew = true; break; }
+      }
+    }
+    lines.push(line);
   }
   return lines;
 }
