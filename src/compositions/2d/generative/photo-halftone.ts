@@ -1,12 +1,12 @@
-import type { Composition2DDefinition } from "../../types";
+import type { Composition2DDefinition, ImageSource } from "../../types";
 import { SURFACES } from "../../../surfaces";
 
 const photoHalftone: Composition2DDefinition = {
   id: "photoHalftone",
   name: "Photo-Halftone",
   description:
-    "Horizontal lines with sine-wave amplitude modulation driven by a built-in test pattern, producing halftone-style plotter art",
-  tags: ["generative", "halftone", "amplitude", "modulation"],
+    "Horizontal lines with sine-wave amplitude modulation driven by an uploaded image or a built-in test pattern, producing halftone-style plotter art",
+  tags: ["generative", "halftone", "amplitude", "modulation", "image"],
   category: "2d",
   type: "2d",
 
@@ -27,12 +27,25 @@ const photoHalftone: Composition2DDefinition = {
       label: "Pattern",
       default: "gradient",
       options: [
+        { label: "Image", value: "image" },
         { label: "Gradient", value: "gradient" },
         { label: "Circle", value: "circle" },
         { label: "Checkerboard", value: "checkerboard" },
         { label: "Noise", value: "noise" },
         { label: "Rings", value: "rings" },
       ],
+      group: "Pattern",
+    },
+    image: {
+      type: "image",
+      label: "Image",
+      sampleSize: 512,
+      group: "Pattern",
+    },
+    invertImage: {
+      type: "toggle",
+      label: "Invert Image",
+      default: false,
       group: "Pattern",
     },
     lineCount: {
@@ -119,6 +132,8 @@ const photoHalftone: Composition2DDefinition = {
     const surfaceKey = values.surfaceType as string;
     const rotX = values.rotationX as number;
     const rotY = values.rotationY as number;
+    const image = values.image as ImageSource | null;
+    const invertImage = (values.invertImage as boolean) ?? false;
 
     const margin = width * 0.05;
     const innerW = width - margin * 2;
@@ -126,7 +141,29 @@ const photoHalftone: Composition2DDefinition = {
 
     // Test pattern brightness function: returns 0 (black) to 1 (white)
     function patternBrightness(nx: number, ny: number): number {
-      if (patternName === "gradient") {
+      if (patternName === "image") {
+        if (!image) return 0.5; // flat grey when no image is loaded yet
+        // Bilinear sample of the image's brightness grid at (nx, ny).
+        // nx, ny are in [0, 1]; the grid is row-major with width*height
+        // brightness floats in [0, 1]. Inverting maps white→dark so pale
+        // skin photos still produce visible hatches.
+        const fx = nx * (image.width - 1);
+        const fy = ny * (image.height - 1);
+        const x0 = Math.floor(fx);
+        const y0 = Math.floor(fy);
+        const x1 = Math.min(image.width - 1, x0 + 1);
+        const y1 = Math.min(image.height - 1, y0 + 1);
+        const tx = fx - x0;
+        const ty = fy - y0;
+        const b00 = image.brightness[y0 * image.width + x0];
+        const b10 = image.brightness[y0 * image.width + x1];
+        const b01 = image.brightness[y1 * image.width + x0];
+        const b11 = image.brightness[y1 * image.width + x1];
+        const b0 = b00 * (1 - tx) + b10 * tx;
+        const b1 = b01 * (1 - tx) + b11 * tx;
+        const b = b0 * (1 - ty) + b1 * ty;
+        return invertImage ? 1 - b : b;
+      } else if (patternName === "gradient") {
         return nx;
       } else if (patternName === "circle") {
         const dx = nx - 0.5;

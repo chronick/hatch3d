@@ -344,7 +344,23 @@ export default function App() {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stateSnapshot));
-      localStorage.setItem(COMP_VALUES_KEY, JSON.stringify(compValues));
+      // Strip ImageControl values (Float32Array brightness grids) — they
+      // don't round-trip through JSON and would bloat localStorage anyway.
+      const persisted: typeof compValues = {};
+      for (const [compKey, slice] of Object.entries(compValues)) {
+        const cleaned: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(slice)) {
+          if (
+            v !== null &&
+            typeof v === "object" &&
+            "brightness" in (v as object) &&
+            (v as { brightness: unknown }).brightness instanceof Float32Array
+          ) continue;
+          cleaned[k] = v;
+        }
+        persisted[compKey] = cleaned;
+      }
+      localStorage.setItem(COMP_VALUES_KEY, JSON.stringify(persisted));
       localStorage.setItem(MACRO_VALUES_KEY, JSON.stringify(macroValues));
       localStorage.setItem(HATCH_GROUPS_KEY, JSON.stringify(hatchGroupValues));
     }, 300);

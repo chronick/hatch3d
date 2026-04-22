@@ -107,7 +107,7 @@ function getDefaults(comp: Composition3DDefinition | Composition2DDefinition): R
   if (!comp.controls) return {};
   const result: Record<string, unknown> = {};
   for (const [key, ctrl] of Object.entries(comp.controls)) {
-    result[key] = ctrl.default;
+    result[key] = ctrl.type === "image" ? null : ctrl.default;
   }
   return result;
 }

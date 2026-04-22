@@ -1,9 +1,10 @@
 import { memo, useCallback } from "react";
-import type { ControlDef } from "../compositions/types";
+import type { ControlDef, ImageSource } from "../compositions/types";
 import { Slider } from "./Slider";
 import { Toggle } from "./Toggle";
 import { SelectButtons } from "./SelectButtons";
 import { ControlXYPad } from "./ControlXYPad";
+import { ImageInput } from "./ImageInput";
 
 export const ControlRenderer = memo(function ControlRenderer({
   controlKey,
@@ -61,6 +62,15 @@ export const ControlRenderer = memo(function ControlRenderer({
           min={control.min}
           max={control.max}
           onChange={handleChange as (v: [number, number]) => void}
+        />
+      );
+    case "image":
+      return (
+        <ImageInput
+          label={control.label}
+          value={value as ImageSource | null}
+          sampleSize={control.sampleSize}
+          onChange={handleChange as (v: ImageSource | null) => void}
         />
       );
     default:

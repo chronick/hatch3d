@@ -593,6 +593,11 @@ function generateFromControlPreferences(
       case "xy":
         values[key] = [...ctrl.default];
         break;
+      case "image":
+        // Image values are never sampled by the preference generator —
+        // they're always null until the user picks a file in the UI.
+        values[key] = null;
+        break;
     }
   }
 

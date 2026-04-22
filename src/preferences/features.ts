@@ -150,7 +150,9 @@ export function macrosToValues(
   // Start from control defaults
   if (comp.controls) {
     for (const [key, ctrl] of Object.entries(comp.controls)) {
-      result[key] = ctrl.type === "xy" ? [...ctrl.default] : ctrl.default;
+      if (ctrl.type === "xy") result[key] = [...ctrl.default];
+      else if (ctrl.type === "image") result[key] = null;
+      else result[key] = ctrl.default;
     }
   }
 

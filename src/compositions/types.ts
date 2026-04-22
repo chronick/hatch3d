@@ -51,7 +51,24 @@ export interface XYControl {
   group: string;
 }
 
-export type ControlDef = SliderControl | ToggleControl | SelectControl | XYControl;
+export interface ImageSource {
+  /** Row-major brightness grid, values in [0,1]. */
+  brightness: Float32Array;
+  width: number;
+  height: number;
+  /** Optional original filename for display. */
+  name?: string;
+}
+
+export interface ImageControl {
+  type: "image";
+  label: string;
+  /** Target grid width in samples (height derived from aspect ratio). */
+  sampleSize?: number;
+  group: string;
+}
+
+export type ControlDef = SliderControl | ToggleControl | SelectControl | XYControl | ImageControl;
 
 // ── Layer / Composition types ──
 

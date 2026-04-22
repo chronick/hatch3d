@@ -25,7 +25,7 @@ export function getControlDefaults(controls?: Record<string, ControlDef>): Recor
   if (!controls) return {};
   const result: Record<string, unknown> = {};
   for (const [key, ctrl] of Object.entries(controls)) {
-    result[key] = ctrl.default;
+    result[key] = ctrl.type === "image" ? null : ctrl.default;
   }
   return result;
 }

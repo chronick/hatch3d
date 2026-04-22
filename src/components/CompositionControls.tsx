@@ -99,6 +99,7 @@ export const CompositionControls = memo(function CompositionControls({
             const v = resolvedValues[k];
             if (c.type === "slider") return `${(v as number).toFixed(1)}`;
             if (c.type === "toggle") return (v as boolean) ? "on" : "off";
+            if (c.type === "image") return v ? "loaded" : "—";
             return String(v);
           });
         return (
@@ -108,7 +109,7 @@ export const CompositionControls = memo(function CompositionControls({
                 key={key}
                 controlKey={key}
                 control={ctrl}
-                value={currentValues[key] ?? ctrl.default}
+                value={currentValues[key] ?? (ctrl.type === "image" ? null : ctrl.default)}
                 onChange={onControlChange}
               />
             ))}
