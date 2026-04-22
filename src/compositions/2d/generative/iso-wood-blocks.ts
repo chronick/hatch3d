@@ -47,6 +47,7 @@ const isoWoodBlocks: Composition2DDefinition = {
       targets: [
         { param: "blockCount", fn: "linear", strength: -0.7 },
         { param: "sizeVariance", fn: "linear", strength: 0.5 },
+        { param: "smallAccentProportion", fn: "linear", strength: 0.4 },
         { param: "packingMargin", fn: "linear", strength: -0.3 },
       ],
     },
@@ -68,6 +69,15 @@ const isoWoodBlocks: Composition2DDefinition = {
       default: 0.55,
       min: 0,
       max: 1,
+      step: 0.01,
+      group: "Layout",
+    },
+    smallAccentProportion: {
+      type: "slider",
+      label: "Small Accent Proportion",
+      default: 0.2,
+      min: 0,
+      max: 0.5,
       step: 0.01,
       group: "Layout",
     },
@@ -145,6 +155,10 @@ const isoWoodBlocks: Composition2DDefinition = {
   generate({ width, height, values }) {
     const blockCount = Math.max(1, Math.floor((values.blockCount as number) ?? 18));
     const sizeVar = Math.max(0, Math.min(1, (values.sizeVariance as number) ?? 0.55));
+    const smallAccentProportion = Math.max(
+      0,
+      Math.min(0.5, (values.smallAccentProportion as number) ?? 0.2),
+    );
     const margin = Math.max(0, Math.min(0.3, (values.packingMargin as number) ?? 0.04));
     const isoAngle = ((values.isoAngle as number) ?? 30) * Math.PI / 180;
     const grainSpacing = Math.max(
@@ -190,11 +204,17 @@ const isoWoodBlocks: Composition2DDefinition = {
     for (let k = 0; k < blockCount; k++) {
       const cx = k % cols;
       const cy = Math.floor(k / cols);
-      // Log-uniform size draw so small accent blocks happen naturally.
+      // Two-bucket size draw: a small-accent bucket (≈0.15–0.3) chosen with
+      // `smallAccentProportion` probability, otherwise a wide log-uniform
+      // draw (0.25–1.0, 4× range). Reference (watagua Blocks IV) reads as a
+      // population of regular blocks with scattered tiny accents, not a
+      // smooth distribution — the explicit bucket enforces that visual.
+      const accentRoll = rng();
       const t = rng();
-      const sizeNorm = Math.exp(
-        Math.log(0.4) * (1 - t) + Math.log(1.0) * t,
-      );
+      const sizeNorm =
+        accentRoll < smallAccentProportion
+          ? Math.exp(Math.log(0.15) * (1 - t) + Math.log(0.3) * t)
+          : Math.exp(Math.log(0.25) * (1 - t) + Math.log(1.0) * t);
       const edge = cellScale * 0.35 * (1 - sizeVar + sizeVar * sizeNorm);
       // Jitter within the cell so the grid doesn't read as a regular lattice.
       const jx = (rng() - 0.5) * cellPxW * 0.2;
