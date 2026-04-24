@@ -21,7 +21,7 @@ import { CompositionBrowser } from "./components/CompositionBrowser";
 import { ExportModal } from "./components/ExportModal";
 import { PresetMenu } from "./components/PresetMenu";
 import { RenderButton } from "./components/RenderButton";
-import type { HatchGroupConfig } from "./components/HatchGroupControls";
+import type { HatchGroupConfig } from "./components/HatchGroupControls.types";
 import { configHash } from "./utils/config-hash";
 import { exportPng, PNG_THEMES } from "./utils/export-png";
 import { sendToQueue, isPrintQueueEnabled } from "./utils/print-queue-client";

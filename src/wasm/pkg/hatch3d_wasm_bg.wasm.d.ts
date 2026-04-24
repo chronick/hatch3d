@@ -1,5 +1,4 @@
 /* tslint:disable */
-/* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const generate_voronoi: (a: number, b: number) => [number, number];
 export const generate_all_layers: (a: number, b: number) => [number, number];

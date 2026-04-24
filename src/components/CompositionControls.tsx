@@ -1,10 +1,11 @@
-import { memo, useMemo, useRef } from "react";
+import { memo, useMemo, useRef, useEffect } from "react";
 import type { ControlDef, MacroDef } from "../compositions/types";
 import { getControlGroups } from "../compositions/helpers";
 import { Section } from "./Section";
 import { MacroSlider } from "./MacroSlider";
 import { ControlRenderer } from "./ControlRenderer";
-import { HatchGroupControls, HATCH_GROUP_DEFAULT, type HatchGroupConfig } from "./HatchGroupControls";
+import { HatchGroupControls } from "./HatchGroupControls";
+import { HATCH_GROUP_DEFAULT, type HatchGroupConfig } from "./HatchGroupControls.types";
 
 export const CompositionControls = memo(function CompositionControls({
   controls,
@@ -40,7 +41,9 @@ export const CompositionControls = memo(function CompositionControls({
 
   // Stable per-macro callbacks via a ref to avoid re-rendering all MacroSliders when one changes
   const onMacroChangeRef = useRef(onMacroChange);
-  onMacroChangeRef.current = onMacroChange;
+  useEffect(() => {
+    onMacroChangeRef.current = onMacroChange;
+  });
   const macroHandlers = useMemo(() => {
     if (!macros) return {} as Record<string, (v: number) => void>;
     const handlers: Record<string, (v: number) => void> = {};
@@ -68,7 +71,9 @@ export const CompositionControls = memo(function CompositionControls({
 
   // Stable per-group reset handlers
   const onResetGroupRef = useRef(onResetGroup);
-  onResetGroupRef.current = onResetGroup;
+  useEffect(() => {
+    onResetGroupRef.current = onResetGroup;
+  });
   const groupResetHandlers = useMemo(() => {
     const handlers: Record<string, () => void> = {};
     for (const g of groups) {

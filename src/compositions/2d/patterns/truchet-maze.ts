@@ -46,7 +46,7 @@ function chainArcs(
     if (used[startIdx]) continue;
     used[startIdx] = 1;
 
-    let path = [...arcs[startIdx].arc];
+    const path = [...arcs[startIdx].arc];
     let currentEndKey = arcs[startIdx].endKey;
 
     // Extend forward

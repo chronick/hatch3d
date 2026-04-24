@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { briefToIntent } from "./intent.js";
 import { CompositionRegistry } from "../compositions/registry.js";
-import type { Composition2DDefinition, Composition3DDefinition } from "../compositions/types.js";
+import type { Composition2DDefinition } from "../compositions/types.js";
 
 /** Build a minimal registry for testing */
-function makeRegistry(...comps: Array<{ id: string; name: string; tags?: string[]; controls?: Record<string, any>; description?: string }>): CompositionRegistry {
+function makeRegistry(...comps: Array<{ id: string; name: string; tags?: string[]; controls?: Record<string, unknown>; description?: string }>): CompositionRegistry {
   const reg = new CompositionRegistry();
   for (const c of comps) {
     reg.register({

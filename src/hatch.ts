@@ -151,7 +151,7 @@ function applyDashing(
       const dx = pts[i].x - pts[i - 1].x;
       const dy = pts[i].y - pts[i - 1].y;
       const dz = pts[i].z - pts[i - 1].z;
-      let segLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const segLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
       let consumed = 0;
 
       while (consumed < segLen) {

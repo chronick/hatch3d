@@ -234,7 +234,7 @@ const weightedStippling: Composition2DDefinition = {
           // Check if this sample is closer to current point than any neighbor
           const sCol = Math.floor((sx - xMin) / cellSize);
           const sRow = Math.floor((sy - yMin) / cellSize);
-          let closestDist = (sx - px) ** 2 + (sy - py) ** 2;
+          const closestDist = (sx - px) ** 2 + (sy - py) ** 2;
           let isClosest = true;
 
           // Check neighboring grid cells
