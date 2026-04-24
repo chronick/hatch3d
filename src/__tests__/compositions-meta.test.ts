@@ -16,7 +16,7 @@ describe("Composition registry completeness", () => {
       "flowField", "strangeAttractor", "truchetMaze",
       "guillocheRosette", "hilbertFill", "differentialGrowth",
       "multiTechnique", "tspArt", "reactionDiffusion",
-      "voronoiTexture", "photoHalftone", "growthOnSurface",
+      "voronoiTexture", "photoHalftone",
     ];
     for (const id of expectedIds) {
       expect(compositionRegistry.has(id)).toBe(true);
