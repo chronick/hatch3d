@@ -111,7 +111,7 @@ const voronoiTexture: Composition2DDefinition = {
     const yMax = height - margin;
 
     // Generate initial points
-    let points: Point[] = [];
+    const points: Point[] = [];
 
     if (distribution === "jitter") {
       const side = Math.ceil(Math.sqrt(pointCount));

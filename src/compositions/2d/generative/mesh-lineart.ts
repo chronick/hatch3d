@@ -282,14 +282,14 @@ function rotateVertices(
 
   return verts.map(([x, y, z]) => {
     // Rx
-    let y1 = y * cx - z * sx;
-    let z1 = y * sx + z * cx;
+    const y1 = y * cx - z * sx;
+    const z1 = y * sx + z * cx;
     // Ry
-    let x2 = x * cy + z1 * sy;
-    let z2 = -x * sy + z1 * cy;
+    const x2 = x * cy + z1 * sy;
+    const z2 = -x * sy + z1 * cy;
     // Rz
-    let x3 = x2 * cz - y1 * sz;
-    let y3 = x2 * sz + y1 * cz;
+    const x3 = x2 * cz - y1 * sz;
+    const y3 = x2 * sz + y1 * cz;
     return [x3, y3, z2] as Vec3;
   });
 }

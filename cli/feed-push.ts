@@ -23,7 +23,6 @@ import { resolve, join } from "node:path";
 import { loadCompositions } from "./load-compositions.js";
 import { compositionRegistry } from "../src/compositions/registry.js";
 import { is2DComposition } from "../src/compositions/types.js";
-import type { CompositionDefinition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
 import { buildSVGContent, computeExportLayout } from "./svg-export.js";
@@ -500,7 +499,7 @@ async function pushItem(config: { url: string; token: string }, item: Record<str
 
 // ── Rendering ──
 
-function renderPreset(preset: FeedPreset, scale: number): { svgContent: string; pngBuffer: Buffer | null; stats: Record<string, number>; durationMs: number } {
+function renderPreset(preset: FeedPreset): { svgContent: string; pngBuffer: Buffer | null; stats: Record<string, number>; durationMs: number } {
   const comp = compositionRegistry.get(preset.composition)!;
   const is2d = is2DComposition(comp);
 
@@ -723,7 +722,7 @@ async function main(): Promise<void> {
     console.log(`  [${i + 1}/${selected.length}] ${preset.composition} / "${preset.name}"...`);
 
     // Render
-    const { svgContent, stats, durationMs } = renderPreset(preset, scale);
+    const { svgContent, stats, durationMs } = renderPreset(preset);
 
     if (stats.paths === 0) {
       console.log(`    SKIPPED — 0 paths produced`);

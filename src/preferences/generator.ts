@@ -11,7 +11,7 @@
  *   - swap `scorePreset()` for a learned quality predictor
  */
 
-import type { CompositionDefinition, SliderControl } from "../compositions/types.js";
+import type { CompositionDefinition } from "../compositions/types.js";
 import { is2DComposition } from "../compositions/types.js";
 import type { CompositionRegistry } from "../compositions/registry.js";
 import type { Observation, PreferenceModel, GeneratedPreset, IntentVector } from "./types.js";

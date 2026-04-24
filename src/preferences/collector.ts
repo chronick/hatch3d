@@ -14,7 +14,7 @@ import { compositionRegistry } from "../compositions/registry.js";
 import { extractFeatures } from "./features.js";
 import { loadCorrelationStore, saveCorrelationStore } from "./correlation-store.js";
 import { recordObservationCorrelations } from "./correlation-recorder.js";
-import type { Observation, Outcome, SyncState, NormalizedFeatures } from "./types.js";
+import type { Observation, Outcome, SyncState } from "./types.js";
 
 const DATA_DIR = resolve(import.meta.dirname ?? __dirname, "../../data/preferences");
 const OBSERVATIONS_PATH = join(DATA_DIR, "observations.jsonl");

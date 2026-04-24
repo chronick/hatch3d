@@ -13,14 +13,14 @@
 
 import { parseArgs } from "node:util";
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
-import { resolve, join, extname, basename } from "node:path";
+import { resolve, join, basename } from "node:path";
 import { loadCompositions } from "./load-compositions.js";
 import { compositionRegistry } from "../src/compositions/registry.js";
 import { is2DComposition } from "../src/compositions/types.js";
-import type { CompositionDefinition, Composition3DDefinition } from "../src/compositions/types.js";
+import type { CompositionDefinition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
-import { buildSVGContent, computeExportLayout, PAGE_SIZES } from "./svg-export.js";
+import { buildSVGContent, computeExportLayout } from "./svg-export.js";
 
 // ── Parse CLI arguments ──
 
@@ -232,8 +232,8 @@ function resolveConfig(): RenderConfig {
     height: Number(args.height) || config.height || 800,
     pageSize: args["page-size"] ?? config.pageSize ?? "a3",
     orientation: (args.orientation as "landscape" | "portrait") ?? config.orientation ?? "landscape",
-    margin: Number(args.margin) ?? config.margin ?? 15,
-    strokeWidth: Number(args["stroke-width"]) ?? config.strokeWidth ?? 0.5,
+    margin: Number(args.margin) || config.margin || 15,
+    strokeWidth: Number(args["stroke-width"]) || config.strokeWidth || 0.5,
     surface: args.surface ?? config.surface ?? "hyperboloid",
     hatchFamily: args["hatch-family"] ?? config.hatchFamily ?? "u",
     hatchCount: Number(args["hatch-count"]) || config.hatchCount || 30,

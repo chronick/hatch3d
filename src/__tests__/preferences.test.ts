@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { Composition2DDefinition, Composition3DDefinition, SliderControl, MacroDef } from "../compositions/types";
+import type { Composition2DDefinition, Composition3DDefinition } from "../compositions/types";
 import { CompositionRegistry } from "../compositions/registry";
 import { extractFeatures, macrosToValues } from "../preferences/features";
 import { computeModel, summarizeModel } from "../preferences/learner";
@@ -165,7 +165,6 @@ describe("computeModel", () => {
 
   it("gives neutral score (0.5) with no data", () => {
     // A composition with 0 accepted, 0 rejected should score ~0.5
-    const model = computeModel([]);
     // No composition scores at all when empty, but verify the scoring function
     // by adding a single observation with equal accept/reject
     const obs = [
@@ -275,7 +274,6 @@ describe("generateBiasedPresets", () => {
   });
 
   it("generates values within control ranges", () => {
-    const comp = makeComp2D();
     const presets = generateBiasedPresets(makeModel(), makeRegistry(), {
       count: 10,
       forceComposition: "testFlow",
