@@ -10,7 +10,10 @@ import {
   getMacroDefaults,
   resolveValues,
   is2DComposition,
+  isLayeredComposition,
 } from "./compositions";
+import type { LayeredLayer } from "./compositions/types";
+import { LayerPanel } from "./components/LayerPanel";
 import { btnStyle, tagStyle } from "./components/styles";
 import { Section } from "./components/Section";
 import { Slider } from "./components/Slider";
@@ -56,6 +59,7 @@ const STORAGE_KEY = "hatch3d-state";
 const COMP_VALUES_KEY = "hatch3d-comp-values";
 const MACRO_VALUES_KEY = "hatch3d-macro-values";
 const HATCH_GROUPS_KEY = "hatch3d-hatch-groups";
+const LAYERED_LAYERS_KEY = "hatch3d-layered-layers";
 
 type HatchFamily = "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral";
 
@@ -199,6 +203,16 @@ export default function App() {
     } catch { return {}; }
   });
 
+  // Per-composition edited layer stack for layered compositions:
+  // { compositionKey: LayeredLayer[] }. Replaces the static `layers`
+  // baked into the composition definition when present.
+  const [layeredLayersByKey, setLayeredLayersByKey] = useState<Record<string, LayeredLayer[]>>(() => {
+    try {
+      const raw = localStorage.getItem(LAYERED_LAYERS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  });
+
   // Responsive: detect narrow viewport (debounced)
   const [isNarrow, setIsNarrow] = useState(typeof window !== "undefined" && window.innerWidth < 1200);
   useEffect(() => {
@@ -235,6 +249,30 @@ export default function App() {
   const comp = compositionRegistry.get(compositionKey)
     ?? compositionRegistry.get(DEFAULTS.compositionKey)!;
   const is2d = is2DComposition(comp);
+  const isLayered = isLayeredComposition(comp);
+
+  // For layered compositions: user-edited layer stack, falling back to the
+  // composition's static definition when no overrides exist yet.
+  const currentLayers: LayeredLayer[] = useMemo(() => {
+    if (!isLayered) return [];
+    const override = layeredLayersByKey[compositionKey];
+    return override ?? comp.layers;
+  }, [isLayered, comp, compositionKey, layeredLayersByKey]);
+
+  const setLayers = useCallback(
+    (layers: LayeredLayer[]) => {
+      setLayeredLayersByKey((prev) => ({ ...prev, [compositionKey]: layers }));
+    },
+    [compositionKey],
+  );
+
+  const resetLayers = useCallback(() => {
+    setLayeredLayersByKey((prev) => {
+      const next = { ...prev };
+      delete next[compositionKey];
+      return next;
+    });
+  }, [compositionKey]);
   const controlDefaults = useMemo(() => getControlDefaults(comp.controls), [comp.controls]);
   const macroDefaults = useMemo(() => getMacroDefaults(comp.macros), [comp.macros]);
 
@@ -363,9 +401,10 @@ export default function App() {
       localStorage.setItem(COMP_VALUES_KEY, JSON.stringify(persisted));
       localStorage.setItem(MACRO_VALUES_KEY, JSON.stringify(macroValues));
       localStorage.setItem(HATCH_GROUPS_KEY, JSON.stringify(hatchGroupValues));
+      localStorage.setItem(LAYERED_LAYERS_KEY, JSON.stringify(layeredLayersByKey));
     }, 300);
     return () => clearTimeout(persistTimer.current);
-  }, [stateSnapshot, compValues, macroValues, hatchGroupValues]);
+  }, [stateSnapshot, compValues, macroValues, hatchGroupValues, layeredLayersByKey]);
 
   // ── Undo / Redo ──
   const undoableSnapshot = useMemo(() => ({
@@ -522,7 +561,7 @@ export default function App() {
   );
 
   // Generate everything via Web Worker
-  const { svgPaths, meshPaths, stats, isRendering, isStale, renderTimeMs, triggerRender } =
+  const { svgPaths, meshPaths, layerGroups, stats, isRendering, isStale, renderTimeMs, triggerRender } =
     useRenderWorker({
       compositionKey,
       is2d,
@@ -543,6 +582,7 @@ export default function App() {
       densityMax,
       densityCellSize,
       renderMode: comp.renderMode ?? "immediate",
+      layeredLayersOverride: isLayered ? currentLayers : undefined,
     });
 
   // Preview viewport controls (pan/zoom the SVG view, not the 3D scene)
@@ -618,15 +658,36 @@ export default function App() {
       yMax: margin + contentH - clipInset,
     };
     const transform = { cx, cy, scale };
-    const clippedPaths = svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
+
+    const escAttr = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+
+    let body: string;
+    if (layerGroups && layerGroups.length > 0) {
+      // Per-layer <g> groups, each with its own stroke color (pen layer).
+      body = layerGroups
+        .map((lg, i) => {
+          const clipped = lg.svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
+          if (clipped.length === 0) return "";
+          const idAttr = ` id="${escAttr(lg.name ?? `layer-${i}`)}"`;
+          const strokeAttr = lg.color ? ` stroke="${escAttr(lg.color)}"` : "";
+          const paths = clipped.map((d) => `<path d="${d}"/>`).join("\n      ");
+          return `    <g${idAttr}${strokeAttr}>\n      ${paths}\n    </g>`;
+        })
+        .filter(Boolean)
+        .join("\n");
+    } else {
+      const clippedPaths = svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
+      body = `    ${clippedPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}`;
+    }
 
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
   <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">
-    ${clippedPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}
+${body}
   </g>${previewBorderPaths.length > 0 ? `\n  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">\n    ${previewBorderPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}\n  </g>` : ""}
 </svg>`;
-  }, [svgPaths, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths]);
+  }, [svgPaths, layerGroups, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths]);
 
   // Export SVG
   const handleExportSVG = useCallback(() => {
@@ -889,6 +950,14 @@ export default function App() {
           {/* Inline composition controls + 3D controls (when not using side panel) */}
           {(isNarrow || controlsPanel === "inline") && (
             <>
+              {isLayered && (
+                <LayerPanel
+                  layers={currentLayers}
+                  onChange={setLayers}
+                  availableCompositions={Array.from(compositionRegistry.getAll().values())}
+                  onReset={resetLayers}
+                />
+              )}
               {compositionKey !== "single" && comp.controls && (
                 <CompositionControls
                   controls={comp.controls}
@@ -906,7 +975,7 @@ export default function App() {
                   onResetAll={resetAllControls}
                 />
               )}
-              {!is2d && (
+              {!is2d && !isLayered && (
                 <ThreeDControls
                   hatchFamily={hatchFamily}
                   setHatchFamily={(f) => setHatchFamily(f as HatchFamily)}
@@ -1047,7 +1116,7 @@ export default function App() {
         </div>
 
         {/* Side panel for composition + 3D controls (wide viewports, opt-in) */}
-        {!isNarrow && controlsPanel === "side" && (comp.controls || !is2d) && (
+        {!isNarrow && controlsPanel === "side" && (comp.controls || !is2d || isLayered) && (
           <div
             style={{
               width: 280,
@@ -1084,6 +1153,14 @@ export default function App() {
                 </button>
               </div>
             </div>
+            {isLayered && (
+              <LayerPanel
+                layers={currentLayers}
+                onChange={setLayers}
+                availableCompositions={Array.from(compositionRegistry.getAll().values())}
+                onReset={resetLayers}
+              />
+            )}
             {comp.controls && (
               <CompositionControls
                 controls={comp.controls}
@@ -1101,7 +1178,7 @@ export default function App() {
                 onResetAll={resetAllControls}
               />
             )}
-            {!is2d && (
+            {!is2d && !isLayered && (
               <ThreeDControls
                 hatchFamily={hatchFamily}
                 setHatchFamily={(f) => setHatchFamily(f as HatchFamily)}
@@ -1222,9 +1299,15 @@ export default function App() {
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
-                  {svgPaths.map((d, i) => (
-                    <path key={i} d={d} />
-                  ))}
+                  {layerGroups && layerGroups.length > 0
+                    ? layerGroups.map((lg, gi) => (
+                        <g key={`lg${gi}`} id={lg.name ?? `layer-${gi}`} stroke={lg.color ?? undefined}>
+                          {lg.svgPaths.map((d, i) => (
+                            <path key={`${gi}-${i}`} d={d} />
+                          ))}
+                        </g>
+                      ))
+                    : svgPaths.map((d, i) => <path key={i} d={d} />)}
                 </g>
               </g>
             </g>

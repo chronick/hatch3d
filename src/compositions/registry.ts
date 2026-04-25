@@ -40,13 +40,15 @@ export class CompositionRegistry {
   getAllMetadata() {
     const result: { id: string; name: string; description?: string; tags?: string[]; category: string; type: string }[] = [];
     for (const comp of this._map.values()) {
+      const compType =
+        comp.type === "2d" ? "2d" : comp.type === "layered" ? "layered" : "3d";
       result.push({
         id: comp.id,
         name: comp.name,
         description: comp.description,
         tags: comp.tags,
         category: comp.category,
-        type: comp.type === "2d" ? "2d" : "3d",
+        type: compType,
       });
     }
     return result;

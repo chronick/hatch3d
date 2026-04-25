@@ -19,14 +19,22 @@ import { compositionRegistry } from "../compositions/registry";
 import {
   type Composition3DDefinition,
   type LayerConfig,
+  type LayeredCompositionDefinition,
   is2DComposition,
+  isLayeredComposition,
 } from "../compositions/types";
 import {
   isWasmReady,
   generateLayersWasm,
   isLayerWasmCompatible,
 } from "../wasm-pipeline";
-import type { RenderRequest, RenderResult, CameraParams } from "./render-worker.types";
+import { parseDString, clipPolylineToRect, type Rect } from "../utils/clip";
+import type {
+  RenderRequest,
+  RenderResult,
+  CameraParams,
+  LayerGroupResult,
+} from "./render-worker.types";
 
 /**
  * Reconstruct a Three.js camera from serialized params.
@@ -57,10 +65,153 @@ function buildCamera(cam: CameraParams): THREE.Camera {
   return camera;
 }
 
+/**
+ * Bounding box over a list of polylines. Returns null when empty.
+ */
+function polylinesBBox(
+  polylines: { x: number; y: number }[][],
+): Rect | null {
+  let xMin = Infinity;
+  let yMin = Infinity;
+  let xMax = -Infinity;
+  let yMax = -Infinity;
+  let any = false;
+  for (const pl of polylines) {
+    for (const p of pl) {
+      if (p.x < xMin) xMin = p.x;
+      if (p.y < yMin) yMin = p.y;
+      if (p.x > xMax) xMax = p.x;
+      if (p.y > yMax) yMax = p.y;
+      any = true;
+    }
+  }
+  return any ? { xMin, yMin, xMax, yMax } : null;
+}
+
+/**
+ * Resolve default values for an inner composition's controls,
+ * then apply per-layer overrides on top.
+ */
+function resolveInnerValues(
+  inner: { controls?: Record<string, { default: unknown }> },
+  overrides?: Record<string, unknown>,
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  if (inner.controls) {
+    for (const [key, ctrl] of Object.entries(inner.controls)) {
+      values[key] = ctrl.default;
+    }
+  }
+  if (overrides) Object.assign(values, overrides);
+  return values;
+}
+
+/**
+ * Layered pipeline: render each inner composition independently,
+ * then composite their SVG paths into per-layer groups.
+ *
+ * Blend modes:
+ *   - "over"   — additive stacking (paths emitted as-is)
+ *   - "masked" — paths clipped to the bounding box of the `maskBy` layer
+ *
+ * Cross-layer occlusion is intentionally out of scope for v1.
+ */
+function runLayeredPipeline(
+  req: RenderRequest,
+  comp: LayeredCompositionDefinition,
+): RenderResult {
+  const t0 = performance.now();
+
+  // Honor user-edited override (visibility, order, colors, etc) when present.
+  // `visible: false` layers are filtered before rendering.
+  const layers = (req.layeredLayersOverride ?? comp.layers).filter(
+    (l) => l.visible !== false,
+  );
+
+  const layerPolylines: { x: number; y: number }[][][] = [];
+
+  // Pass 1: render each inner composition into raw polylines.
+  for (const layer of layers) {
+    const inner = compositionRegistry.get(layer.composition);
+    if (!inner || isLayeredComposition(inner)) {
+      // Unknown id, or nested layered (not supported in v1).
+      layerPolylines.push([]);
+      continue;
+    }
+
+    const innerReq: RenderRequest = {
+      ...req,
+      compositionKey: layer.composition,
+      is2d: is2DComposition(inner),
+      resolvedValues: resolveInnerValues(
+        inner as { controls?: Record<string, { default: unknown }> },
+        layer.paramOverrides,
+      ),
+      densityFilterEnabled: false,
+      showMesh: false,
+    };
+
+    const innerResult = runPipeline(innerReq);
+    const polys = innerResult.svgPaths
+      .map(parseDString)
+      .filter((p) => p.length >= 2);
+    layerPolylines.push(polys);
+  }
+
+  // Pass 2: apply blend modes and emit per-layer SVG paths.
+  const layerGroups: LayerGroupResult[] = [];
+  let totalLines = 0;
+  let totalVerts = 0;
+
+  for (let i = 0; i < layers.length; i++) {
+    const layer = layers[i];
+    let polys = layerPolylines[i];
+
+    if (layer.blendMode === "masked") {
+      const maskIdx = layer.maskBy ?? Math.max(0, i - 1);
+      if (maskIdx !== i && layerPolylines[maskIdx]?.length) {
+        const bbox = polylinesBBox(layerPolylines[maskIdx]);
+        if (bbox) {
+          const clipped: { x: number; y: number }[][] = [];
+          for (const pl of polys) clipped.push(...clipPolylineToRect(pl, bbox));
+          polys = clipped;
+        }
+      }
+    }
+
+    const paths = polylinesToSVGPaths(polys);
+    totalLines += polys.length;
+    totalVerts += polys.reduce((s, p) => s + p.length, 0);
+    layerGroups.push({
+      id: layer.composition,
+      name: layer.name,
+      color: layer.color,
+      svgPaths: paths,
+    });
+  }
+
+  const allPaths = layerGroups.flatMap((g) => g.svgPaths);
+
+  return {
+    type: "render-result",
+    id: req.id,
+    svgPaths: allPaths,
+    meshPaths: [],
+    layerGroups,
+    stats: { lines: totalLines, verts: totalVerts, paths: allPaths.length },
+    durationMs: performance.now() - t0,
+  };
+}
+
 export function runPipeline(req: RenderRequest): RenderResult {
   const t0 = performance.now();
   const comp = compositionRegistry.get(req.compositionKey)!;
   const wasmReady = isWasmReady();
+
+  // ── Layered pipeline (multi-composition umbrella) ──
+  if (isLayeredComposition(comp)) {
+    return runLayeredPipeline(req, comp);
+  }
 
   // ── 2D pipeline ──
   if (req.is2d && is2DComposition(comp)) {

@@ -112,10 +112,14 @@ export interface CompositionMetadata {
   name: string;
   description?: string;
   tags?: string[];
-  category: "2d" | "3d";
+  category: "2d" | "3d" | "layered";
   author?: string;
   thumbnail?: string;
   suggestedPresets?: Record<string, CompositionPreset>;
+  /** Optional macro defs (only relevant for 2D/3D — declared at base for ergonomic union access). */
+  macros?: Record<string, MacroDef>;
+  /** Optional control defs (only relevant for 2D/3D — declared at base for ergonomic union access). */
+  controls?: Record<string, ControlDef>;
   /**
    * Controls how aggressively the composition re-renders on parameter changes.
    * - "immediate": render on every change, no debounce (default — fast compositions)
@@ -129,8 +133,6 @@ export interface CompositionMetadata {
 
 export interface Composition3DDefinition extends CompositionMetadata {
   type?: "3d";
-  macros?: Record<string, MacroDef>;
-  controls?: Record<string, ControlDef>;
   hatchGroups?: string[];
   layers: (input: CompositionInput) => LayerConfig[];
   /**
@@ -155,14 +157,45 @@ export interface Composition3DDefinition extends CompositionMetadata {
 
 export interface Composition2DDefinition extends CompositionMetadata {
   type: "2d";
-  macros?: Record<string, MacroDef>;
-  controls?: Record<string, ControlDef>;
   generate: (input: Composition2DInput) => { x: number; y: number }[][];
   /** Optional WASM-accelerated generator. Returns null if WASM unavailable. */
   wasmGenerate?: (input: Composition2DInput) => { x: number; y: number }[][] | null;
 }
 
-export type CompositionDefinition = Composition3DDefinition | Composition2DDefinition;
+// ── Layered composition (multi-composition umbrella) ──
+
+export type LayerBlendMode = "over" | "masked";
+
+export interface LayeredLayer {
+  /** id of an inner composition to render. Resolved at render time via the registry. */
+  composition: string;
+  /** Override values for the inner composition's controls/macros. */
+  paramOverrides?: Record<string, unknown>;
+  /**
+   * 'over' = additive stacking (default).
+   * 'masked' = clip this layer to the bounding box of `maskBy` layer.
+   * v1 supports simple bbox masking only — no cross-layer occlusion.
+   */
+  blendMode?: LayerBlendMode;
+  /** Index of layer in the stack to clip by (only used when blendMode === 'masked'). */
+  maskBy?: number;
+  /** SVG stroke color for this layer's <g> group. Maps to a pen layer on the plotter. */
+  color?: string;
+  /** Optional human-readable name → becomes <g id="..."> in exported SVG. */
+  name?: string;
+  /** UI-controlled visibility flag — when false, layer is skipped. Default true. */
+  visible?: boolean;
+}
+
+export interface LayeredCompositionDefinition extends CompositionMetadata {
+  type: "layered";
+  layers: LayeredLayer[];
+}
+
+export type CompositionDefinition =
+  | Composition3DDefinition
+  | Composition2DDefinition
+  | LayeredCompositionDefinition;
 
 // ── Legacy compat aliases ──
 
@@ -172,6 +205,12 @@ export type AnyComposition = CompositionDefinition;
 
 export function is2DComposition(comp: CompositionDefinition): comp is Composition2DDefinition {
   return (comp as Composition2DDefinition).type === "2d";
+}
+
+export function isLayeredComposition(
+  comp: CompositionDefinition,
+): comp is LayeredCompositionDefinition {
+  return (comp as LayeredCompositionDefinition).type === "layered";
 }
 
 // ── WASM adapter interface (future use) ──
