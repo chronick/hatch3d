@@ -60,6 +60,7 @@ type FaceKind = "top" | "wallNS" | "wallEW";
 interface Face {
   kind: FaceKind;
   corners: [Vec3, Vec3, Vec3, Vec3]; // p00, p10, p11, p01
+  normal: Vec3;
 }
 
 // Build 4 triangular pyramid faces sitting on top of the chosen cells. Each
@@ -115,6 +116,18 @@ function buildSpireFaces(
     }
   }
 
+  // Outward face normals — constant across spires (same pyramid geometry).
+  // For each triangular face, the outward direction has a lateral component
+  // (away from the spire centre) plus a +y component proportional to the
+  // half-cell, both scaled so the result is a unit vector.
+  const halfC = cellSize / 2;
+  const apexH = spireHeight * heightScale;
+  const nLen = Math.sqrt(halfC * halfC + apexH * apexH);
+  const normN: Vec3 = { x: 0, y: halfC / nLen, z: -apexH / nLen };
+  const normE: Vec3 = { x: apexH / nLen, y: halfC / nLen, z: 0 };
+  const normS: Vec3 = { x: 0, y: halfC / nLen, z: apexH / nLen };
+  const normW: Vec3 = { x: -apexH / nLen, y: halfC / nLen, z: 0 };
+
   const faces: Face[] = [];
   for (const c of chosen) {
     const { i, j } = c;
@@ -125,7 +138,7 @@ function buildSpireFaces(
     const yTop = h(i, j);
     const apex: Vec3 = {
       x: (x0 + x1) / 2,
-      y: yTop + spireHeight * heightScale,
+      y: yTop + apexH,
       z: (z0 + z1) / 2,
     };
     const NW: Vec3 = { x: x0, y: yTop, z: z0 };
@@ -134,13 +147,21 @@ function buildSpireFaces(
     const SW: Vec3 = { x: x0, y: yTop, z: z1 };
     // Winding order chosen so the exterior side of each face is CCW (matches
     // existing buildFaces convention so HLR depth pass stays consistent).
-    faces.push({ kind: "top", corners: [NW, NE, apex, apex] }); // -z face
-    faces.push({ kind: "top", corners: [NE, SE, apex, apex] }); // +x face
-    faces.push({ kind: "top", corners: [SE, SW, apex, apex] }); // +z face
-    faces.push({ kind: "top", corners: [SW, NW, apex, apex] }); // -x face
+    faces.push({ kind: "top", normal: normN, corners: [NW, NE, apex, apex] }); // -z face
+    faces.push({ kind: "top", normal: normE, corners: [NE, SE, apex, apex] }); // +x face
+    faces.push({ kind: "top", normal: normS, corners: [SE, SW, apex, apex] }); // +z face
+    faces.push({ kind: "top", normal: normW, corners: [SW, NW, apex, apex] }); // -x face
   }
   return faces;
 }
+
+// Fixed light direction used by the shadow gating. Picked to roughly match the
+// upper-front-right lighting convention used in the original Sentinel artwork.
+const LIGHT_DIR: Vec3 = (() => {
+  const lx = 1, ly = 2, lz = 1;
+  const len = Math.sqrt(lx * lx + ly * ly + lz * lz);
+  return { x: lx / len, y: ly / len, z: lz / len };
+})();
 
 function buildFaces(heights: number[][], N: number, cellSize: number, heightScale: number): Face[] {
   const faces: Face[] = [];
@@ -156,6 +177,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
       // Top cap — CCW looking down (+Y up).
       faces.push({
         kind: "top",
+        normal: { x: 0, y: 1, z: 0 },
         corners: [
           { x: x0, y, z: z0 },
           { x: x1, y, z: z0 },
@@ -171,6 +193,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
       if (ySouth < y) {
         faces.push({
           kind: "wallNS",
+          normal: { x: 0, y: 0, z: 1 },
           corners: [
             { x: x0, y: ySouth, z: z1 },
             { x: x1, y: ySouth, z: z1 },
@@ -184,6 +207,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
       if (yNorth < y) {
         faces.push({
           kind: "wallNS",
+          normal: { x: 0, y: 0, z: -1 },
           corners: [
             { x: x1, y: yNorth, z: z0 },
             { x: x0, y: yNorth, z: z0 },
@@ -197,6 +221,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
       if (yEast < y) {
         faces.push({
           kind: "wallEW",
+          normal: { x: 1, y: 0, z: 0 },
           corners: [
             { x: x1, y: yEast, z: z1 },
             { x: x1, y: yEast, z: z0 },
@@ -210,6 +235,7 @@ function buildFaces(heights: number[][], N: number, cellSize: number, heightScal
       if (yWest < y) {
         faces.push({
           kind: "wallEW",
+          normal: { x: -1, y: 0, z: 0 },
           corners: [
             { x: x0, y: yWest, z: z0 },
             { x: x0, y: yWest, z: z1 },
@@ -231,7 +257,7 @@ const sentinelTerrain3D: Composition3DDefinition = {
   tags: ["3d", "architectural", "heightfield", "hidden-line-removal"],
   category: "3d",
   type: "3d",
-  hatchGroups: ["Tops", "WallsNS", "WallsEW"],
+  hatchGroups: ["Tops", "WallsNS", "WallsEW", "shadow"],
 
   macros: {
     density: {
@@ -399,6 +425,21 @@ const sentinelTerrain3D: Composition3DDefinition = {
       step: 0.5,
       group: "Spires",
     },
+    crossHatchShadow: {
+      type: "toggle",
+      label: "Cross-Hatch Shadow",
+      default: false,
+      group: "Shading",
+    },
+    shadowThreshold: {
+      type: "slider",
+      label: "Shadow Threshold",
+      default: 0.25,
+      min: 0.05,
+      max: 0.5,
+      step: 0.05,
+      group: "Shading",
+    },
   },
 
   layers: (input): LayerConfig[] => {
@@ -420,6 +461,11 @@ const sentinelTerrain3D: Composition3DDefinition = {
     const samples = Math.max(4, Math.floor((v.hatchSamples as number) ?? 12));
     const spireCount = Math.max(0, Math.floor((v.spireCount as number) ?? 0));
     const spireHeight = Math.max(0, (v.spireHeight as number) ?? 4);
+    const crossHatchShadow = (v.crossHatchShadow as boolean) ?? false;
+    const shadowThreshold = Math.max(
+      0.05,
+      Math.min(0.5, (v.shadowThreshold as number) ?? 0.25),
+    );
 
     const rng = mulberry32(seed);
     const heights = generateHeightfield(N, maxH, splits, plateauBias, rng);
@@ -442,14 +488,15 @@ const sentinelTerrain3D: Composition3DDefinition = {
         countEW,
       });
       if (count === 0) continue;
+      const params = {
+        p00x: p00.x, p00y: p00.y, p00z: p00.z,
+        p10x: p10.x, p10y: p10.y, p10z: p10.z,
+        p11x: p11.x, p11y: p11.y, p11z: p11.z,
+        p01x: p01.x, p01y: p01.y, p01z: p01.z,
+      };
       layers.push({
         surface: "rectFace",
-        params: {
-          p00x: p00.x, p00y: p00.y, p00z: p00.z,
-          p10x: p10.x, p10y: p10.y, p10z: p10.z,
-          p11x: p11.x, p11y: p11.y, p11z: p11.z,
-          p01x: p01.x, p01y: p01.y, p01z: p01.z,
-        },
+        params,
         hatch: {
           family: "diagonal",
           angle,
@@ -458,6 +505,25 @@ const sentinelTerrain3D: Composition3DDefinition = {
         },
         group,
       });
+      if (crossHatchShadow) {
+        const lighting =
+          f.normal.x * LIGHT_DIR.x +
+          f.normal.y * LIGHT_DIR.y +
+          f.normal.z * LIGHT_DIR.z;
+        if (lighting < shadowThreshold) {
+          layers.push({
+            surface: "rectFace",
+            params,
+            hatch: {
+              family: "diagonal",
+              angle: angle + Math.PI / 2,
+              count,
+              samples,
+            },
+            group: "shadow",
+          });
+        }
+      }
     }
     return layers;
   },

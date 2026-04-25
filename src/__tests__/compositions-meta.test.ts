@@ -131,3 +131,43 @@ function getDefaults(comp: Composition3DDefinition | Composition2DDefinition): R
   }
   return result;
 }
+
+describe("sentinelTerrain3D crossHatchShadow", () => {
+  const comp = compositionRegistry.get("sentinelTerrain3D") as Composition3DDefinition;
+
+  function polylineCount(values: Record<string, unknown>) {
+    const layers = comp.layers({
+      surface: "rectFace",
+      surfaceParams: {},
+      hatchParams: { family: "diagonal", count: 1, samples: 4 },
+      values,
+    });
+    return layers.reduce((sum, l) => sum + (l.hatch.count ?? 0), 0);
+  }
+
+  it("crossHatchShadow=true emits more polylines than crossHatchShadow=false on a fixed seed", () => {
+    const baseline = { ...getDefaults(comp), terrainSeed: 42, crossHatchShadow: false };
+    const withShadow = { ...getDefaults(comp), terrainSeed: 42, crossHatchShadow: true };
+    const off = polylineCount(baseline);
+    const on = polylineCount(withShadow);
+    expect(on).toBeGreaterThan(off);
+  });
+
+  it("emits shadow-group layers only when crossHatchShadow=true", () => {
+    const baseValues = { ...getDefaults(comp), terrainSeed: 42 };
+    const off = comp.layers({
+      surface: "rectFace",
+      surfaceParams: {},
+      hatchParams: { family: "diagonal", count: 1, samples: 4 },
+      values: { ...baseValues, crossHatchShadow: false },
+    });
+    const on = comp.layers({
+      surface: "rectFace",
+      surfaceParams: {},
+      hatchParams: { family: "diagonal", count: 1, samples: 4 },
+      values: { ...baseValues, crossHatchShadow: true },
+    });
+    expect(off.some((l) => l.group === "shadow")).toBe(false);
+    expect(on.some((l) => l.group === "shadow")).toBe(true);
+  });
+});
