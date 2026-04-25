@@ -114,7 +114,7 @@ Bowyer-Watson Voronoi diagram with optional Lloyd relaxation and per-cell hatch 
 | Contour hatching | 3D form communication | Yes (u/v-constant) |
 | Cross-hatching | Tonal shading | Yes (crosshatch family) |
 | Flow fields | Organic texture | Yes (`flowField`) |
-| Differential growth | Organic fill patterns | Yes (`differentialGrowth`, `growthOnSurface`) |
+| Differential growth | Organic fill patterns | Yes (`differentialGrowth` with `surfaceMode` toggle) |
 | Truchet tiles | Background patterns | Yes (`truchetMaze`) |
 | Guilloche | Decorative borders/fills | Yes (`guillocheRosette`) |
 | Space-filling curves | Region fill, texture | Yes (`hilbertFill`) |
