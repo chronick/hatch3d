@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type {
   LayeredLayer,
   LayerBlendMode,
   CompositionDefinition,
+  ControlDef,
 } from "../compositions/types";
 import { isLayeredComposition, is2DComposition } from "../compositions/types";
 import { selectStyle } from "./styles";
+import { CompositionControls } from "./CompositionControls";
 
 const PEN_PALETTE = [
   "#000000",
@@ -43,9 +45,41 @@ export function LayerPanel({
   onReset,
 }: LayerPanelProps) {
   const [picking, setPicking] = useState(false);
+  const [expandedIdxRaw, setExpandedIdx] = useState<number | null>(null);
+
+  // Clamp expanded state at render time so removing the expanded layer
+  // (or any layer ahead of it shifting the range) doesn't leave us
+  // pointing at a missing slot.
+  const expandedIdx =
+    expandedIdxRaw !== null && expandedIdxRaw < layers.length
+      ? expandedIdxRaw
+      : null;
+
+  // Quick lookup so per-layer panels can resolve their inner composition.
+  const compById = useMemo(() => {
+    const m = new Map<string, CompositionDefinition>();
+    for (const c of availableCompositions) m.set(c.id, c);
+    return m;
+  }, [availableCompositions]);
 
   const update = (idx: number, patch: Partial<LayeredLayer>) => {
     onChange(layers.map((l, i) => (i === idx ? { ...l, ...patch } : l)));
+  };
+
+  const updateOverrides = (
+    idx: number,
+    mutator: (
+      prev: Record<string, unknown>,
+    ) => Record<string, unknown> | undefined,
+  ) => {
+    const layer = layers[idx];
+    const prev = layer.paramOverrides ?? {};
+    const next = mutator(prev);
+    onChange(
+      layers.map((l, i) =>
+        i === idx ? { ...l, paramOverrides: next } : l,
+      ),
+    );
   };
   const remove = (idx: number) => onChange(layers.filter((_, i) => i !== idx));
   const move = (idx: number, dir: -1 | 1) => {
@@ -118,6 +152,10 @@ export function LayerPanel({
 
       {layers.map((layer, i) => {
         const visible = layer.visible !== false;
+        const inner = compById.get(layer.composition);
+        const innerControls = inner?.controls;
+        const expanded = expandedIdx === i;
+        const overrideCount = Object.keys(layer.paramOverrides ?? {}).length;
         return (
           <div
             key={i}
@@ -236,7 +274,41 @@ export function LayerPanel({
                   )}
                 </select>
               )}
+              {innerControls && Object.keys(innerControls).length > 0 && (
+                <button
+                  title={expanded ? "Hide overrides" : "Edit per-layer params"}
+                  onClick={() => setExpandedIdx(expanded ? null : i)}
+                  style={{
+                    ...iconBtn,
+                    background: overrideCount > 0 ? "var(--fg)" : "transparent",
+                    color: overrideCount > 0 ? "var(--bg-canvas)" : "var(--fg)",
+                  }}
+                >
+                  {expanded ? "▾" : "▸"}
+                  {overrideCount > 0 ? overrideCount : ""}
+                </button>
+              )}
             </div>
+
+            {expanded && innerControls && inner && (
+              <LayerOverrideEditor
+                inner={inner}
+                overrides={layer.paramOverrides ?? {}}
+                onControlChange={(key, val) =>
+                  updateOverrides(i, (prev) => ({ ...prev, [key]: val }))
+                }
+                onResetGroup={(group) =>
+                  updateOverrides(i, (prev) => {
+                    const next = { ...prev };
+                    for (const [k, c] of Object.entries(innerControls)) {
+                      if (c.group === group) delete next[k];
+                    }
+                    return Object.keys(next).length ? next : undefined;
+                  })
+                }
+                onResetAll={() => updateOverrides(i, () => undefined)}
+              />
+            )}
           </div>
         );
       })}
@@ -279,6 +351,72 @@ export function LayerPanel({
       )}
 
       {is2DLayerWarning(layers, availableCompositions)}
+    </div>
+  );
+}
+
+/**
+ * Renders a layer's inner-composition controls bound to its
+ * `paramOverrides`. Macros and hatch groups are intentionally
+ * suppressed in v1 — only direct control values are editable
+ * per layer. Macros for inner comps are a v2 concern (would
+ * require macro resolution in the layered pipeline).
+ */
+function LayerOverrideEditor({
+  inner,
+  overrides,
+  onControlChange,
+  onResetGroup,
+  onResetAll,
+}: {
+  inner: CompositionDefinition;
+  overrides: Record<string, unknown>;
+  onControlChange: (key: string, val: unknown) => void;
+  onResetGroup: (group: string) => void;
+  onResetAll: () => void;
+}) {
+  const controls = inner.controls;
+  // Resolve "current values" the same way App.tsx does for the main panel:
+  // defaults + overrides. Used for slider/toggle current values + previews.
+  const resolved = useMemo(() => {
+    const out: Record<string, unknown> = {};
+    if (controls) {
+      for (const [key, ctrl] of Object.entries(controls)) {
+        out[key] = (ctrl as ControlDef).type === "image"
+          ? null
+          : (ctrl as { default: unknown }).default;
+      }
+    }
+    Object.assign(out, overrides);
+    return out;
+  }, [controls, overrides]);
+
+  return (
+    <div
+      style={{
+        marginTop: 4,
+        paddingTop: 6,
+        borderTop: "1px dashed var(--border-light)",
+        display: "flex",
+        flexDirection: "column",
+        gap: 5,
+      }}
+    >
+      <CompositionControls
+        controls={controls}
+        macros={undefined}
+        hatchGroups={undefined}
+        currentValues={resolved}
+        currentMacros={{}}
+        resolvedValues={resolved}
+        currentHatchGroups={{}}
+        onControlChange={onControlChange}
+        onMacroChange={() => {}}
+        onHatchGroupChange={() => {}}
+        onResetMacros={() => {}}
+        onResetGroup={onResetGroup}
+        onResetAll={onResetAll}
+      />
     </div>
   );
 }

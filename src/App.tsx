@@ -259,6 +259,19 @@ export default function App() {
     return override ?? comp.layers;
   }, [isLayered, comp, compositionKey, layeredLayersByKey]);
 
+  // Effective render mode: a layered composition that pulls in any
+  // manual-mode inner (e.g. differentialGrowth, reactionDiffusion) is
+  // promoted to manual itself — auto-rendering on every slider tick
+  // would re-run the slow inner pipeline and hang the worker.
+  const effectiveRenderMode: "immediate" | "debounced" | "manual" = useMemo(() => {
+    if (!isLayered) return comp.renderMode ?? "immediate";
+    for (const layer of currentLayers) {
+      const inner = compositionRegistry.get(layer.composition);
+      if (inner?.renderMode === "manual") return "manual";
+    }
+    return comp.renderMode ?? "immediate";
+  }, [isLayered, comp, currentLayers]);
+
   const setLayers = useCallback(
     (layers: LayeredLayer[]) => {
       setLayeredLayersByKey((prev) => ({ ...prev, [compositionKey]: layers }));
@@ -416,7 +429,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
-    compValues, macroValues, hatchGroupValues,
+    compValues, macroValues, hatchGroupValues, layeredLayersByKey,
   }), [
     surfaceKey, compositionKey,
     paramA, paramB, paramC, paramD,
@@ -426,7 +439,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
-    compValues, macroValues, hatchGroupValues,
+    compValues, macroValues, hatchGroupValues, layeredLayersByKey,
   ]);
 
   const restoreSnapshot = useCallback((snap: typeof undoableSnapshot) => {
@@ -462,6 +475,7 @@ export default function App() {
     setCompValues(snap.compValues);
     setMacroValues(snap.macroValues);
     setHatchGroupValues(snap.hatchGroupValues);
+    setLayeredLayersByKey(snap.layeredLayersByKey);
   }, []);
 
   const { undo, redo, canUndo, canRedo } = useHistory(undoableSnapshot, restoreSnapshot);
@@ -581,7 +595,7 @@ export default function App() {
       densityFilterEnabled,
       densityMax,
       densityCellSize,
-      renderMode: comp.renderMode ?? "immediate",
+      renderMode: effectiveRenderMode,
       layeredLayersOverride: isLayered ? currentLayers : undefined,
     });
 
@@ -1010,7 +1024,7 @@ ${body}
             </>
           )}
 
-          {comp.renderMode === "manual" && (
+          {effectiveRenderMode === "manual" && (
             <RenderButton
               isStale={isStale}
               isRendering={isRendering}
