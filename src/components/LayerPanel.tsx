@@ -2,12 +2,17 @@ import { useState, useMemo } from "react";
 import type {
   LayeredLayer,
   LayerBlendMode,
+  LayerTransform,
+  LayerCamera,
   CompositionDefinition,
   ControlDef,
 } from "../compositions/types";
 import { isLayeredComposition, is2DComposition } from "../compositions/types";
 import { selectStyle } from "./styles";
 import { CompositionControls } from "./CompositionControls";
+import { Slider } from "./Slider";
+import { Toggle } from "./Toggle";
+import { Section } from "./Section";
 
 const PEN_PALETTE = [
   "#000000",
@@ -274,39 +279,47 @@ export function LayerPanel({
                   )}
                 </select>
               )}
-              {innerControls && Object.keys(innerControls).length > 0 && (
-                <button
-                  title={expanded ? "Hide overrides" : "Edit per-layer params"}
-                  onClick={() => setExpandedIdx(expanded ? null : i)}
-                  style={{
-                    ...iconBtn,
-                    background: overrideCount > 0 ? "var(--fg)" : "transparent",
-                    color: overrideCount > 0 ? "var(--bg-canvas)" : "var(--fg)",
-                  }}
-                >
-                  {expanded ? "▾" : "▸"}
-                  {overrideCount > 0 ? overrideCount : ""}
-                </button>
-              )}
+              <button
+                title={expanded ? "Hide layer panel" : "Per-layer params, transform, camera"}
+                onClick={() => setExpandedIdx(expanded ? null : i)}
+                style={{
+                  ...iconBtn,
+                  background: overrideCount > 0 || layer.transform || layer.camera
+                    ? "var(--fg)"
+                    : "transparent",
+                  color: overrideCount > 0 || layer.transform || layer.camera
+                    ? "var(--bg-canvas)"
+                    : "var(--fg)",
+                }}
+              >
+                {expanded ? "▾" : "▸"}
+                {overrideCount > 0 ? overrideCount : ""}
+              </button>
             </div>
 
-            {expanded && innerControls && inner && (
+            {expanded && inner && (
               <LayerOverrideEditor
                 inner={inner}
                 overrides={layer.paramOverrides ?? {}}
+                transform={layer.transform}
+                camera={layer.camera}
                 onControlChange={(key, val) =>
                   updateOverrides(i, (prev) => ({ ...prev, [key]: val }))
                 }
                 onResetGroup={(group) =>
-                  updateOverrides(i, (prev) => {
-                    const next = { ...prev };
-                    for (const [k, c] of Object.entries(innerControls)) {
-                      if (c.group === group) delete next[k];
-                    }
-                    return Object.keys(next).length ? next : undefined;
-                  })
+                  innerControls
+                    ? updateOverrides(i, (prev) => {
+                        const next = { ...prev };
+                        for (const [k, c] of Object.entries(innerControls)) {
+                          if (c.group === group) delete next[k];
+                        }
+                        return Object.keys(next).length ? next : undefined;
+                      })
+                    : undefined
                 }
                 onResetAll={() => updateOverrides(i, () => undefined)}
+                onTransformChange={(t) => update(i, { transform: t })}
+                onCameraChange={(c) => update(i, { camera: c })}
               />
             )}
           </div>
@@ -357,25 +370,34 @@ export function LayerPanel({
 
 /**
  * Renders a layer's inner-composition controls bound to its
- * `paramOverrides`. Macros and hatch groups are intentionally
- * suppressed in v1 — only direct control values are editable
- * per layer. Macros for inner comps are a v2 concern (would
- * require macro resolution in the layered pipeline).
+ * `paramOverrides`, plus 2D transform and (for 3D inners) camera
+ * sections. Macros and hatch groups are intentionally suppressed in
+ * v1 — only direct control values are editable per layer.
  */
 function LayerOverrideEditor({
   inner,
   overrides,
+  transform,
+  camera,
   onControlChange,
   onResetGroup,
   onResetAll,
+  onTransformChange,
+  onCameraChange,
 }: {
   inner: CompositionDefinition;
   overrides: Record<string, unknown>;
+  transform?: LayerTransform;
+  camera?: LayerCamera;
   onControlChange: (key: string, val: unknown) => void;
-  onResetGroup: (group: string) => void;
+  onResetGroup: ((group: string) => void) | undefined;
   onResetAll: () => void;
+  onTransformChange: (t: LayerTransform | undefined) => void;
+  onCameraChange: (c: LayerCamera | undefined) => void;
 }) {
   const controls = inner.controls;
+  const innerIs3D = !is2DComposition(inner) && !isLayeredComposition(inner);
+
   // Resolve "current values" the same way App.tsx does for the main panel:
   // defaults + overrides. Used for slider/toggle current values + previews.
   const resolved = useMemo(() => {
@@ -391,6 +413,41 @@ function LayerOverrideEditor({
     return out;
   }, [controls, overrides]);
 
+  const tx = transform?.tx ?? 0;
+  const ty = transform?.ty ?? 0;
+  const scale = transform?.scale ?? 1;
+  const rotate = transform?.rotate ?? 0;
+  const transformIsIdentity =
+    tx === 0 && ty === 0 && scale === 1 && rotate === 0;
+
+  const updateTransform = (patch: Partial<LayerTransform>) => {
+    const next: LayerTransform = { tx, ty, scale, rotate, ...patch };
+    const clean: LayerTransform = {};
+    if (next.tx) clean.tx = next.tx;
+    if (next.ty) clean.ty = next.ty;
+    if (next.scale !== undefined && next.scale !== 1) clean.scale = next.scale;
+    if (next.rotate) clean.rotate = next.rotate;
+    onTransformChange(Object.keys(clean).length ? clean : undefined);
+  };
+
+  const camTheta = camera?.theta;
+  const camPhi = camera?.phi;
+  const camDist = camera?.dist;
+  const camPanX = camera?.panX;
+  const camPanY = camera?.panY;
+  const camOrtho = camera?.ortho;
+  const cameraIsEmpty = camera === undefined || Object.keys(camera).length === 0;
+
+  const updateCamera = (patch: Partial<LayerCamera>) => {
+    const next: LayerCamera = { ...camera, ...patch };
+    // Drop fields explicitly set to undefined (treat as "fall back to outer")
+    const clean: LayerCamera = {};
+    for (const [k, v] of Object.entries(next)) {
+      if (v !== undefined) (clean as Record<string, unknown>)[k] = v;
+    }
+    onCameraChange(Object.keys(clean).length ? clean : undefined);
+  };
+
   return (
     <div
       style={{
@@ -399,24 +456,121 @@ function LayerOverrideEditor({
         borderTop: "1px dashed var(--border-light)",
         display: "flex",
         flexDirection: "column",
-        gap: 5,
+        gap: 8,
       }}
     >
-      <CompositionControls
-        controls={controls}
-        macros={undefined}
-        hatchGroups={undefined}
-        currentValues={resolved}
-        currentMacros={{}}
-        resolvedValues={resolved}
-        currentHatchGroups={{}}
-        onControlChange={onControlChange}
-        onMacroChange={() => {}}
-        onHatchGroupChange={() => {}}
-        onResetMacros={() => {}}
-        onResetGroup={onResetGroup}
-        onResetAll={onResetAll}
-      />
+      <Section
+        title="TRANSFORM"
+        preview={transformIsIdentity ? "identity" : `${scale.toFixed(2)}× ${tx.toFixed(0)},${ty.toFixed(0)}`}
+        onReset={transformIsIdentity ? undefined : () => onTransformChange(undefined)}
+        defaultOpen={!transformIsIdentity}
+      >
+        <Slider
+          label="Pan X"
+          value={tx}
+          onChange={(v) => updateTransform({ tx: v })}
+          min={-400}
+          max={400}
+          step={1}
+        />
+        <Slider
+          label="Pan Y"
+          value={ty}
+          onChange={(v) => updateTransform({ ty: v })}
+          min={-400}
+          max={400}
+          step={1}
+        />
+        <Slider
+          label="Scale"
+          value={scale}
+          onChange={(v) => updateTransform({ scale: v })}
+          min={0.1}
+          max={4}
+          step={0.01}
+        />
+        <Slider
+          label="Rotate"
+          value={rotate}
+          onChange={(v) => updateTransform({ rotate: v })}
+          min={-Math.PI}
+          max={Math.PI}
+          step={0.01}
+        />
+      </Section>
+
+      {innerIs3D && (
+        <Section
+          title="CAMERA"
+          preview={cameraIsEmpty ? "inherit" : "override"}
+          onReset={cameraIsEmpty ? undefined : () => onCameraChange(undefined)}
+          defaultOpen={!cameraIsEmpty}
+        >
+          <Toggle
+            label="Ortho"
+            value={camOrtho ?? false}
+            onChange={(v) => updateCamera({ ortho: v })}
+          />
+          <Slider
+            label="Dist"
+            value={camDist ?? 8}
+            onChange={(v) => updateCamera({ dist: v })}
+            min={1}
+            max={30}
+            step={0.1}
+          />
+          <Slider
+            label="Theta"
+            value={camTheta ?? 0.6}
+            onChange={(v) => updateCamera({ theta: v })}
+            min={-Math.PI}
+            max={Math.PI}
+            step={0.01}
+          />
+          <Slider
+            label="Phi"
+            value={camPhi ?? 0.35}
+            onChange={(v) => updateCamera({ phi: v })}
+            min={-Math.PI / 2}
+            max={Math.PI / 2}
+            step={0.01}
+          />
+          <Slider
+            label="Pan X"
+            value={camPanX ?? 0}
+            onChange={(v) => updateCamera({ panX: v })}
+            min={-2}
+            max={2}
+            step={0.01}
+          />
+          <Slider
+            label="Pan Y"
+            value={camPanY ?? 0}
+            onChange={(v) => updateCamera({ panY: v })}
+            min={-2}
+            max={2}
+            step={0.01}
+          />
+        </Section>
+      )}
+
+      {controls && Object.keys(controls).length > 0 && onResetGroup && (
+        <CompositionControls
+          controls={controls}
+          macros={undefined}
+          hatchGroups={undefined}
+          currentValues={resolved}
+          currentMacros={{}}
+          resolvedValues={resolved}
+          currentHatchGroups={{}}
+          onControlChange={onControlChange}
+          onMacroChange={() => {}}
+          onHatchGroupChange={() => {}}
+          onResetMacros={() => {}}
+          onResetGroup={onResetGroup}
+          onResetAll={onResetAll}
+        />
+      )}
     </div>
   );
 }

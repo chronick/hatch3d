@@ -238,6 +238,117 @@ describe("LayeredComposition — pipeline rendering", () => {
     expect(result.layerGroups![0].svgPaths).toEqual([]);
   });
 
+  it("layer transform.tx pans the layer's polylines in pixel space", () => {
+    regWithCleanup(makeStripes2D("stripesT", 100, 1));
+    regWithCleanup({
+      id: "transform-pan",
+      name: "Transform Pan",
+      type: "layered",
+      category: "layered",
+      layers: [
+        {
+          composition: "stripesT",
+          transform: { tx: 25 },
+        },
+      ],
+    });
+    const result = runPipeline(makeRequest("transform-pan"));
+    const path = result.layerGroups![0].svgPaths[0];
+    // Stripe is at y=50, x=0..100; with tx=25 it shifts to x=25..125.
+    const start = path.match(/^M([\d.-]+),([\d.-]+)/);
+    const end = path.match(/L([\d.-]+),([\d.-]+)$/);
+    expect(start).not.toBeNull();
+    expect(end).not.toBeNull();
+    expect(parseFloat(start![1])).toBeCloseTo(25, 0);
+    expect(parseFloat(end![1])).toBeCloseTo(125, 0);
+  });
+
+  it("layer transform.scale scales around canvas center", () => {
+    // A 1-pixel polyline through canvas center (50, 50) should not move
+    // under any pure scale.
+    const center: Composition2DDefinition = {
+      id: "centerLine",
+      name: "Center Line",
+      type: "2d",
+      category: "2d",
+      generate: () => [
+        [
+          { x: 50, y: 50 },
+          { x: 50, y: 50.001 },
+        ],
+      ],
+    };
+    regWithCleanup(center);
+    regWithCleanup({
+      id: "transform-scale",
+      name: "Transform Scale",
+      type: "layered",
+      category: "layered",
+      layers: [{ composition: "centerLine", transform: { scale: 3 } }],
+    });
+    const result = runPipeline(makeRequest("transform-scale"));
+    const path = result.layerGroups![0].svgPaths[0];
+    const m = path.match(/^M([\d.-]+),([\d.-]+)/);
+    expect(parseFloat(m![1])).toBeCloseTo(50, 1);
+    expect(parseFloat(m![2])).toBeCloseTo(50, 1);
+  });
+
+  it("identity transform is a no-op (pixels unchanged)", () => {
+    regWithCleanup(makeStripes2D("stripesId", 100, 1));
+    regWithCleanup({
+      id: "transform-id",
+      name: "Identity Transform",
+      type: "layered",
+      category: "layered",
+      layers: [
+        {
+          composition: "stripesId",
+          transform: { tx: 0, ty: 0, scale: 1, rotate: 0 },
+        },
+      ],
+    });
+    const result = runPipeline(makeRequest("transform-id"));
+    const path = result.layerGroups![0].svgPaths[0];
+    expect(path).toMatch(/M0(\.\d+)?,50(\.\d+)?L100(\.\d+)?,50(\.\d+)?/);
+  });
+
+  it("layer.camera override produces a different projected output than no override", () => {
+    // Use a real 3D composition (single hyperboloid) so the camera change
+    // changes projection. Compare path output with vs without the override.
+    const probe: import("../compositions/types").Composition3DDefinition = {
+      id: "cameraProbeSphere",
+      name: "Camera Probe",
+      category: "3d",
+      layers: () => [
+        {
+          surface: "hyperboloid",
+          params: { radius: 1, height: 2, twist: 0, waist: 0.5 },
+          hatch: { family: "u", count: 6, samples: 8, angle: 0 },
+        },
+      ],
+    };
+    regWithCleanup(probe);
+    regWithCleanup({
+      id: "no-camera-override",
+      name: "No Camera Override",
+      type: "layered",
+      category: "layered",
+      layers: [{ composition: "cameraProbeSphere" }],
+    });
+    regWithCleanup({
+      id: "with-camera-override",
+      name: "With Camera Override",
+      type: "layered",
+      category: "layered",
+      // Pull the camera way back so projected paths shrink toward center.
+      layers: [{ composition: "cameraProbeSphere", camera: { dist: 50 } }],
+    });
+    const a = runPipeline(makeRequest("no-camera-override"));
+    const b = runPipeline(makeRequest("with-camera-override"));
+    expect(a.layerGroups![0].svgPaths.join("|"))
+      .not.toBe(b.layerGroups![0].svgPaths.join("|"));
+  });
+
   it("paramOverrides are passed to the inner composition's resolvedValues", () => {
     let capturedValues: Record<string, unknown> | null = null;
     const probe: Composition2DDefinition = {

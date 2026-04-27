@@ -66,6 +66,43 @@ function buildCamera(cam: CameraParams): THREE.Camera {
 }
 
 /**
+ * Apply a layer's 2D transform (pan/zoom/rotate around canvas center)
+ * to a list of polylines. No-op when the transform is identity.
+ */
+function applyLayerTransform(
+  polylines: { x: number; y: number }[][],
+  transform: import("../compositions/types").LayerTransform | undefined,
+  canvasW: number,
+  canvasH: number,
+): { x: number; y: number }[][] {
+  if (!transform) return polylines;
+  const tx = transform.tx ?? 0;
+  const ty = transform.ty ?? 0;
+  const scale = transform.scale ?? 1;
+  const rotate = transform.rotate ?? 0;
+  if (tx === 0 && ty === 0 && scale === 1 && rotate === 0) return polylines;
+  const cx = canvasW / 2;
+  const cy = canvasH / 2;
+  const cos = Math.cos(rotate);
+  const sin = Math.sin(rotate);
+  return polylines.map((pl) =>
+    pl.map((p) => {
+      // Translate so canvas center is the origin
+      const ox = p.x - cx;
+      const oy = p.y - cy;
+      // Rotate
+      const rx = cos * ox - sin * oy;
+      const ry = sin * ox + cos * oy;
+      // Scale
+      const sx = rx * scale;
+      const sy = ry * scale;
+      // Translate back + apply pan
+      return { x: sx + cx + tx, y: sy + cy + ty };
+    }),
+  );
+}
+
+/**
  * Bounding box over a list of polylines. Returns null when empty.
  */
 function polylinesBBox(
@@ -147,6 +184,9 @@ function runLayeredPipeline(
         inner as { controls?: Record<string, { default: unknown }> },
         layer.paramOverrides,
       ),
+      // Per-layer 3D camera override (no-op for 2D inners — projection
+      // pipeline ignores the camera fields for them).
+      camera: layer.camera ? { ...req.camera, ...layer.camera } : req.camera,
       densityFilterEnabled: false,
       showMesh: false,
     };
@@ -155,7 +195,15 @@ function runLayeredPipeline(
     const polys = innerResult.svgPaths
       .map(parseDString)
       .filter((p) => p.length >= 2);
-    layerPolylines.push(polys);
+    // Apply per-layer 2D transform (pan/zoom/rotate). Common across 2D and
+    // 3D inners — independent of any 3D camera the inner uses.
+    const transformed = applyLayerTransform(
+      polys,
+      layer.transform,
+      req.width,
+      req.height,
+    );
+    layerPolylines.push(transformed);
   }
 
   // Pass 2: apply blend modes and emit per-layer SVG paths.

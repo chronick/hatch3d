@@ -166,6 +166,37 @@ export interface Composition2DDefinition extends CompositionMetadata {
 
 export type LayerBlendMode = "over" | "masked";
 
+/**
+ * 2D viewport transform applied to a layer's output polylines, in canvas
+ * pixel space, after the inner composition has rendered. Common control
+ * for pan/zoom across 2D and 3D inners — independent of any inner camera.
+ *
+ * Pivot is the canvas center, so scale and rotate feel natural.
+ */
+export interface LayerTransform {
+  /** Pan in pixels, relative to the layer's untranslated position. Default 0. */
+  tx?: number;
+  ty?: number;
+  /** Uniform scale around the canvas center. 1 = identity. */
+  scale?: number;
+  /** Rotation in radians around the canvas center. 0 = identity. */
+  rotate?: number;
+}
+
+/**
+ * Camera override for a 3D inner composition. Each field is optional —
+ * unset fields fall back to the outer (composition-level) camera. Only
+ * applies to 3D inners (no effect on 2D layers).
+ */
+export interface LayerCamera {
+  theta?: number;
+  phi?: number;
+  dist?: number;
+  ortho?: boolean;
+  panX?: number;
+  panY?: number;
+}
+
 export interface LayeredLayer {
   /** id of an inner composition to render. Resolved at render time via the registry. */
   composition: string;
@@ -185,6 +216,10 @@ export interface LayeredLayer {
   name?: string;
   /** UI-controlled visibility flag — when false, layer is skipped. Default true. */
   visible?: boolean;
+  /** Per-layer 2D pan/zoom/rotation in canvas pixel space. */
+  transform?: LayerTransform;
+  /** Per-layer 3D camera override (only used for 3D inners). */
+  camera?: LayerCamera;
 }
 
 export interface LayeredCompositionDefinition extends CompositionMetadata {
