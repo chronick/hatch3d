@@ -62,6 +62,86 @@ interface Face {
   corners: [Vec3, Vec3, Vec3, Vec3]; // p00, p10, p11, p01
 }
 
+// Build 4 triangular pyramid faces sitting on top of the chosen cells. Each
+// face is emitted as a degenerate rectFace quad with p11 == p01 == apex, so
+// the existing rectFace surface and depth-mesh path handle them unchanged.
+// Spires inherit the "top" FaceKind so they hatch with the Tops group.
+function buildSpireFaces(
+  heights: number[][],
+  N: number,
+  cellSize: number,
+  heightScale: number,
+  spireCount: number,
+  spireHeight: number,
+  rng: () => number,
+): Face[] {
+  if (spireCount <= 0) return [];
+  const ofs = -(N * cellSize) / 2;
+  const h = (i: number, j: number) => heights[i][j] * heightScale;
+
+  // Local maxima: cells at least as tall as all 4 von Neumann neighbours.
+  // Edge cells use -Infinity for missing neighbours so plateaus on the rim
+  // still qualify.
+  type Cand = { i: number; j: number; height: number };
+  const maxima: Cand[] = [];
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const hh = heights[i][j];
+      const n = j > 0 ? heights[i][j - 1] : -Infinity;
+      const s = j + 1 < N ? heights[i][j + 1] : -Infinity;
+      const e = i + 1 < N ? heights[i + 1][j] : -Infinity;
+      const w = i > 0 ? heights[i - 1][j] : -Infinity;
+      if (hh >= n && hh >= s && hh >= e && hh >= w) {
+        maxima.push({ i, j, height: hh });
+      }
+    }
+  }
+  // Tallest first; tie order is deterministic from heightfield iteration.
+  maxima.sort((a, b) => b.height - a.height);
+
+  const chosen: Cand[] = maxima.slice(0, spireCount);
+  if (chosen.length < spireCount) {
+    const used = new Set<string>();
+    for (const c of chosen) used.add(`${c.i},${c.j}`);
+    let guard = 0;
+    while (chosen.length < spireCount && guard < N * N * 4) {
+      const i = Math.floor(rng() * N);
+      const j = Math.floor(rng() * N);
+      guard++;
+      const k = `${i},${j}`;
+      if (used.has(k)) continue;
+      used.add(k);
+      chosen.push({ i, j, height: heights[i][j] });
+    }
+  }
+
+  const faces: Face[] = [];
+  for (const c of chosen) {
+    const { i, j } = c;
+    const x0 = i * cellSize + ofs;
+    const x1 = (i + 1) * cellSize + ofs;
+    const z0 = j * cellSize + ofs;
+    const z1 = (j + 1) * cellSize + ofs;
+    const yTop = h(i, j);
+    const apex: Vec3 = {
+      x: (x0 + x1) / 2,
+      y: yTop + spireHeight * heightScale,
+      z: (z0 + z1) / 2,
+    };
+    const NW: Vec3 = { x: x0, y: yTop, z: z0 };
+    const NE: Vec3 = { x: x1, y: yTop, z: z0 };
+    const SE: Vec3 = { x: x1, y: yTop, z: z1 };
+    const SW: Vec3 = { x: x0, y: yTop, z: z1 };
+    // Winding order chosen so the exterior side of each face is CCW (matches
+    // existing buildFaces convention so HLR depth pass stays consistent).
+    faces.push({ kind: "top", corners: [NW, NE, apex, apex] }); // -z face
+    faces.push({ kind: "top", corners: [NE, SE, apex, apex] }); // +x face
+    faces.push({ kind: "top", corners: [SE, SW, apex, apex] }); // +z face
+    faces.push({ kind: "top", corners: [SW, NW, apex, apex] }); // -x face
+  }
+  return faces;
+}
+
 function buildFaces(heights: number[][], N: number, cellSize: number, heightScale: number): Face[] {
   const faces: Face[] = [];
   const ofs = -(N * cellSize) / 2;
@@ -301,6 +381,24 @@ const sentinelTerrain3D: Composition3DDefinition = {
       step: 1,
       group: "Hatching",
     },
+    spireCount: {
+      type: "slider",
+      label: "Spire Count",
+      default: 0,
+      min: 0,
+      max: 12,
+      step: 1,
+      group: "Spires",
+    },
+    spireHeight: {
+      type: "slider",
+      label: "Spire Height (cells)",
+      default: 4,
+      min: 1,
+      max: 12,
+      step: 0.5,
+      group: "Spires",
+    },
   },
 
   layers: (input): LayerConfig[] => {
@@ -320,10 +418,17 @@ const sentinelTerrain3D: Composition3DDefinition = {
     const countNS = Math.max(0, Math.floor((v.hatchCountWallsNS as number) ?? 14));
     const countEW = Math.max(0, Math.floor((v.hatchCountWallsEW as number) ?? 8));
     const samples = Math.max(4, Math.floor((v.hatchSamples as number) ?? 12));
+    const spireCount = Math.max(0, Math.floor((v.spireCount as number) ?? 0));
+    const spireHeight = Math.max(0, (v.spireHeight as number) ?? 4);
 
     const rng = mulberry32(seed);
     const heights = generateHeightfield(N, maxH, splits, plateauBias, rng);
     const faces = buildFaces(heights, N, cellSize, heightScale);
+    if (spireCount > 0) {
+      faces.push(
+        ...buildSpireFaces(heights, N, cellSize, heightScale, spireCount, spireHeight, rng),
+      );
+    }
 
     const layers: LayerConfig[] = [];
     for (const f of faces) {
@@ -370,10 +475,17 @@ const sentinelTerrain3D: Composition3DDefinition = {
     const cellSize = Math.max(0.05, (v.cellSize as number) ?? 0.3);
     const heightScale = Math.max(0.05, (v.heightScale as number) ?? 0.3);
     const seed = Math.floor((v.terrainSeed as number) ?? 42);
+    const spireCount = Math.max(0, Math.floor((v.spireCount as number) ?? 0));
+    const spireHeight = Math.max(0, (v.spireHeight as number) ?? 4);
 
     const rng = mulberry32(seed);
     const heights = generateHeightfield(N, maxH, splits, plateauBias, rng);
     const faces = buildFaces(heights, N, cellSize, heightScale);
+    if (spireCount > 0) {
+      faces.push(
+        ...buildSpireFaces(heights, N, cellSize, heightScale, spireCount, spireHeight, rng),
+      );
+    }
 
     // Vertex dedup — two faces that share a corner in world space get the
     // same index in the mesh. Key by quantised coord so floating-point
