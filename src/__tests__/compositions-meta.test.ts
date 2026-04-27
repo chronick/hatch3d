@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { compositionRegistry, is2DComposition } from "../compositions";
-import type { Composition3DDefinition, Composition2DDefinition } from "../compositions/types";
+import { compositionRegistry, is2DComposition, isLayeredComposition } from "../compositions";
+import type {
+  Composition3DDefinition,
+  Composition2DDefinition,
+  LayeredCompositionDefinition,
+} from "../compositions/types";
 
 describe("Composition registry completeness", () => {
   it("has at least 24 compositions registered", () => {
@@ -31,8 +35,8 @@ describe("Composition path map", () => {
       expect(pathMap.has(id), `composition "${id}" missing from path map`).toBe(true);
       const dirPath = pathMap.get(id)!;
       expect(dirPath.length).toBeGreaterThan(0);
-      // Path should start with 2d or 3d
-      expect(dirPath).toMatch(/^(2d|3d)\//);
+      // Path should start with 2d, 3d, or layered (top-level category dirs)
+      expect(dirPath).toMatch(/^(2d|3d|layered)\//);
     }
   });
 });
@@ -55,10 +59,26 @@ describe("All compositions have valid metadata", () => {
       });
 
       it("has valid category matching directory", () => {
-        expect(comp.category).toMatch(/^(2d|3d)$/);
+        expect(comp.category).toMatch(/^(2d|3d|layered)$/);
       });
 
-      if (is2DComposition(comp)) {
+      if (isLayeredComposition(comp)) {
+        it("layered composition has a non-empty layers array", () => {
+          const layers = (comp as LayeredCompositionDefinition).layers;
+          expect(Array.isArray(layers)).toBe(true);
+          expect(layers.length).toBeGreaterThan(0);
+        });
+
+        it("layered composition references registered inner compositions", () => {
+          for (const layer of (comp as LayeredCompositionDefinition).layers) {
+            expect(typeof layer.composition).toBe("string");
+            expect(
+              compositionRegistry.has(layer.composition),
+              `layer references unknown composition "${layer.composition}"`,
+            ).toBe(true);
+          }
+        });
+      } else if (is2DComposition(comp)) {
         it("2D composition has a generate function", () => {
           expect(typeof (comp as Composition2DDefinition).generate).toBe("function");
         });

@@ -46,6 +46,9 @@ import moireCircles from "../src/compositions/2d/patterns/moire-circles.js";
 import spirograph from "../src/compositions/2d/patterns/spirograph.js";
 import truchetMaze from "../src/compositions/2d/patterns/truchet-maze.js";
 
+// Layered compositions (multi-composition umbrella)
+import phyllotaxisIsoblocks from "../src/compositions/layered/demos/phyllotaxis-isoblocks.js";
+
 const allCompositions: CompositionDefinition[] = [
   // 3D
   single, crystalLattice, doubleRing, nestedShells, starburst, vortexTunnel,
@@ -55,6 +58,8 @@ const allCompositions: CompositionDefinition[] = [
   differentialGrowth, flowField, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
   photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor, tspArt, voronoiTexture, waterArcos,
   opArtSphere, guillocheRosette, hilbertFill, moireCircles, spirograph, truchetMaze,
+  // Layered
+  phyllotaxisIsoblocks,
 ];
 
 export function loadCompositions(): void {

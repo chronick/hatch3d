@@ -29,7 +29,6 @@ pub use compositions::reaction_diffusion::generate_reaction_diffusion;
 pub use compositions::flow_field::generate_flow_field;
 pub use compositions::ink_vortex::generate_ink_vortex;
 pub use compositions::voronoi::generate_voronoi;
-pub use compositions::grains_glitch_ca::generate_grains_glitch_ca;
 
 use hatch::{generate_hatch_lines, HatchConfig};
 

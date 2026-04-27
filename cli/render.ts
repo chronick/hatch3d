@@ -16,11 +16,11 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 
 import { resolve, join, basename } from "node:path";
 import { loadCompositions } from "./load-compositions.js";
 import { compositionRegistry } from "../src/compositions/registry.js";
-import { is2DComposition } from "../src/compositions/types.js";
+import { is2DComposition, isLayeredComposition } from "../src/compositions/types.js";
 import type { CompositionDefinition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
-import { buildSVGContent, computeExportLayout } from "./svg-export.js";
+import { buildSVGContent, buildLayeredSVGContent, computeExportLayout } from "./svg-export.js";
 
 // ── Parse CLI arguments ──
 
@@ -160,6 +160,16 @@ if (args.info) {
       console.log(`    ${key.padEnd(20)} "${macro.label}"  default=${macro.default}  targets=${macro.targets.map((t) => t.param).join(", ")}`);
     }
   }
+  if (isLayeredComposition(comp)) {
+    console.log(`\n  Layers:`);
+    comp.layers.forEach((layer, i) => {
+      const blend = layer.blendMode ?? "over";
+      const color = layer.color ?? "(default)";
+      const name = layer.name ?? "(unnamed)";
+      const mask = layer.blendMode === "masked" ? `  maskBy=${layer.maskBy ?? i - 1}` : "";
+      console.log(`    [${i}] ${name.padEnd(20)} composition=${layer.composition}  blend=${blend}  color=${color}${mask}`);
+    });
+  }
   process.exit(0);
 }
 
@@ -270,7 +280,8 @@ function renderOne(config: RenderConfig): { svgContent: string; stats: { lines: 
     process.exit(1);
   }
 
-  const is2d = is2DComposition(comp);
+  const isLayered = isLayeredComposition(comp);
+  const is2d = !isLayered && is2DComposition(comp);
   const resolvedValues = resolveDefaults(comp, config.values);
 
   const layout = computeExportLayout(
@@ -327,12 +338,10 @@ function renderOne(config: RenderConfig): { svgContent: string; stats: { lines: 
 
   const result = runPipeline(req);
 
-  const svgContent = buildSVGContent(
-    result.svgPaths,
-    layout,
-    config.margin,
-    config.strokeWidth,
-  );
+  const svgContent =
+    result.layerGroups && result.layerGroups.length > 0
+      ? buildLayeredSVGContent(result.layerGroups, layout, config.margin, config.strokeWidth)
+      : buildSVGContent(result.svgPaths, layout, config.margin, config.strokeWidth);
 
   return {
     svgContent,

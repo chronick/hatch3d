@@ -10,8 +10,13 @@ export { compositionRegistry } from "./registry";
 // Node.js CLI loads explicitly via cli/load-compositions.ts instead.
 const modules3d = import.meta.glob("./3d/**/*.ts", { eager: true });
 const modules2d = import.meta.glob("./2d/**/*.ts", { eager: true });
+const modulesLayered = import.meta.glob("./layered/**/*.ts", { eager: true });
 
-for (const [path, mod] of [...Object.entries(modules3d), ...Object.entries(modules2d)]) {
+for (const [path, mod] of [
+  ...Object.entries(modules3d),
+  ...Object.entries(modules2d),
+  ...Object.entries(modulesLayered),
+]) {
   const comp = (mod as { default: CompositionDefinition }).default;
   if (comp?.id) {
     const dirPath = path.replace(/^\.\//, "").replace(/\/[^/]+$/, "");

@@ -34,11 +34,15 @@ export interface UseRenderWorkerInput {
   densityCellSize: number;
   /** Controls render timing: "immediate" (no debounce), "debounced" (300ms), "manual" (click only). */
   renderMode: "immediate" | "debounced" | "manual";
+  /** Override the composition's layers list (layered compositions only). */
+  layeredLayersOverride?: import("../compositions/types").LayeredLayer[];
 }
 
 export interface UseRenderWorkerOutput {
   svgPaths: string[];
   meshPaths: string[];
+  /** Per-layer breakdown when rendering a layered composition; undefined otherwise. */
+  layerGroups?: import("../workers/render-worker.types").LayerGroupResult[];
   stats: { lines: number; verts: number; paths: number };
   isRendering: boolean;
   isStale: boolean;
@@ -59,6 +63,7 @@ export function useRenderWorker(
   const [result, setResult] = useState<{
     svgPaths: string[];
     meshPaths: string[];
+    layerGroups?: import("../workers/render-worker.types").LayerGroupResult[];
     stats: { lines: number; verts: number; paths: number };
     renderTimeMs: number;
   }>({
@@ -100,6 +105,7 @@ export function useRenderWorker(
     input.densityMax,
     input.densityCellSize,
     input.renderMode,
+    input.layeredLayersOverride,
   ]);
 
   // Derive staleness: input has changed since last completed render
@@ -139,6 +145,7 @@ export function useRenderWorker(
         setResult({
           svgPaths: msg.svgPaths,
           meshPaths: msg.meshPaths,
+          layerGroups: msg.layerGroups,
           stats: msg.stats,
           renderTimeMs: msg.durationMs,
         });
@@ -195,6 +202,7 @@ export function useRenderWorker(
       densityFilterEnabled: currentInput.densityFilterEnabled,
       densityMax: currentInput.densityMax,
       densityCellSize: currentInput.densityCellSize,
+      layeredLayersOverride: currentInput.layeredLayersOverride,
     };
 
     if (!workerReadyRef.current) {
@@ -242,6 +250,7 @@ export function useRenderWorker(
   return {
     svgPaths: result.svgPaths,
     meshPaths: result.meshPaths,
+    layerGroups: result.layerGroups,
     stats: result.stats,
     isRendering,
     isStale,
