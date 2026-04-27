@@ -1,4 +1,5 @@
 /* tslint:disable */
+/* eslint-disable */
 
 /**
  * Main entry point: generate all layers in a single WASM call.
@@ -12,8 +13,6 @@ export function generate_all_layers(input: Float64Array): Float64Array;
  * WASM entry point for flow field.
  */
 export function generate_flow_field(input: Float64Array): Float64Array;
-
-export function generate_grains_glitch_ca(input: Float64Array): Float64Array;
 
 /**
  * WASM entry point for ink vortex.
@@ -38,11 +37,10 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly generate_voronoi: (a: number, b: number) => [number, number];
+    readonly generate_reaction_diffusion: (a: number, b: number) => [number, number];
     readonly generate_all_layers: (a: number, b: number) => [number, number];
     readonly generate_flow_field: (a: number, b: number) => [number, number];
     readonly generate_ink_vortex: (a: number, b: number) => [number, number];
-    readonly generate_reaction_diffusion: (a: number, b: number) => [number, number];
-    readonly generate_grains_glitch_ca: (a: number, b: number) => [number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
