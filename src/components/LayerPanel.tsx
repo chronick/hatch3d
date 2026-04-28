@@ -20,6 +20,48 @@ const PEN_PALETTE = [
   "#ca8a04",
 ];
 
+/**
+ * Move the layer with id `fromId` to the slot currently occupied by
+ * `toId` (or to the end if `toId` is undefined / not found). Returns a
+ * new array; rewrites every `maskBy` index that referenced a layer
+ * which moved so the on-disk numeric format keeps pointing at the same
+ * logical layer post-reorder.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function reorderLayers(
+  layers: LayeredLayer[],
+  fromId: string,
+  toId: string | undefined,
+): LayeredLayer[] {
+  const fromIdx = layers.findIndex((l) => l.__id === fromId);
+  if (fromIdx === -1) return layers;
+  const toIdx = toId === undefined ? layers.length - 1 : layers.findIndex((l) => l.__id === toId);
+  if (toIdx === -1 || toIdx === fromIdx) return layers;
+  const next = [...layers];
+  const [moved] = next.splice(fromIdx, 1);
+  next.splice(toIdx, 0, moved);
+  return reindexMaskBy(layers, next);
+}
+
+/**
+ * Walk `next.maskBy` entries and rewrite each numeric index so it
+ * still points at the same layer it pointed at in `prev`. Used by
+ * every reorder/remove path so masked blends survive list mutation.
+ */
+function reindexMaskBy(
+  prev: LayeredLayer[],
+  next: LayeredLayer[],
+): LayeredLayer[] {
+  return next.map((l) => {
+    if (l.maskBy === undefined) return l;
+    const target = prev[l.maskBy];
+    if (!target) return { ...l, maskBy: undefined };
+    const newIdx = next.indexOf(target);
+    if (newIdx === -1) return { ...l, maskBy: undefined };
+    return { ...l, maskBy: newIdx };
+  });
+}
+
 interface LayerPanelProps {
   layers: LayeredLayer[];
   onChange: (layers: LayeredLayer[]) => void;
@@ -81,19 +123,24 @@ export function LayerPanel({
       ),
     );
   };
-  const remove = (idx: number) => onChange(layers.filter((_, i) => i !== idx));
+  const remove = (idx: number) => {
+    const next = layers.filter((_, i) => i !== idx);
+    onChange(reindexMaskBy(layers, next));
+  };
   const move = (idx: number, dir: -1 | 1) => {
     const j = idx + dir;
     if (j < 0 || j >= layers.length) return;
-    const next = [...layers];
-    [next[idx], next[j]] = [next[j], next[idx]];
-    onChange(next);
+    const fromId = layers[idx].__id;
+    const toId = layers[j].__id;
+    if (!fromId || !toId) return;
+    onChange(reorderLayers(layers, fromId, toId));
   };
   const add = (compositionId: string) => {
     const nextColor = PEN_PALETTE[layers.length % PEN_PALETTE.length];
     onChange([
       ...layers,
       {
+        __id: crypto.randomUUID(),
         composition: compositionId,
         name: compositionId,
         color: nextColor,
@@ -103,6 +150,9 @@ export function LayerPanel({
     ]);
     setPicking(false);
   };
+
+  const [dragSourceId, setDragSourceId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   // Only non-layered compositions can be added as inner layers.
   const innerCandidates = availableCompositions
@@ -156,20 +206,65 @@ export function LayerPanel({
         const innerControls = inner?.controls;
         const expanded = expandedIdx === i;
         const overrideCount = Object.keys(layer.paramOverrides ?? {}).length;
+        const isDropTarget = dropTargetId === layer.__id && dragSourceId !== layer.__id;
         return (
           <div
-            key={i}
+            key={layer.__id}
+            data-testid={`layer-row-${layer.__id}`}
+            draggable
+            onDragStart={(e) => {
+              if (!layer.__id) return;
+              setDragSourceId(layer.__id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => {
+              if (!dragSourceId || !layer.__id) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (dropTargetId !== layer.__id) setDropTargetId(layer.__id);
+            }}
+            onDragLeave={() => {
+              if (dropTargetId === layer.__id) setDropTargetId(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragSourceId && layer.__id && dragSourceId !== layer.__id) {
+                onChange(reorderLayers(layers, dragSourceId, layer.__id));
+              }
+              setDragSourceId(null);
+              setDropTargetId(null);
+            }}
+            onDragEnd={() => {
+              setDragSourceId(null);
+              setDropTargetId(null);
+            }}
             style={{
               display: "flex",
               flexDirection: "column",
               gap: 4,
               padding: 6,
-              border: "1px solid var(--border-light)",
+              border: isDropTarget
+                ? "1px solid var(--fg)"
+                : "1px solid var(--border-light)",
               opacity: visible ? 1 : 0.5,
               background: "var(--panel-bg, transparent)",
             }}
           >
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <span
+                title="Drag to reorder"
+                aria-label="Drag handle"
+                style={{
+                  cursor: "grab",
+                  fontSize: 11,
+                  color: "var(--fg-hint)",
+                  padding: "0 2px",
+                  userSelect: "none",
+                  lineHeight: 1,
+                }}
+              >
+                ⋮⋮
+              </span>
               <button
                 title={visible ? "Hide layer" : "Show layer"}
                 onClick={() => update(i, { visible: !visible })}

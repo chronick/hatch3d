@@ -167,6 +167,11 @@ export interface Composition2DDefinition extends CompositionMetadata {
 export type LayerBlendMode = "over" | "masked";
 
 export interface LayeredLayer {
+  /**
+   * Stable per-instance id, assigned on add or on first read of legacy
+   * data; survives reorder + serialization.
+   */
+  __id?: string;
   /** id of an inner composition to render. Resolved at render time via the registry. */
   composition: string;
   /** Override values for the inner composition's controls/macros. */
