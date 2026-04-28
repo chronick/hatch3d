@@ -5,9 +5,11 @@ import {
   is2DComposition,
   type Composition2DDefinition,
   type LayeredCompositionDefinition,
+  type LayeredLayer,
 } from "../compositions/types";
 import { runPipeline } from "../workers/render-pipeline";
 import type { RenderRequest } from "../workers/render-worker.types";
+import { reorderLayers } from "../components/LayerPanel";
 
 // ── Helpers ──
 
@@ -236,6 +238,20 @@ describe("LayeredComposition — pipeline rendering", () => {
     const result = runPipeline(makeRequest("unknown-inner"));
     expect(result.layerGroups).toHaveLength(1);
     expect(result.layerGroups![0].svgPaths).toEqual([]);
+  });
+
+  it("reorderLayers reindexes maskBy so it points at the same logical layer", () => {
+    const layers: LayeredLayer[] = [
+      { __id: "a", composition: "a" },
+      { __id: "b", composition: "b" },
+      { __id: "c", composition: "c", blendMode: "masked", maskBy: 0 },
+    ];
+    // Move layer "a" (currently index 0) to position currently held by "b".
+    const next = reorderLayers(layers, "a", "b");
+    // After reorder, "a" should be at index 1 and "c" should still mask by "a".
+    expect(next.map((l) => l.__id)).toEqual(["b", "a", "c"]);
+    const c = next.find((l) => l.__id === "c")!;
+    expect(c.maskBy).toBe(1);
   });
 
   it("paramOverrides are passed to the inner composition's resolvedValues", () => {

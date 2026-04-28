@@ -209,7 +209,18 @@ export default function App() {
   const [layeredLayersByKey, setLayeredLayersByKey] = useState<Record<string, LayeredLayer[]>>(() => {
     try {
       const raw = localStorage.getItem(LAYERED_LAYERS_KEY);
-      return raw ? JSON.parse(raw) : {};
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Record<string, LayeredLayer[]>;
+      // Lazy migration: legacy saved state has no __id; assign one on
+      // first read so reorder + key-stability work.
+      for (const key of Object.keys(parsed)) {
+        const arr = parsed[key];
+        if (!Array.isArray(arr)) continue;
+        for (const layer of arr) {
+          if (layer && layer.__id === undefined) layer.__id = crypto.randomUUID();
+        }
+      }
+      return parsed;
     } catch { return {}; }
   });
 
@@ -253,11 +264,16 @@ export default function App() {
 
   // For layered compositions: user-edited layer stack, falling back to the
   // composition's static definition when no overrides exist yet.
+  // Deps memoize on `compositionKey`, NOT `comp` — comp's reference flips
+  // on every parent re-render but compositionKey is stable, keeping the
+  // generated __ids stable across renders.
   const currentLayers: LayeredLayer[] = useMemo(() => {
     if (!isLayered) return [];
     const override = layeredLayersByKey[compositionKey];
-    return override ?? comp.layers;
-  }, [isLayered, comp, compositionKey, layeredLayersByKey]);
+    const source = override ?? (comp as { layers?: LayeredLayer[] }).layers ?? [];
+    return source.map((l) => (l.__id ? l : { ...l, __id: crypto.randomUUID() }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLayered, compositionKey, layeredLayersByKey]);
 
   // Effective render mode: a layered composition that pulls in any
   // manual-mode inner (e.g. differentialGrowth, reactionDiffusion) is
