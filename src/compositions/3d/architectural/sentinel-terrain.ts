@@ -258,6 +258,7 @@ const sentinelTerrain3D: Composition3DDefinition = {
   category: "3d",
   type: "3d",
   hatchGroups: ["Tops", "WallsNS", "WallsEW", "shadow"],
+  occlusionSensitive: true,
 
   macros: {
     density: {
