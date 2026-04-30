@@ -439,6 +439,7 @@ const sentinelTerrain3D: Composition3DDefinition = {
       max: 0.5,
       step: 0.05,
       group: "Shading",
+      showWhen: { control: "crossHatchShadow", equals: true },
     },
   },
 

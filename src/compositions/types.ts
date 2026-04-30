@@ -17,6 +17,12 @@ export interface MacroDef {
   targets: MacroTarget[];
 }
 
+/** Optional UI gate. Hides the control when `currentValues[control] !== equals`. UI-only — value still flows through. */
+export interface ShowWhen {
+  control: string;
+  equals: unknown;
+}
+
 export interface SliderControl {
   type: "slider";
   label: string;
@@ -25,6 +31,7 @@ export interface SliderControl {
   max: number;
   step?: number;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface ToggleControl {
@@ -32,6 +39,7 @@ export interface ToggleControl {
   label: string;
   default: boolean;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface SelectControl {
@@ -40,6 +48,7 @@ export interface SelectControl {
   default: string;
   options: { label: string; value: string }[];
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface XYControl {
@@ -49,6 +58,7 @@ export interface XYControl {
   min: number;
   max: number;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface ImageSource {
@@ -66,6 +76,7 @@ export interface ImageControl {
   /** Target grid width in samples (height derived from aspect ratio). */
   sampleSize?: number;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export type ControlDef = SliderControl | ToggleControl | SelectControl | XYControl | ImageControl;
