@@ -7,6 +7,7 @@ const towerAndBase: Composition3DDefinition = {
   tags: ["architectural", "geometric", "multi-layer"],
   category: "3d",
   hatchGroups: ["Canopy", "Ring", "Tower"],
+  occlusionSensitive: true,
   macros: {
     scale: {
       label: "Scale",

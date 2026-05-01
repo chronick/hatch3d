@@ -4,12 +4,15 @@ import {
   isLayeredComposition,
   is2DComposition,
   type Composition2DDefinition,
+  type ControlDef,
   type LayeredCompositionDefinition,
   type LayeredLayer,
+  type MacroDef,
 } from "../compositions/types";
 import { runPipeline } from "../workers/render-pipeline";
 import type { RenderRequest } from "../workers/render-worker.types";
 import { reorderLayers } from "../components/LayerPanel";
+import { resolveLayerInnerValues } from "../compositions/helpers";
 
 // ── Helpers ──
 
@@ -335,6 +338,54 @@ describe("LayeredComposition — pipeline rendering", () => {
     expect(c.maskBy).toBe(1);
   });
 
+  it("macroOverrides on a layer flow through resolveLayerInnerValues into the inner generate() call", () => {
+    // Bad-PR shape this test catches: helper exists in helpers.ts but the
+    // pipeline never actually calls it. Probe captures the values bag the
+    // inner sees so we can assert macro resolution actually ran.
+    let captured: Record<string, unknown> | null = null;
+    const probe: Composition2DDefinition = {
+      id: "macro-probe",
+      name: "Macro Probe",
+      type: "2d",
+      category: "2d",
+      controls: {
+        count: {
+          type: "slider",
+          label: "Count",
+          default: 10,
+          min: 0,
+          max: 100,
+          step: 1,
+          group: "g",
+        },
+      },
+      macros: {
+        scale: {
+          label: "Scale",
+          default: 0.5,
+          targets: [{ param: "count", fn: "linear", strength: 1 }],
+        },
+      },
+      generate: ({ values }) => {
+        captured = values;
+        return [[{ x: 0, y: 0 }, { x: 1, y: 1 }]];
+      },
+    };
+    regWithCleanup(probe);
+    regWithCleanup({
+      id: "macro-pass",
+      name: "Macro Pass",
+      type: "layered",
+      category: "layered",
+      layers: [{ composition: "macro-probe", macroOverrides: { scale: 1.0 } }],
+    });
+    runPipeline(makeRequest("macro-pass"));
+    expect(captured).not.toBeNull();
+    // linear at strength=1, macro=1.0 → modifier 1 + 1 * ((1.0 - 0.5) * 2) = 2.
+    // count default 10 * 2 = 20, capped at max=100.
+    expect((captured as { count?: number }).count).toBe(20);
+  });
+
   it("paramOverrides are passed to the inner composition's resolvedValues", () => {
     let capturedValues: Record<string, unknown> | null = null;
     const probe: Composition2DDefinition = {
@@ -361,5 +412,105 @@ describe("LayeredComposition — pipeline rendering", () => {
     runPipeline(makeRequest("param-pass"));
     expect(capturedValues).not.toBeNull();
     expect((capturedValues as { widthFactor?: number }).widthFactor).toBe(0.9);
+  });
+});
+
+describe("resolveLayerInnerValues", () => {
+  // Inner with one slider control (count, default 10, min 0, max 100) and
+  // one linear macro (scale) targeting count at strength 1. Reused across
+  // the unit cases so the math is easy to follow.
+  const innerCountScale = {
+    controls: {
+      count: {
+        type: "slider",
+        label: "Count",
+        default: 10,
+        min: 0,
+        max: 100,
+        step: 1,
+        group: "g",
+      } satisfies ControlDef,
+    } as Record<string, ControlDef>,
+    macros: {
+      scale: {
+        label: "Scale",
+        default: 0.5,
+        targets: [{ param: "count", fn: "linear", strength: 1 }],
+      } satisfies MacroDef,
+    } as Record<string, MacroDef>,
+  };
+
+  it("macroOverrides at max applies the macro to a default control value", () => {
+    const layer: LayeredLayer = {
+      composition: "x",
+      macroOverrides: { scale: 1.0 },
+    };
+    const values = resolveLayerInnerValues(innerCountScale, layer);
+    // linear strength=1, macro=1.0 → modifier 2; count default 10 * 2 = 20.
+    expect(values.count).toBe(20);
+  });
+
+  it("paramOverrides without macroOverrides flows through verbatim", () => {
+    const layer: LayeredLayer = {
+      composition: "x",
+      paramOverrides: { count: 50 },
+    };
+    const values = resolveLayerInnerValues(innerCountScale, layer);
+    // No macro override → macro at default 0.5 → modifier 1.0 → 50 stays 50.
+    expect(values.count).toBe(50);
+  });
+
+  it("paramOverrides + macroOverrides compose, capped at the control's max", () => {
+    const layer: LayeredLayer = {
+      composition: "x",
+      paramOverrides: { count: 50 },
+      macroOverrides: { scale: 1.0 },
+    };
+    const values = resolveLayerInnerValues(innerCountScale, layer);
+    // 50 * 2 = 100, capped at max=100.
+    expect(values.count).toBe(100);
+  });
+
+  it("empty overrides returns the inner default; tolerates undefined controls", () => {
+    const layer: LayeredLayer = { composition: "x" };
+    const values = resolveLayerInnerValues(innerCountScale, layer);
+    expect(values.count).toBe(10);
+    // No throw when inner has no controls at all.
+    expect(() =>
+      resolveLayerInnerValues({ controls: undefined, macros: undefined }, layer),
+    ).not.toThrow();
+    expect(
+      resolveLayerInnerValues({ controls: undefined, macros: undefined }, layer),
+    ).toEqual({});
+  });
+
+  it("macro targeting a control NOT in paramOverrides applies to the default", () => {
+    const inner = {
+      controls: {
+        density: {
+          type: "slider",
+          label: "Density",
+          default: 5,
+          min: 0,
+          max: 100,
+          group: "g",
+        } satisfies ControlDef,
+      } as Record<string, ControlDef>,
+      macros: {
+        mac: {
+          label: "Mac",
+          default: 0.5,
+          targets: [{ param: "density", fn: "linear", strength: 0.5 }],
+        } satisfies MacroDef,
+      } as Record<string, MacroDef>,
+    };
+    const layer: LayeredLayer = {
+      composition: "x",
+      macroOverrides: { mac: 1.0 },
+    };
+    const values = resolveLayerInnerValues(inner, layer);
+    // linear: modifier = 1 + 0.5 * ((1.0 - 0.5) * 2) = 1.5.
+    // density default 5 * 1.5 = 7.5.
+    expect(values.density).toBeCloseTo(7.5);
   });
 });

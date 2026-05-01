@@ -70,6 +70,31 @@ export interface ImageControl {
 
 export type ControlDef = SliderControl | ToggleControl | SelectControl | XYControl | ImageControl;
 
+// ── Hatch group types ──
+
+export type HatchFamily =
+  | "u"
+  | "v"
+  | "diagonal"
+  | "rings"
+  | "hex"
+  | "crosshatch"
+  | "spiral";
+
+export interface HatchGroupConfig {
+  family: "inherit" | HatchFamily;
+  count: number;
+  samples: number;
+  angle: number;
+}
+
+export const HATCH_GROUP_DEFAULT: HatchGroupConfig = {
+  family: "inherit",
+  count: 30,
+  samples: 50,
+  angle: 0.7,
+};
+
 // ── Layer / Composition types ──
 
 export interface LayerConfig {
@@ -104,6 +129,8 @@ export interface CompositionPreset {
     controls?: Record<string, unknown>;
     macros?: Record<string, number>;
     hatchGroups?: Record<string, unknown>;
+    /** Layer stack payload — only populated for layered compositions. */
+    layers?: LayeredLayer[];
   };
 }
 
@@ -134,6 +161,21 @@ export interface CompositionMetadata {
 export interface Composition3DDefinition extends CompositionMetadata {
   type?: "3d";
   hatchGroups?: string[];
+  /**
+   * Marks compositions whose appearance materially diverges between
+   * occluded (in-browser) and unoccluded headless rendering (HLR).
+   *
+   * Headless rendering paths (`cli/render.ts`, `cli/feed-push.ts`) run
+   * with `useOcclusion: false` for performance, so back-facing hatches
+   * stay visible in the output SVG. For most compositions the result
+   * is visually identical to the occluded view; for compositions
+   * marked here it is not. Downstream tools (improve-mode routine,
+   * future PR commenters) can read this flag to warn reviewers that
+   * a headless render may not match the in-browser preview.
+   *
+   * Absent === false. Only meaningful for 3D compositions.
+   */
+  occlusionSensitive?: boolean;
   layers: (input: CompositionInput) => LayerConfig[];
   /**
    * Optional unified-mesh override for the HLR depth buffer.
@@ -176,6 +218,10 @@ export interface LayeredLayer {
   composition: string;
   /** Override values for the inner composition's controls/macros. */
   paramOverrides?: Record<string, unknown>;
+  /** Override values for the inner composition's macros (raw 0..1 macro slider values). */
+  macroOverrides?: Record<string, number>;
+  /** Override hatch-group configs for the inner composition (replace, not merge — outer layered comp has no hatch groups of its own). */
+  hatchGroupOverrides?: Record<string, HatchGroupConfig>;
   /**
    * 'over' = additive stacking (default).
    * 'masked' = clip this layer to the bounding box of `maskBy` layer.
