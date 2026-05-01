@@ -7,6 +7,7 @@ const nestedShells: Composition3DDefinition = {
   tags: ["geometric", "concentric", "shells"],
   category: "3d",
   hatchGroups: ["Shells", "Caps"],
+  occlusionSensitive: true,
   macros: {
     density: {
       label: "Density",

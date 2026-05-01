@@ -23,12 +23,13 @@ import {
   is2DComposition,
   isLayeredComposition,
 } from "../compositions/types";
+import { resolveLayerInnerValues } from "../compositions/helpers";
 import {
   isWasmReady,
   generateLayersWasm,
   isLayerWasmCompatible,
 } from "../wasm-pipeline";
-import { parseDString, clipPolylineToRect, type Rect } from "../utils/clip";
+import { parseDString, convexHull, clipPolylineToConvexPolygon } from "../utils/clip";
 import type {
   RenderRequest,
   RenderResult,
@@ -66,53 +67,12 @@ function buildCamera(cam: CameraParams): THREE.Camera {
 }
 
 /**
- * Bounding box over a list of polylines. Returns null when empty.
- */
-function polylinesBBox(
-  polylines: { x: number; y: number }[][],
-): Rect | null {
-  let xMin = Infinity;
-  let yMin = Infinity;
-  let xMax = -Infinity;
-  let yMax = -Infinity;
-  let any = false;
-  for (const pl of polylines) {
-    for (const p of pl) {
-      if (p.x < xMin) xMin = p.x;
-      if (p.y < yMin) yMin = p.y;
-      if (p.x > xMax) xMax = p.x;
-      if (p.y > yMax) yMax = p.y;
-      any = true;
-    }
-  }
-  return any ? { xMin, yMin, xMax, yMax } : null;
-}
-
-/**
- * Resolve default values for an inner composition's controls,
- * then apply per-layer overrides on top.
- */
-function resolveInnerValues(
-  inner: { controls?: Record<string, { default: unknown }> },
-  overrides?: Record<string, unknown>,
-): Record<string, unknown> {
-  const values: Record<string, unknown> = {};
-  if (inner.controls) {
-    for (const [key, ctrl] of Object.entries(inner.controls)) {
-      values[key] = ctrl.default;
-    }
-  }
-  if (overrides) Object.assign(values, overrides);
-  return values;
-}
-
-/**
  * Layered pipeline: render each inner composition independently,
  * then composite their SVG paths into per-layer groups.
  *
  * Blend modes:
  *   - "over"   — additive stacking (paths emitted as-is)
- *   - "masked" — paths clipped to the bounding box of the `maskBy` layer
+ *   - "masked" — paths clipped to the convex hull of the `maskBy` layer
  *
  * Cross-layer occlusion is intentionally out of scope for v1.
  */
@@ -143,10 +103,8 @@ function runLayeredPipeline(
       ...req,
       compositionKey: layer.composition,
       is2d: is2DComposition(inner),
-      resolvedValues: resolveInnerValues(
-        inner as { controls?: Record<string, { default: unknown }> },
-        layer.paramOverrides,
-      ),
+      resolvedValues: resolveLayerInnerValues(inner, layer),
+      currentHatchGroups: layer.hatchGroupOverrides ?? {},
       densityFilterEnabled: false,
       showMesh: false,
     };
@@ -170,12 +128,13 @@ function runLayeredPipeline(
     if (layer.blendMode === "masked") {
       const maskIdx = layer.maskBy ?? Math.max(0, i - 1);
       if (maskIdx !== i && layerPolylines[maskIdx]?.length) {
-        const bbox = polylinesBBox(layerPolylines[maskIdx]);
-        if (bbox) {
+        const hull = convexHull(layerPolylines[maskIdx].flat());
+        if (hull.length >= 3) {
           const clipped: { x: number; y: number }[][] = [];
-          for (const pl of polys) clipped.push(...clipPolylineToRect(pl, bbox));
+          for (const pl of polys) clipped.push(...clipPolylineToConvexPolygon(pl, hull));
           polys = clipped;
         }
+        // hull.length < 3 → fail-open: leave polys unmodified
       }
     }
 

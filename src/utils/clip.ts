@@ -168,6 +168,135 @@ export function pointsToDString(points: Point[]): string {
 }
 
 /**
+ * Compute the convex hull of a set of 2D points using Andrew's monotone-chain
+ * algorithm. Returns vertices in counter-clockwise order. Returns `[]` when
+ * fewer than 3 distinct non-collinear points exist (covers fewer-than-3 input,
+ * single point, two points, and all-collinear inputs).
+ */
+export function convexHull(points: Point[]): Point[] {
+  if (points.length < 3) return [];
+
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+
+  const cross = (o: Point, a: Point, b: Point): number =>
+    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+  const lower: Point[] = [];
+  for (const p of sorted) {
+    while (
+      lower.length >= 2 &&
+      cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0
+    ) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+
+  const upper: Point[] = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (
+      upper.length >= 2 &&
+      cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0
+    ) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+
+  lower.pop();
+  upper.pop();
+  const hull = [...lower, ...upper];
+
+  return hull.length >= 3 ? hull : [];
+}
+
+/**
+ * Clip a polyline against a single half-plane defined by a directed edge
+ * (CCW orientation: interior is on the left). Splits on exit so a polyline
+ * that crosses the edge yields multiple output polylines.
+ */
+function clipPolylineToHalfPlane(
+  points: Point[],
+  edgeStart: Point,
+  edgeEnd: Point,
+): Point[][] {
+  if (points.length < 2) return [];
+
+  const dx = edgeEnd.x - edgeStart.x;
+  const dy = edgeEnd.y - edgeStart.y;
+  const dist = (p: Point): number =>
+    dx * (p.y - edgeStart.y) - dy * (p.x - edgeStart.x);
+  const intersect = (p0: Point, p1: Point, d0: number, d1: number): Point => {
+    const t = d0 / (d0 - d1);
+    return { x: p0.x + t * (p1.x - p0.x), y: p0.y + t * (p1.y - p0.y) };
+  };
+
+  const result: Point[][] = [];
+  let current: Point[] = [];
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i];
+    const p1 = points[i + 1];
+    const d0 = dist(p0);
+    const d1 = dist(p1);
+    const in0 = d0 >= 0;
+    const in1 = d1 >= 0;
+
+    if (in0 && in1) {
+      if (current.length === 0) current.push(p0);
+      current.push(p1);
+    } else if (in0 && !in1) {
+      if (current.length === 0) current.push(p0);
+      current.push(intersect(p0, p1, d0, d1));
+      if (current.length >= 2) result.push(current);
+      current = [];
+    } else if (!in0 && in1) {
+      current = [intersect(p0, p1, d0, d1), p1];
+    } else {
+      if (current.length >= 2) result.push(current);
+      current = [];
+    }
+  }
+
+  if (current.length >= 2) result.push(current);
+
+  return result;
+}
+
+/**
+ * Clip a polyline against a convex polygon (vertices in CCW order) using
+ * iterative half-plane clipping. This is the polyline analog of
+ * Sutherland–Hodgman: each polygon edge is treated as a half-plane and
+ * every input polyline is clipped against it, splitting on exit/re-entry.
+ * A single input polyline may yield multiple output polylines.
+ *
+ * Returns `[]` when `polygon.length < 3` or `points.length < 2`.
+ * Inside convention: a point is inside an edge's half-plane when
+ * `dx*(p.y - start.y) - dy*(p.x - start.x) >= 0` (left of or on edge),
+ * so vertices lying exactly on an edge are kept.
+ */
+export function clipPolylineToConvexPolygon(
+  points: Point[],
+  polygon: Point[],
+): Point[][] {
+  if (polygon.length < 3 || points.length < 2) return [];
+
+  let polylines: Point[][] = [points];
+  for (let i = 0; i < polygon.length; i++) {
+    const start = polygon[i];
+    const end = polygon[(i + 1) % polygon.length];
+    const next: Point[][] = [];
+    for (const pl of polylines) {
+      next.push(...clipPolylineToHalfPlane(pl, start, end));
+    }
+    polylines = next;
+    if (polylines.length === 0) break;
+  }
+  return polylines;
+}
+
+/**
  * Full pipeline: parse d-string, apply transform (translate + scale), clip to rect,
  * return new d-strings. A single input path may become multiple output paths after clipping.
  */
