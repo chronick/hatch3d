@@ -186,7 +186,7 @@ describe("LayeredComposition — pipeline rendering", () => {
     expect(result.svgPaths).toEqual(groupedConcat);
   });
 
-  it("masked blendMode clips the layer to the bbox of the mask layer", () => {
+  it("masked blendMode clips the layer to the convex hull of the mask layer", () => {
     // Mask layer: a small 20x20 box at the top-left.
     regWithCleanup(
       makeBox2D("smallMask", { xMin: 0, yMin: 0, xMax: 20, yMax: 20 }),
@@ -214,6 +214,87 @@ describe("LayeredComposition — pipeline rendering", () => {
     expect(m).not.toBeNull();
     const endX = parseFloat(m![1]);
     expect(endX).toBeLessThanOrEqual(20.001);
+  });
+
+  it("masked blendMode clips stripes to a triangular mask (not its bbox)", () => {
+    // Triangular mask: hull = triangle (0,0)-(40,0)-(0,40). Hypotenuse
+    // x+y=40 distinguishes hull-clipping (xMax≈30 at y=10) from bbox
+    // clipping (xMax=40 — the bbox).
+    regWithCleanup({
+      id: "triMask",
+      name: "tri",
+      type: "2d",
+      category: "2d",
+      generate: () => [
+        [
+          { x: 0, y: 0 },
+          { x: 40, y: 0 },
+          { x: 0, y: 40 },
+          { x: 0, y: 0 },
+        ],
+      ],
+    } as Composition2DDefinition);
+    regWithCleanup(makeStripes2D("stripesTri", 100, 5));
+    regWithCleanup({
+      id: "tri-mask-test",
+      name: "Tri Mask Test",
+      type: "layered",
+      category: "layered",
+      layers: [
+        { composition: "triMask", name: "mask" },
+        { composition: "stripesTri", name: "stripes", blendMode: "masked", maskBy: 0 },
+      ],
+    });
+
+    const result = runPipeline(makeRequest("tri-mask-test"));
+    const stripesGroup = result.layerGroups![1];
+
+    // Stripes at y=10 (x∈[0,30]) and y=30 (x∈[0,10]) survive. y=50, 70, 90
+    // sit above the triangle's y-extent (max 40) → fully clipped (no paths
+    // emitted for those rows, demonstrating the "y=50 yields 0 paths"
+    // expectation).
+    expect(stripesGroup.svgPaths.length).toBe(2);
+
+    let xMax = -Infinity;
+    for (const d of stripesGroup.svgPaths) {
+      for (const m of d.matchAll(/[ML]([\d.-]+),/g)) {
+        const x = parseFloat(m[1]);
+        if (x > xMax) xMax = x;
+      }
+    }
+    expect(xMax).toBeGreaterThan(29);
+    expect(xMax).toBeLessThan(31);
+  });
+
+  it("masked blendMode fails open (no clip) when mask hull is degenerate", () => {
+    // A single horizontal polyline (collinear) has no convex hull → the
+    // pipeline must leave the masked layer unmodified.
+    regWithCleanup({
+      id: "lineMask",
+      name: "line",
+      type: "2d",
+      category: "2d",
+      generate: () => [
+        [
+          { x: 0, y: 50 },
+          { x: 100, y: 50 },
+        ],
+      ],
+    } as Composition2DDefinition);
+    regWithCleanup(makeStripes2D("stripesDegen", 100, 5));
+    regWithCleanup({
+      id: "degen-mask-test",
+      name: "Degenerate Mask",
+      type: "layered",
+      category: "layered",
+      layers: [
+        { composition: "lineMask", name: "mask" },
+        { composition: "stripesDegen", name: "stripes", blendMode: "masked", maskBy: 0 },
+      ],
+    });
+
+    const result = runPipeline(makeRequest("degen-mask-test"));
+    expect(result.layerGroups![1].svgPaths.length).toBe(5);
   });
 
   it("masked layer with no mask data falls back to 'over' (no clip)", () => {

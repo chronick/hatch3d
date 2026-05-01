@@ -29,7 +29,7 @@ import {
   generateLayersWasm,
   isLayerWasmCompatible,
 } from "../wasm-pipeline";
-import { parseDString, clipPolylineToRect, type Rect } from "../utils/clip";
+import { parseDString, convexHull, clipPolylineToConvexPolygon } from "../utils/clip";
 import type {
   RenderRequest,
   RenderResult,
@@ -67,35 +67,12 @@ function buildCamera(cam: CameraParams): THREE.Camera {
 }
 
 /**
- * Bounding box over a list of polylines. Returns null when empty.
- */
-function polylinesBBox(
-  polylines: { x: number; y: number }[][],
-): Rect | null {
-  let xMin = Infinity;
-  let yMin = Infinity;
-  let xMax = -Infinity;
-  let yMax = -Infinity;
-  let any = false;
-  for (const pl of polylines) {
-    for (const p of pl) {
-      if (p.x < xMin) xMin = p.x;
-      if (p.y < yMin) yMin = p.y;
-      if (p.x > xMax) xMax = p.x;
-      if (p.y > yMax) yMax = p.y;
-      any = true;
-    }
-  }
-  return any ? { xMin, yMin, xMax, yMax } : null;
-}
-
-/**
  * Layered pipeline: render each inner composition independently,
  * then composite their SVG paths into per-layer groups.
  *
  * Blend modes:
  *   - "over"   — additive stacking (paths emitted as-is)
- *   - "masked" — paths clipped to the bounding box of the `maskBy` layer
+ *   - "masked" — paths clipped to the convex hull of the `maskBy` layer
  *
  * Cross-layer occlusion is intentionally out of scope for v1.
  */
@@ -151,12 +128,13 @@ function runLayeredPipeline(
     if (layer.blendMode === "masked") {
       const maskIdx = layer.maskBy ?? Math.max(0, i - 1);
       if (maskIdx !== i && layerPolylines[maskIdx]?.length) {
-        const bbox = polylinesBBox(layerPolylines[maskIdx]);
-        if (bbox) {
+        const hull = convexHull(layerPolylines[maskIdx].flat());
+        if (hull.length >= 3) {
           const clipped: { x: number; y: number }[][] = [];
-          for (const pl of polys) clipped.push(...clipPolylineToRect(pl, bbox));
+          for (const pl of polys) clipped.push(...clipPolylineToConvexPolygon(pl, hull));
           polys = clipped;
         }
+        // hull.length < 3 → fail-open: leave polys unmodified
       }
     }
 
