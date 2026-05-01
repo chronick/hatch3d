@@ -34,6 +34,7 @@ import {
   getPresetsForComposition,
   saveUserPreset,
   deleteUserPreset,
+  buildLayeredPresetValues,
 } from "./compositions/presets";
 import type { CompositionPreset } from "./compositions/types";
 
@@ -789,11 +790,12 @@ ${body}
         controls: compValues[compositionKey],
         macros: macroValues[compositionKey],
         hatchGroups: hatchGroupValues[compositionKey],
+        ...(isLayered ? { layers: buildLayeredPresetValues(currentLayers) } : {}),
       },
     };
     saveUserPreset(compositionKey, key, preset);
     setPresetVersion((v) => v + 1);
-  }, [compositionKey, compValues, macroValues, hatchGroupValues]);
+  }, [compositionKey, compValues, macroValues, hatchGroupValues, isLayered, currentLayers]);
 
   const handleLoadPreset = useCallback((preset: CompositionPreset) => {
     if (preset.values.controls) {
@@ -804,6 +806,9 @@ ${body}
     }
     if (preset.values.hatchGroups) {
       setHatchGroupValues((prev) => ({ ...prev, [compositionKey]: preset.values.hatchGroups as Record<string, HatchGroupConfig> }));
+    }
+    if (preset.values.layers !== undefined) {
+      setLayeredLayersByKey((prev) => ({ ...prev, [compositionKey]: preset.values.layers as LayeredLayer[] }));
     }
   }, [compositionKey]);
 

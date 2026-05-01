@@ -104,6 +104,8 @@ export interface CompositionPreset {
     controls?: Record<string, unknown>;
     macros?: Record<string, number>;
     hatchGroups?: Record<string, unknown>;
+    /** Layer stack payload — only populated for layered compositions. */
+    layers?: LayeredLayer[];
   };
 }
 
