@@ -1,4 +1,4 @@
-import type { MacroFn, MacroDef, ControlDef } from "./types";
+import type { MacroFn, MacroDef, ControlDef, LayeredLayer } from "./types";
 
 export { lightModulatedLayers } from "./helpers-lighting";
 export { lightDensityFn, curvatureDensityFn, radialDensityFn } from "./helpers-density";
@@ -61,6 +61,31 @@ export function resolveValues(
     }
   }
   return resolved;
+}
+
+/**
+ * Resolve an inner composition's control values for a given layered layer.
+ *
+ * Combines defaults + per-layer paramOverrides + per-layer macroOverrides
+ * into the final resolvedValues bag the inner composition receives.
+ * Pure: no I/O, no input mutation. Tolerates an inner with no controls.
+ */
+export function resolveLayerInnerValues(
+  inner: {
+    controls?: Record<string, ControlDef>;
+    macros?: Record<string, MacroDef>;
+  },
+  layer: LayeredLayer,
+): Record<string, unknown> {
+  const baseValues = {
+    ...getControlDefaults(inner.controls),
+    ...((layer.paramOverrides as Record<string, unknown> | undefined) ?? {}),
+  };
+  const macroValues = {
+    ...getMacroDefaults(inner.macros),
+    ...(layer.macroOverrides ?? {}),
+  };
+  return resolveValues(inner.controls, inner.macros, baseValues, macroValues);
 }
 
 /** Get unique groups from controls in declaration order */

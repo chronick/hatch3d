@@ -23,6 +23,7 @@ import {
   is2DComposition,
   isLayeredComposition,
 } from "../compositions/types";
+import { resolveLayerInnerValues } from "../compositions/helpers";
 import {
   isWasmReady,
   generateLayersWasm,
@@ -89,24 +90,6 @@ function polylinesBBox(
 }
 
 /**
- * Resolve default values for an inner composition's controls,
- * then apply per-layer overrides on top.
- */
-function resolveInnerValues(
-  inner: { controls?: Record<string, { default: unknown }> },
-  overrides?: Record<string, unknown>,
-): Record<string, unknown> {
-  const values: Record<string, unknown> = {};
-  if (inner.controls) {
-    for (const [key, ctrl] of Object.entries(inner.controls)) {
-      values[key] = ctrl.default;
-    }
-  }
-  if (overrides) Object.assign(values, overrides);
-  return values;
-}
-
-/**
  * Layered pipeline: render each inner composition independently,
  * then composite their SVG paths into per-layer groups.
  *
@@ -143,10 +126,8 @@ function runLayeredPipeline(
       ...req,
       compositionKey: layer.composition,
       is2d: is2DComposition(inner),
-      resolvedValues: resolveInnerValues(
-        inner as { controls?: Record<string, { default: unknown }> },
-        layer.paramOverrides,
-      ),
+      resolvedValues: resolveLayerInnerValues(inner, layer),
+      currentHatchGroups: layer.hatchGroupOverrides ?? {},
       densityFilterEnabled: false,
       showMesh: false,
     };

@@ -3,9 +3,16 @@ import type {
   LayeredLayer,
   LayerBlendMode,
   CompositionDefinition,
+  Composition3DDefinition,
   ControlDef,
+  HatchGroupConfig,
 } from "../compositions/types";
-import { isLayeredComposition, is2DComposition } from "../compositions/types";
+import {
+  isLayeredComposition,
+  is2DComposition,
+  HATCH_GROUP_DEFAULT,
+} from "../compositions/types";
+import { getMacroDefaults } from "../compositions/helpers";
 import { selectStyle } from "./styles";
 import { CompositionControls } from "./CompositionControls";
 
@@ -123,6 +130,50 @@ export function LayerPanel({
       ),
     );
   };
+  const updateMacroOverrides = (
+    idx: number,
+    mutator: (
+      prev: Record<string, number>,
+    ) => Record<string, number> | undefined,
+  ) => {
+    const layer = layers[idx];
+    const prev = layer.macroOverrides ?? {};
+    const next = mutator(prev);
+    onChange(
+      layers.map((l, i) =>
+        i === idx ? { ...l, macroOverrides: next } : l,
+      ),
+    );
+  };
+  const updateHatchGroupOverrides = (
+    idx: number,
+    mutator: (
+      prev: Record<string, HatchGroupConfig>,
+    ) => Record<string, HatchGroupConfig> | undefined,
+  ) => {
+    const layer = layers[idx];
+    const prev = layer.hatchGroupOverrides ?? {};
+    const next = mutator(prev);
+    onChange(
+      layers.map((l, i) =>
+        i === idx ? { ...l, hatchGroupOverrides: next } : l,
+      ),
+    );
+  };
+  const resetAllLayerOverrides = (idx: number) => {
+    onChange(
+      layers.map((l, i) =>
+        i === idx
+          ? {
+              ...l,
+              paramOverrides: undefined,
+              macroOverrides: undefined,
+              hatchGroupOverrides: undefined,
+            }
+          : l,
+      ),
+    );
+  };
   const remove = (idx: number) => {
     const next = layers.filter((_, i) => i !== idx);
     onChange(reindexMaskBy(layers, next));
@@ -205,7 +256,10 @@ export function LayerPanel({
         const inner = compById.get(layer.composition);
         const innerControls = inner?.controls;
         const expanded = expandedIdx === i;
-        const overrideCount = Object.keys(layer.paramOverrides ?? {}).length;
+        const overrideCount =
+          Object.keys(layer.paramOverrides ?? {}).length +
+          Object.keys(layer.macroOverrides ?? {}).length +
+          Object.keys(layer.hatchGroupOverrides ?? {}).length;
         const isDropTarget = dropTargetId === layer.__id && dragSourceId !== layer.__id;
         return (
           <div
@@ -389,8 +443,41 @@ export function LayerPanel({
               <LayerOverrideEditor
                 inner={inner}
                 overrides={layer.paramOverrides ?? {}}
+                macroOverrides={layer.macroOverrides ?? {}}
+                hatchGroupOverrides={layer.hatchGroupOverrides ?? {}}
                 onControlChange={(key, val) =>
                   updateOverrides(i, (prev) => ({ ...prev, [key]: val }))
+                }
+                onMacroChange={(key, val) =>
+                  updateMacroOverrides(i, (prev) => ({
+                    ...prev,
+                    [key]: val,
+                  }))
+                }
+                onHatchGroupChange={(groupName, config) => {
+                  // Detect "this is a reset" — incoming config matches the
+                  // default. Route to a clear so the override slice doesn't
+                  // accumulate default-valued entries.
+                  if (
+                    config.family === HATCH_GROUP_DEFAULT.family &&
+                    config.count === HATCH_GROUP_DEFAULT.count &&
+                    config.samples === HATCH_GROUP_DEFAULT.samples &&
+                    config.angle === HATCH_GROUP_DEFAULT.angle
+                  ) {
+                    updateHatchGroupOverrides(i, (prev) => {
+                      const next = { ...prev };
+                      delete next[groupName];
+                      return Object.keys(next).length ? next : undefined;
+                    });
+                    return;
+                  }
+                  updateHatchGroupOverrides(i, (prev) => ({
+                    ...prev,
+                    [groupName]: config,
+                  }));
+                }}
+                onResetMacros={() =>
+                  updateMacroOverrides(i, () => undefined)
                 }
                 onResetGroup={(group) =>
                   updateOverrides(i, (prev) => {
@@ -401,7 +488,7 @@ export function LayerPanel({
                     return Object.keys(next).length ? next : undefined;
                   })
                 }
-                onResetAll={() => updateOverrides(i, () => undefined)}
+                onResetAll={() => resetAllLayerOverrides(i)}
               />
             )}
           </div>
@@ -452,28 +539,39 @@ export function LayerPanel({
 
 /**
  * Renders a layer's inner-composition controls bound to its
- * `paramOverrides`. Macros and hatch groups are intentionally
- * suppressed in v1 — only direct control values are editable
- * per layer. Macros for inner comps are a v2 concern (would
- * require macro resolution in the layered pipeline).
+ * paramOverrides / macroOverrides / hatchGroupOverrides. Macros and
+ * hatch groups now flow through the layered pipeline, so they're
+ * surfaced here via the shared <CompositionControls>.
  */
 function LayerOverrideEditor({
   inner,
   overrides,
+  macroOverrides,
+  hatchGroupOverrides,
   onControlChange,
+  onMacroChange,
+  onHatchGroupChange,
+  onResetMacros,
   onResetGroup,
   onResetAll,
 }: {
   inner: CompositionDefinition;
   overrides: Record<string, unknown>;
+  macroOverrides: Record<string, number>;
+  hatchGroupOverrides: Record<string, HatchGroupConfig>;
   onControlChange: (key: string, val: unknown) => void;
+  onMacroChange: (key: string, val: number) => void;
+  onHatchGroupChange: (groupName: string, config: HatchGroupConfig) => void;
+  onResetMacros: () => void;
   onResetGroup: (group: string) => void;
   onResetAll: () => void;
 }) {
   const controls = inner.controls;
-  // Resolve "current values" the same way App.tsx does for the main panel:
-  // defaults + overrides. Used for slider/toggle current values + previews.
-  const resolved = useMemo(() => {
+  const macros = inner.macros;
+  const hatchGroups = (inner as Composition3DDefinition).hatchGroups;
+
+  // currentValues = control defaults + paramOverrides (used for sliders/toggles).
+  const currentValues = useMemo(() => {
     const out: Record<string, unknown> = {};
     if (controls) {
       for (const [key, ctrl] of Object.entries(controls)) {
@@ -485,6 +583,12 @@ function LayerOverrideEditor({
     Object.assign(out, overrides);
     return out;
   }, [controls, overrides]);
+
+  // currentMacros = macro defaults + macroOverrides — the slider positions to display.
+  const currentMacros = useMemo(
+    () => ({ ...getMacroDefaults(macros), ...macroOverrides }),
+    [macros, macroOverrides],
+  );
 
   return (
     <div
@@ -499,16 +603,16 @@ function LayerOverrideEditor({
     >
       <CompositionControls
         controls={controls}
-        macros={undefined}
-        hatchGroups={undefined}
-        currentValues={resolved}
-        currentMacros={{}}
-        resolvedValues={resolved}
-        currentHatchGroups={{}}
+        macros={macros}
+        hatchGroups={hatchGroups}
+        currentValues={currentValues}
+        currentMacros={currentMacros}
+        resolvedValues={currentValues}
+        currentHatchGroups={hatchGroupOverrides}
         onControlChange={onControlChange}
-        onMacroChange={() => {}}
-        onHatchGroupChange={() => {}}
-        onResetMacros={() => {}}
+        onMacroChange={onMacroChange}
+        onHatchGroupChange={onHatchGroupChange}
+        onResetMacros={onResetMacros}
         onResetGroup={onResetGroup}
         onResetAll={onResetAll}
       />

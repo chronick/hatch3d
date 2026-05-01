@@ -70,6 +70,31 @@ export interface ImageControl {
 
 export type ControlDef = SliderControl | ToggleControl | SelectControl | XYControl | ImageControl;
 
+// ── Hatch group types ──
+
+export type HatchFamily =
+  | "u"
+  | "v"
+  | "diagonal"
+  | "rings"
+  | "hex"
+  | "crosshatch"
+  | "spiral";
+
+export interface HatchGroupConfig {
+  family: "inherit" | HatchFamily;
+  count: number;
+  samples: number;
+  angle: number;
+}
+
+export const HATCH_GROUP_DEFAULT: HatchGroupConfig = {
+  family: "inherit",
+  count: 30,
+  samples: 50,
+  angle: 0.7,
+};
+
 // ── Layer / Composition types ──
 
 export interface LayerConfig {
@@ -178,6 +203,10 @@ export interface LayeredLayer {
   composition: string;
   /** Override values for the inner composition's controls/macros. */
   paramOverrides?: Record<string, unknown>;
+  /** Override values for the inner composition's macros (raw 0..1 macro slider values). */
+  macroOverrides?: Record<string, number>;
+  /** Override hatch-group configs for the inner composition (replace, not merge — outer layered comp has no hatch groups of its own). */
+  hatchGroupOverrides?: Record<string, HatchGroupConfig>;
   /**
    * 'over' = additive stacking (default).
    * 'masked' = clip this layer to the bounding box of `maskBy` layer.
