@@ -161,6 +161,21 @@ export interface CompositionMetadata {
 export interface Composition3DDefinition extends CompositionMetadata {
   type?: "3d";
   hatchGroups?: string[];
+  /**
+   * Marks compositions whose appearance materially diverges between
+   * occluded (in-browser) and unoccluded headless rendering (HLR).
+   *
+   * Headless rendering paths (`cli/render.ts`, `cli/feed-push.ts`) run
+   * with `useOcclusion: false` for performance, so back-facing hatches
+   * stay visible in the output SVG. For most compositions the result
+   * is visually identical to the occluded view; for compositions
+   * marked here it is not. Downstream tools (improve-mode routine,
+   * future PR commenters) can read this flag to warn reviewers that
+   * a headless render may not match the in-browser preview.
+   *
+   * Absent === false. Only meaningful for 3D compositions.
+   */
+  occlusionSensitive?: boolean;
   layers: (input: CompositionInput) => LayerConfig[];
   /**
    * Optional unified-mesh override for the HLR depth buffer.
