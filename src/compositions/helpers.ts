@@ -63,6 +63,35 @@ export function resolveValues(
   return resolved;
 }
 
+const warnedMissingShowWhenKeys = new Set<string>();
+
+/**
+ * Returns true when `control` should render in the UI.
+ *
+ * Reads the gate from `currentValues` (raw, pre-macro). Falls back to the
+ * gating control's `default` if the key is absent. If `showWhen.control`
+ * doesn't exist in `controls`, returns `true` (typo-tolerant) and warns once.
+ */
+export function isControlVisible(
+  control: ControlDef,
+  currentValues: Record<string, unknown>,
+  controls: Record<string, ControlDef>,
+): boolean {
+  if (!control.showWhen) return true;
+  const gateKey = control.showWhen.control;
+  const gateControl = controls[gateKey];
+  if (!gateControl) {
+    if (!warnedMissingShowWhenKeys.has(gateKey)) {
+      warnedMissingShowWhenKeys.add(gateKey);
+      console.warn(`isControlVisible: showWhen.control "${gateKey}" not found in controls`);
+    }
+    return true;
+  }
+  const fallback = gateControl.type === "image" ? null : gateControl.default;
+  const actual = gateKey in currentValues ? currentValues[gateKey] : fallback;
+  return actual === control.showWhen.equals;
+}
+
 /**
  * Resolve an inner composition's control values for a given layered layer.
  *
