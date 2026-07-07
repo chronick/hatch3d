@@ -1,0 +1,15 @@
+# A patch: contour lines distorted by their OWN density gradient (a cable),
+# then iteratively pushed by a noise field (bounded feedback).
+
+ground  = contourMap(contourLevels: 24, noiseScale: 0.005, seed: 3)
+d       = density(ground, cell: 24)
+grad    = gradient(d)
+warped  = distort(ground, by: grad, amp: 10)
+
+# bounded iteration: each pass drifts the geometry by a noise field
+repeat 3 {
+  flow   = simplexVector(scale: 0.006, seed: 9)
+  warped = distort(warped, by: flow, amp: 4)
+}
+
+out(warped @ "#1d4ed8")

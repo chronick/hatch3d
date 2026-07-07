@@ -26,12 +26,15 @@ import explodedView from "../src/compositions/3d/studies/exploded-view.js";
 import multiTechnique from "../src/compositions/3d/studies/multi-technique.js";
 
 // 2D compositions
+import contourMap from "../src/compositions/2d/generative/contour-map.js";
 import differentialGrowth from "../src/compositions/2d/generative/differential-growth.js";
 import flowField from "../src/compositions/2d/generative/flow-field.js";
 import grainsGlitchCA from "../src/compositions/2d/generative/grains-glitch-ca.js";
 import kmeansHullCity from "../src/compositions/2d/generative/kmeans-hull-city.js";
 import inkVortex from "../src/compositions/2d/generative/ink-vortex.js";
 import isoWoodBlocks from "../src/compositions/2d/generative/iso-wood-blocks.js";
+import meshLineart from "../src/compositions/2d/generative/mesh-lineart.js";
+import perlinWorms from "../src/compositions/2d/generative/perlin-worms.js";
 import photoHalftone from "../src/compositions/2d/generative/photo-halftone.js";
 import reactionDiffusion from "../src/compositions/2d/generative/reaction-diffusion.js";
 import sentinelTerrain from "../src/compositions/2d/generative/sentinel-terrain.js";
@@ -39,12 +42,16 @@ import strangeAttractor from "../src/compositions/2d/generative/strange-attracto
 import tspArt from "../src/compositions/2d/generative/tsp-art.js";
 import voronoiTexture from "../src/compositions/2d/generative/voronoi-texture.js";
 import waterArcos from "../src/compositions/2d/generative/water-arcos.js";
+import weightedStippling from "../src/compositions/2d/generative/weighted-stippling.js";
 import opArtSphere from "../src/compositions/2d/optical/op-art-sphere.js";
 import guillocheRosette from "../src/compositions/2d/patterns/guilloche-rosette.js";
 import hilbertFill from "../src/compositions/2d/patterns/hilbert-fill.js";
 import moireCircles from "../src/compositions/2d/patterns/moire-circles.js";
+import penroseTiling from "../src/compositions/2d/patterns/penrose-tiling.js";
+import recursiveSubdivision from "../src/compositions/2d/patterns/recursive-subdivision.js";
 import spirograph from "../src/compositions/2d/patterns/spirograph.js";
 import truchetMaze from "../src/compositions/2d/patterns/truchet-maze.js";
+import waveInterference from "../src/compositions/2d/patterns/wave-interference.js";
 
 // Layered compositions (multi-composition umbrella)
 import phyllotaxisIsoblocks from "../src/compositions/layered/demos/phyllotaxis-isoblocks.js";
@@ -55,9 +62,11 @@ const allCompositions: CompositionDefinition[] = [
   sentinelTerrain3D, totemStack, towerAndBase, crystalSpire, phyllotaxisGarden, ribbonCage,
   dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique,
   // 2D
-  differentialGrowth, flowField, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
-  photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor, tspArt, voronoiTexture, waterArcos,
-  opArtSphere, guillocheRosette, hilbertFill, moireCircles, spirograph, truchetMaze,
+  contourMap, differentialGrowth, flowField, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
+  meshLineart, perlinWorms, photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor,
+  tspArt, voronoiTexture, waterArcos, weightedStippling,
+  opArtSphere, guillocheRosette, hilbertFill, moireCircles, penroseTiling, recursiveSubdivision,
+  spirograph, truchetMaze, waveInterference,
   // Layered
   phyllotaxisIsoblocks,
 ];

@@ -21,6 +21,7 @@ import type { CompositionDefinition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
 import { buildSVGContent, buildLayeredSVGContent, computeExportLayout } from "./svg-export.js";
+import { compileScene } from "../src/scene/compile.js";
 
 // ── Parse CLI arguments ──
 
@@ -29,6 +30,7 @@ const { values: args, positionals } = parseArgs({
     composition: { type: "string", short: "c" },
     param: { type: "string", short: "p", multiple: true },
     config: { type: "string" },
+    scene: { type: "string" },
     output: { type: "string", short: "o" },
     format: { type: "string", short: "f", default: "svg" },
     scale: { type: "string", default: "4" },
@@ -71,6 +73,8 @@ Options:
   -c, --composition ID   Composition to render (use --list to see all)
   -p, --param KEY=VAL    Set a parameter (repeatable)
   --config FILE          Load parameters from JSON config file
+  --scene FILE           Render a Scene IR document (JSON); carries its own
+                         page/margin/camera. Overrides -c/--config.
   -o, --output PATH      Output file path (default: stdout for SVG)
   -f, --format FMT       Output format: svg (default) or png
   --scale N              PNG scale factor (default: 4)
@@ -350,6 +354,45 @@ function renderOne(config: RenderConfig): { svgContent: string; stats: { lines: 
   };
 }
 
+/**
+ * Render a Scene IR document. The scene compiles to a layered composition
+ * (registered under a synthetic `scene:<id>` key) and renders through the exact
+ * layered pipeline a hand-written LayeredComposition uses — so a scene ported
+ * from a layered composition renders byte-identically.
+ */
+function renderScene(scenePath: string, cliFormat?: string, cliScale?: number): {
+  svgContent: string;
+  stats: { lines: number; verts: number; paths: number };
+  durationMs: number;
+  id: string;
+} {
+  const raw = JSON.parse(readFileSync(resolve(scenePath), "utf-8"));
+  const compiled = compileScene(raw);
+  compositionRegistry.register(compiled.composition);
+
+  const config: RenderConfig = {
+    composition: compiled.composition.id,
+    values: {},
+    format: (cliFormat as "svg" | "png") ?? "svg",
+    scale: cliScale ?? 4,
+    width: compiled.page.widthPx,
+    height: compiled.page.heightPx,
+    pageSize: compiled.page.size,
+    orientation: compiled.page.orientation,
+    margin: compiled.page.marginMm,
+    strokeWidth: compiled.page.strokeWidthMm,
+    surface: "hyperboloid",
+    hatchFamily: "u",
+    hatchCount: 30,
+    camTheta: compiled.camera.theta,
+    camPhi: compiled.camera.phi,
+    camDist: compiled.camera.dist,
+    camOrtho: compiled.camera.ortho,
+  };
+  const { svgContent, stats, durationMs } = renderOne(config);
+  return { svgContent, stats, durationMs, id: compiled.composition.id };
+}
+
 async function renderToPng(svgContent: string, scale: number): Promise<Buffer> {
   // Add white background for PNG output (SVG has transparent bg by default)
   const withBg = svgContent.replace(
@@ -441,6 +484,32 @@ async function main(): Promise<void> {
   if (args.batch) {
     const outputDir = args.output ?? "renders";
     await runBatch(args.batch, outputDir);
+    return;
+  }
+
+  // ── Scene IR path ──
+  if (args.scene) {
+    const scenePath = typeof args.scene === "string" ? args.scene : String(args.scene);
+    const { svgContent, stats, durationMs, id } = renderScene(
+      scenePath,
+      args.format,
+      args.scale ? Number(args.scale) : undefined,
+    );
+    const output = args.output;
+    if (args.format === "png") {
+      if (!output) {
+        console.error("PNG output requires --output path");
+        process.exit(1);
+      }
+      const pngBuf = await renderToPng(svgContent, Number(args.scale) || 4);
+      writeFileSync(resolve(output), pngBuf);
+      console.error(`Rendered scene ${id} → ${output} (PNG, ${stats.paths} paths, ${durationMs.toFixed(0)}ms)`);
+    } else if (output) {
+      writeFileSync(resolve(output), svgContent);
+      console.error(`Rendered scene ${id} → ${output} (SVG, ${stats.paths} paths, ${stats.lines} lines, ${durationMs.toFixed(0)}ms)`);
+    } else {
+      process.stdout.write(svgContent);
+    }
     return;
   }
 

@@ -15,6 +15,9 @@
     "render": "tsx cli/render.ts",
     "render:list": "tsx cli/render.ts --list",
     "render:info": "tsx cli/render.ts --info",
+    "stats": "tsx cli/stats.ts",
+    "stats:diff": "tsx cli/stats-diff.ts",
+    "patch": "tsx cli/patch.ts",
     "feed": "tsx cli/feed-push.ts",
     "feed:dry": "tsx cli/feed-push.ts --dry-run",
     "feed:presets": "tsx cli/feed-push.ts --list-presets",
@@ -30,7 +33,8 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "simplex-noise": "^4.0.3",
-    "three": "^0.183.1"
+    "three": "^0.183.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
