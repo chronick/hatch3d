@@ -185,6 +185,7 @@ export function compileDSL(source: string, opts: { id?: string; page?: Partial<P
       heightPx: opts.page?.heightPx ?? 800,
       strokeWidthMm: opts.page?.strokeWidthMm ?? 0.5,
     },
+    camera: { theta: 0.6, phi: 0.35, dist: 8, ortho: false },
     nodes,
     out,
   };
