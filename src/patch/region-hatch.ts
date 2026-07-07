@@ -38,6 +38,16 @@ export function hatchPolygon(polygon: Pt[], angleDeg: number, pitch: number): Pt
     if (p.y > maxY) maxY = p.y;
   }
 
+  // Guard against a runaway: a too-small pitch (e.g. a typo, 0.06 → 0.006) would
+  // emit millions of segments and hang the render/browser. Fail loudly instead.
+  const MAX_SCANLINES = 100_000;
+  if ((maxY - minY) / pitch > MAX_SCANLINES) {
+    throw new Error(
+      `hatchPolygon: pitch ${pitch} over a ${(maxY - minY).toFixed(1)}-unit span would emit ` +
+        `>${MAX_SCANLINES} scanlines — increase pitch.`,
+    );
+  }
+
   const n = rot.length;
   const lines: Pt[][] = [];
   // Start on a pitch-aligned scanline so the pattern is stable under translation.
@@ -58,7 +68,10 @@ export function hatchPolygon(polygon: Pt[], angleDeg: number, pitch: number): Pt
     if (xs.length < 2) continue;
     xs.sort((p, q) => p - q);
     for (let i = 0; i + 1 < xs.length; i += 2) {
-      lines.push([back(xs[i], y), back(xs[i + 1], y)]);
+      // Skip zero-length spans (tangent scanlines / self-intersections).
+      if (xs[i + 1] - xs[i] > 1e-9) {
+        lines.push([back(xs[i], y), back(xs[i + 1], y)]);
+      }
     }
   }
   return lines;

@@ -49,7 +49,10 @@ const RegionHatchNode = z.object({
   polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
   angleDeg: z.number(),
   pitch: z.number().positive(),
-}).strict();
+}).strict().refine(
+  (n) => (n.from == null) !== (n.polygon == null),
+  { message: "regionHatch needs exactly one of `from` or `polygon`" },
+);
 const PenNode = z.object({ op: z.literal("pen"), ...NodeBase, from: z.string(), color: z.string().optional(), name: z.string().optional() }).strict();
 
 export type PatchNode =

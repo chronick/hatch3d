@@ -121,6 +121,11 @@ describe("hatchPolygon (region-hatch geometry)", () => {
     expect(hatchPolygon([{ x: 0, y: 0 }, { x: 1, y: 1 }], 0, 10)).toEqual([]);
     expect(hatchPolygon(square, 0, 0)).toEqual([]);
   });
+
+  it("throws instead of hanging when pitch is absurdly small (runaway guard)", () => {
+    const big = [{ x: 0, y: 0 }, { x: 10000, y: 0 }, { x: 10000, y: 10000 }, { x: 0, y: 10000 }];
+    expect(() => hatchPolygon(big, 0, 0.001)).toThrow(/scanlines — increase pitch/);
+  });
 });
 
 describe("DSL → graph", () => {
@@ -238,6 +243,21 @@ describe("evalPatch", () => {
     };
     const res = evalPatch(graph);
     expect(res.layers[0].geometry.length).toBeGreaterThan(5);
+  });
+
+  it("rejects a regionHatch node with both from and polygon (XOR contract)", () => {
+    const graph = {
+      version: 1 as const, id: "t",
+      nodes: [
+        { op: "generator" as const, id: "g", composition: "lineA" },
+        { op: "regionHatch" as const, id: "fill", from: "g",
+          polygon: [[0, 0], [100, 0], [100, 100]] as [number, number][],
+          angleDeg: 0, pitch: 20 },
+        { op: "pen" as const, id: "p", from: "fill" },
+      ],
+      out: ["p"],
+    };
+    expect(() => evalPatch(graph)).toThrow(/exactly one of/);
   });
 
   it("regionHatch fills the hull of another node (the cable form)", () => {
