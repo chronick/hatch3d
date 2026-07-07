@@ -25,6 +25,8 @@ import { fieldDistort, fieldCull, fieldThin } from "./operators.js";
 import { hatchPolygon } from "./region-hatch.js";
 import { compositionRegistry } from "../compositions/registry.js";
 import { is2DComposition, isLayeredComposition } from "../compositions/types.js";
+import type { LayeredLayer, HatchGroupConfig } from "../compositions/types.js";
+import { resolveLayerInnerValues } from "../compositions/helpers.js";
 import { runPipeline } from "../workers/render-pipeline.js";
 import type { RenderRequest } from "../workers/render-worker.types.js";
 import { parseDString, convexHull } from "../utils/clip.js";
@@ -33,7 +35,14 @@ import { parseDString, convexHull } from "../utils/clip.js";
 
 const NodeBase = { id: z.string().min(1) };
 
-const GeneratorNode = z.object({ op: z.literal("generator"), ...NodeBase, composition: z.string(), params: z.record(z.string(), z.unknown()).optional() }).strict();
+const GeneratorNode = z.object({
+  op: z.literal("generator"), ...NodeBase, composition: z.string(),
+  params: z.record(z.string(), z.unknown()).optional(),
+  /** Macro slider overrides (raw 0..1), like a LayeredLayer's macroOverrides. */
+  macros: z.record(z.string(), z.number()).optional(),
+  /** Per-hatch-group config overrides. */
+  hatchGroups: z.record(z.string(), z.unknown()).optional(),
+}).strict();
 const SimplexScalarNode = z.object({ op: z.literal("simplexScalar"), ...NodeBase, scale: z.number(), seed: z.number() }).strict();
 const SimplexVectorNode = z.object({ op: z.literal("simplexVector"), ...NodeBase, scale: z.number(), seed: z.number() }).strict();
 const DensityNode = z.object({ op: z.literal("density"), ...NodeBase, from: z.string(), cell: z.number().positive() }).strict();
@@ -102,6 +111,13 @@ export const PatchDocSchema = z.object({
     heightPx: z.number().positive().default(800),
     strokeWidthMm: z.number().positive().default(0.5),
   }).prefault({}),
+  /** Camera for 3D generators (ignored by 2D compositions). */
+  camera: z.object({
+    theta: z.number().default(0.6),
+    phi: z.number().default(0.35),
+    dist: z.number().default(8),
+    ortho: z.boolean().default(false),
+  }).prefault({}),
   nodes: z.array(NodeSchema),
   out: z.array(z.string()).min(1),
 }).strict();
@@ -158,20 +174,39 @@ function asVector(s: Signal, ctx: string): VectorField {
 }
 
 /** Render a composition to canvas-space polylines by reusing the render pipeline. */
-function generatorGeometry(compId: string, params: Record<string, unknown> | undefined, page: PatchDoc["page"]): Geometry {
-  const comp = compositionRegistry.get(compId);
-  if (!comp) throw new Error(`patch: unknown composition "${compId}"`);
-  if (isLayeredComposition(comp)) throw new Error(`patch: layered composition "${compId}" not usable as a generator node`);
-  const resolved: Record<string, unknown> = {};
-  if (comp.controls) for (const [k, c] of Object.entries(comp.controls)) resolved[k] = (c as { default: unknown }).default;
-  Object.assign(resolved, params ?? {});
+/**
+ * Render a composition (generator node) to canvas-space polylines.
+ *
+ * Mirrors runLayeredPipeline's per-layer logic exactly — resolveLayerInnerValues
+ * (control defaults + macro fan-out + overrides) + hatchGroup overrides + the
+ * doc camera — so a generator node is byte-identical to the equivalent layered
+ * layer. This is what lets a Scene IR document lower to a patch and still render
+ * the same SVG (the unification's byte-identical guarantee).
+ */
+function generatorGeometry(
+  node: { composition: string; params?: Record<string, unknown>; macros?: Record<string, number>; hatchGroups?: Record<string, unknown> },
+  page: PatchDoc["page"],
+  camera: PatchDoc["camera"],
+): Geometry {
+  const comp = compositionRegistry.get(node.composition);
+  if (!comp) throw new Error(`patch: unknown composition "${node.composition}"`);
+  if (isLayeredComposition(comp)) throw new Error(`patch: layered composition "${node.composition}" not usable as a generator node`);
+
+  const layer: LayeredLayer = {
+    composition: node.composition,
+    paramOverrides: node.params,
+    macroOverrides: node.macros,
+    hatchGroupOverrides: node.hatchGroups as Record<string, HatchGroupConfig> | undefined,
+  };
+  const resolvedValues = resolveLayerInnerValues(comp, layer);
+
   const req: RenderRequest = {
-    type: "render", id: 1, compositionKey: compId, is2d: is2DComposition(comp),
-    width: page.widthPx, height: page.heightPx, resolvedValues: resolved,
+    type: "render", id: 1, compositionKey: node.composition, is2d: is2DComposition(comp),
+    width: page.widthPx, height: page.heightPx, resolvedValues,
     surfaceKey: "hyperboloid", surfaceParams: {},
     hatchParams: { family: "u", count: 30, samples: 50, angle: 0.7 },
-    currentHatchGroups: {},
-    camera: { theta: 0.6, phi: 0.35, dist: 8, ortho: false, panX: 0, panY: 0, width: page.widthPx, height: page.heightPx },
+    currentHatchGroups: (node.hatchGroups as Record<string, HatchGroupConfig>) ?? {},
+    camera: { theta: camera.theta, phi: camera.phi, dist: camera.dist, ortho: camera.ortho, panX: 0, panY: 0, width: page.widthPx, height: page.heightPx },
     useOcclusion: false, depthRes: 512, depthBias: 0.01,
     exportLayout: { contentW: 0, contentH: 0, scale: 1 },
     showMesh: false, densityFilterEnabled: false, densityMax: 8, densityCellSize: 10,
@@ -179,10 +214,10 @@ function generatorGeometry(compId: string, params: Record<string, unknown> | und
   return runPipeline(req).svgPaths.map(parseDString).filter((p) => p.length >= 2);
 }
 
-function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"]): void {
+function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: PatchDoc["camera"]): void {
   switch (node.op) {
     case "generator":
-      env.set(node.id, generatorGeometry(node.composition, node.params, page));
+      env.set(node.id, generatorGeometry(node, page, camera));
       break;
     case "simplexScalar":
       env.set(node.id, simplexScalar(node.scale, node.seed));
@@ -229,7 +264,7 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"]): void {
         throw new Error(`patch: repeat threads "${node.thread}" but its body never reassigns it — the loop would be a no-op.`);
       }
       for (let i = 0; i < node.times; i++) {
-        for (const child of node.body) evalNode(child, env, page);
+        for (const child of node.body) evalNode(child, env, page, camera);
       }
       break;
     }
@@ -240,7 +275,7 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"]): void {
 export function evalPatch(input: unknown): EvalResult {
   const doc = parsePatchDoc(input);
   const env: Env = new Map();
-  for (const node of doc.nodes) evalNode(node, env, doc.page);
+  for (const node of doc.nodes) evalNode(node, env, doc.page, doc.camera);
 
   const layers: PatchLayer[] = doc.out.map((id) => {
     const node = findPen(doc.nodes, id);
