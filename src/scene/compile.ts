@@ -129,8 +129,16 @@ export function compileScene(input: unknown): CompiledScene {
             `Scene compile: layer "${ln.id}" masks by unknown layer id "${ln.maskBy}".`,
           );
         }
+      } else if (idx > 0) {
+        maskBy = idx - 1; // default: the layer beneath
       } else {
-        maskBy = Math.max(0, idx - 1);
+        throw new Error(
+          `Scene compile: the first layer ("${ln.id}") is "masked" with no maskBy target; ` +
+            `masking needs a layer beneath it.`,
+        );
+      }
+      if (maskBy === idx) {
+        throw new Error(`Scene compile: layer "${ln.id}" cannot mask by itself.`);
       }
     }
 
@@ -139,7 +147,8 @@ export function compileScene(input: unknown): CompiledScene {
       composition: gen.composition,
       blendMode: ln.blend ?? "over",
     };
-    if (gen.params) layer.paramOverrides = gen.params;
+    const params = gen.seed !== undefined ? { seed: gen.seed, ...gen.params } : gen.params;
+    if (params) layer.paramOverrides = params;
     if (gen.macros) layer.macroOverrides = gen.macros;
     if (gen.hatchGroups) {
       layer.hatchGroupOverrides = gen.hatchGroups as LayeredLayer["hatchGroupOverrides"];

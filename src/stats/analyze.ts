@@ -174,7 +174,9 @@ interface ParsedSvg {
 }
 
 function attr(tag: string, name: string): string | null {
-  const m = tag.match(new RegExp(`${name}\\s*=\\s*"([^"]*)"`));
+  // Require a non-name char (or start) before the attribute so `id` doesn't
+  // match inside `grid` / `data-id`.
+  const m = tag.match(new RegExp(`(?:^|[\\s;])${name}\\s*=\\s*"([^"]*)"`));
   return m ? m[1] : null;
 }
 

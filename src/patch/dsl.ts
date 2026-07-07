@@ -33,14 +33,34 @@ function parseValue(raw: string): string | number {
   return Number.isNaN(n) ? t : n; // bare word → node ref (string)
 }
 
+/**
+ * Split on top-level commas — commas inside quotes or parens don't split.
+ * Needed so string values like colors (`"rgb(255,0,0)"`) or labels
+ * (`"x, y"`) survive intact.
+ */
+export function splitTopLevel(s: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let inStr = false;
+  let cur = "";
+  for (const ch of s) {
+    if (ch === '"') { inStr = !inStr; cur += ch; }
+    else if (!inStr && ch === "(") { depth++; cur += ch; }
+    else if (!inStr && ch === ")") { depth = Math.max(0, depth - 1); cur += ch; }
+    else if (!inStr && ch === "," && depth === 0) { parts.push(cur); cur = ""; }
+    else cur += ch;
+  }
+  if (cur.trim()) parts.push(cur);
+  return parts;
+}
+
 function parseArgs(argStr: string): Arg[] {
   const s = argStr.trim();
   if (!s) return [];
-  // Flat grammar: no nested parens, so comma-splitting is safe.
-  return s.split(",").map((part) => {
+  return splitTopLevel(s).map((part) => {
     const seg = part.trim();
     const colon = seg.indexOf(":");
-    // A colon inside a quoted string shouldn't split; values here are simple.
+    // A colon inside a quoted string isn't a key separator.
     if (colon >= 0 && !seg.slice(0, colon).includes('"')) {
       return { key: seg.slice(0, colon).trim(), value: parseValue(seg.slice(colon + 1)) };
     }
@@ -139,7 +159,7 @@ export function compileDSL(source: string, opts: { id?: string; page?: Partial<P
   if (!outLine) throw new Error(`patch DSL: no out(...) statement`);
   const outArgs = outLine.match(OUT_RE)![1];
   const out: string[] = [];
-  for (const item of outArgs.split(",").map((s) => s.trim()).filter(Boolean)) {
+  for (const item of splitTopLevel(outArgs).map((s) => s.trim()).filter(Boolean)) {
     const at = item.match(/^([A-Za-z_]\w*)\s*@\s*"([^"]*)"\s*$/);
     if (at) {
       // Wrap the referenced node in an auto-pen.

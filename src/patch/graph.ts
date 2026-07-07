@@ -123,16 +123,23 @@ export interface EvalResult {
 function isGeometry(s: Signal): s is Geometry {
   return Array.isArray(s);
 }
-function asGeometry(s: Signal | undefined, ctx: string): Geometry {
-  if (!s || !isGeometry(s)) throw new Error(`patch: ${ctx} expected geometry`);
+/** Look up a referenced node's signal, distinguishing "unknown id" from "wrong type". */
+function ref(env: Env, id: string, ctx: string): Signal {
+  if (!env.has(id)) {
+    throw new Error(`patch: ${ctx} references unknown node "${id}" (declared later or a typo?)`);
+  }
+  return env.get(id)!;
+}
+function asGeometry(s: Signal, ctx: string): Geometry {
+  if (!isGeometry(s)) throw new Error(`patch: ${ctx} expected geometry, got a field`);
   return s;
 }
-function asScalar(s: Signal | undefined, ctx: string): ScalarField {
-  if (!s || isGeometry(s) || s.kind !== "scalar") throw new Error(`patch: ${ctx} expected a scalar field`);
+function asScalar(s: Signal, ctx: string): ScalarField {
+  if (isGeometry(s) || s.kind !== "scalar") throw new Error(`patch: ${ctx} expected a scalar field`);
   return s;
 }
-function asVector(s: Signal | undefined, ctx: string): VectorField {
-  if (!s || isGeometry(s) || s.kind !== "vector") throw new Error(`patch: ${ctx} expected a vector field`);
+function asVector(s: Signal, ctx: string): VectorField {
+  if (isGeometry(s) || s.kind !== "vector") throw new Error(`patch: ${ctx} expected a vector field`);
   return s;
 }
 
@@ -170,27 +177,30 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"]): void {
       env.set(node.id, simplexVector(node.scale, node.seed));
       break;
     case "density": {
-      const g = asGeometry(env.get(node.from), `density(${node.from})`);
+      const g = asGeometry(ref(env, node.from, `density(${node.from})`), `density(${node.from})`);
       env.set(node.id, densityField(g, geometryBBox(g, { w: page.widthPx, h: page.heightPx }), node.cell));
       break;
     }
     case "gradient":
-      env.set(node.id, gradient(asScalar(env.get(node.from), `gradient(${node.from})`)));
+      env.set(node.id, gradient(asScalar(ref(env, node.from, `gradient(${node.from})`), `gradient(${node.from})`)));
       break;
     case "distort":
-      env.set(node.id, fieldDistort(asGeometry(env.get(node.from), `distort(${node.from})`), asVector(env.get(node.by), `distort by ${node.by}`), node.amp));
+      env.set(node.id, fieldDistort(asGeometry(ref(env, node.from, `distort(${node.from})`), `distort(${node.from})`), asVector(ref(env, node.by, `distort by ${node.by}`), `distort by ${node.by}`), node.amp));
       break;
     case "cull":
-      env.set(node.id, fieldCull(asGeometry(env.get(node.from), `cull(${node.from})`), asScalar(env.get(node.by), `cull by ${node.by}`), { min: node.min, max: node.max }));
+      env.set(node.id, fieldCull(asGeometry(ref(env, node.from, `cull(${node.from})`), `cull(${node.from})`), asScalar(ref(env, node.by, `cull by ${node.by}`), `cull by ${node.by}`), { min: node.min, max: node.max }));
       break;
     case "thin":
-      env.set(node.id, fieldThin(asGeometry(env.get(node.from), `thin(${node.from})`), asScalar(env.get(node.by), `thin by ${node.by}`), node.strength));
+      env.set(node.id, fieldThin(asGeometry(ref(env, node.from, `thin(${node.from})`), `thin(${node.from})`), asScalar(ref(env, node.by, `thin by ${node.by}`), `thin by ${node.by}`), node.strength));
       break;
     case "pen":
-      env.set(node.id, asGeometry(env.get(node.from), `pen(${node.from})`));
+      env.set(node.id, asGeometry(ref(env, node.from, `pen(${node.from})`), `pen(${node.from})`));
       break;
     case "repeat": {
-      if (!env.has(node.thread)) throw new Error(`patch: repeat threads unknown variable "${node.thread}"`);
+      if (!env.has(node.thread)) throw new Error(`patch: repeat threads unknown variable "${node.thread}" (must be defined before the loop)`);
+      if (!node.body.some((n) => n.id === node.thread)) {
+        throw new Error(`patch: repeat threads "${node.thread}" but its body never reassigns it — the loop would be a no-op.`);
+      }
       for (let i = 0; i < node.times; i++) {
         for (const child of node.body) evalNode(child, env, page);
       }
@@ -207,7 +217,7 @@ export function evalPatch(input: unknown): EvalResult {
 
   const layers: PatchLayer[] = doc.out.map((id) => {
     const node = findPen(doc.nodes, id);
-    const geom = asGeometry(env.get(id), `out "${id}"`);
+    const geom = asGeometry(ref(env, id, `out "${id}"`), `out "${id}"`);
     return { id, color: node?.color, name: node?.name ?? id, geometry: geom };
   });
   return { layers, page: doc.page };

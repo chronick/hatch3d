@@ -104,6 +104,46 @@ describe("DSL → graph", () => {
     expect((rep as { times: number }).times).toBe(3);
   });
 
+  it("keeps commas inside quoted values (colors, labels) intact", () => {
+    const src = `
+      g = lineA()
+      out(g @ "rgb(37, 99, 235)")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    const pen = doc.nodes.find((n) => n.op === "pen") as { color?: string };
+    expect(pen.color).toBe("rgb(37, 99, 235)");
+  });
+
+  it("rejects a repeat whose body never reassigns the thread (no-op loop)", () => {
+    const graph = {
+      version: 1 as const,
+      id: "t",
+      nodes: [
+        { op: "generator" as const, id: "g", composition: "lineA" },
+        { op: "repeat" as const, id: "r", times: 3, thread: "g", body: [
+          { op: "simplexScalar" as const, id: "s", scale: 0.01, seed: 1 },
+        ] },
+        { op: "pen" as const, id: "p", from: "g" },
+      ],
+      out: ["p"],
+    };
+    expect(() => evalPatch(graph)).toThrow(/never reassigns it/);
+  });
+
+  it("gives a clear 'unknown node' error for a typo'd reference", () => {
+    const graph = {
+      version: 1 as const,
+      id: "t",
+      nodes: [
+        { op: "generator" as const, id: "g", composition: "lineA" },
+        { op: "distort" as const, id: "w", from: "typo", by: "g", amp: 1 },
+        { op: "pen" as const, id: "p", from: "w" },
+      ],
+      out: ["p"],
+    };
+    expect(() => evalPatch(graph)).toThrow(/unknown node "typo"/);
+  });
+
   it("rejects a repeat that reassigns no pre-existing variable", () => {
     const src = `
       g = lineA()

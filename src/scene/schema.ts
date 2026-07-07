@@ -34,8 +34,8 @@ export const GeneratorNodeSchema = z
     macros: z.record(z.string(), z.number()).optional(),
     /** Per-hatch-group config overrides. */
     hatchGroups: z.record(z.string(), z.unknown()).optional(),
-    /** Optional RNG seed carried into config metadata / reproducibility. */
-    seed: z.string().optional(),
+    /** RNG seed — threaded into the composition's `seed` param for reproducibility. */
+    seed: z.union([z.string(), z.number()]).optional(),
   })
   .strict();
 
@@ -107,9 +107,11 @@ export const FieldDistortNodeSchema = z
 export const PenSchema = z
   .object({
     color: z.string().optional(),
-    widthMm: z.number().positive().optional(),
     /** Human-readable name → becomes <g id="..."> in exported SVG. */
     name: z.string().optional(),
+    // Per-pen stroke width is deferred — the render pipeline uses one global
+    // width (page.strokeWidthMm). Reintroduce widthMm here once the exporter
+    // supports per-layer stroke widths, rather than advertising a no-op field.
   })
   .strict();
 
@@ -199,7 +201,6 @@ export const SceneDocSchema = z
 
 export interface Pen {
   color?: string;
-  widthMm?: number;
   name?: string;
 }
 
@@ -210,7 +211,7 @@ export interface GeneratorNode {
   params?: Record<string, unknown>;
   macros?: Record<string, number>;
   hatchGroups?: Record<string, unknown>;
-  seed?: string;
+  seed?: string | number;
 }
 
 export interface LayerNode {

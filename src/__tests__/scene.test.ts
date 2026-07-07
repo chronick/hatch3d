@@ -177,6 +177,29 @@ describe("compileScene", () => {
     expect(JSON.stringify(a.composition.layers)).toBe(JSON.stringify(b.composition.layers));
   });
 
+  it("threads generator.seed into the composition's params", () => {
+    const doc = {
+      version: 1, id: "s",
+      root: { type: "layer", id: "l", children: [
+        { type: "generator", id: "g", composition: "stripesA", seed: 7, params: { foo: 1 } },
+      ] },
+    };
+    const compiled = compileScene(doc);
+    expect(compiled.composition.layers[0].paramOverrides).toMatchObject({ seed: 7, foo: 1 });
+  });
+
+  it("rejects a first layer that is masked with no target", () => {
+    const doc = {
+      version: 1, id: "s",
+      root: { type: "group", id: "root", children: [
+        { type: "layer", id: "only", blend: "masked", children: [
+          { type: "generator", id: "g", composition: "stripesA" },
+        ] },
+      ] },
+    };
+    expect(() => compileScene(doc)).toThrow(/first layer .* is "masked" with no maskBy|cannot mask by itself/);
+  });
+
   it("errors clearly on an unknown composition", () => {
     const bad = structuredClone(VALID_SCENE);
     bad.root.children[0].children[0].composition = "doesNotExist";

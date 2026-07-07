@@ -68,7 +68,8 @@ export function sceneToLayers(doc: SceneDoc): LayeredLayer[] {
       composition: gen.composition,
       blendMode: ln.blend ?? "over",
     };
-    if (gen.params) layer.paramOverrides = gen.params;
+    const params = gen.seed !== undefined ? { seed: gen.seed, ...gen.params } : gen.params;
+    if (params) layer.paramOverrides = params;
     if (gen.macros) layer.macroOverrides = gen.macros;
     if (gen.hatchGroups) {
       layer.hatchGroupOverrides = gen.hatchGroups as LayeredLayer["hatchGroupOverrides"];
