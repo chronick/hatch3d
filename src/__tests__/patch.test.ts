@@ -147,6 +147,28 @@ describe("DSL → graph", () => {
     expect(doc.out).toHaveLength(1);
   });
 
+  it("parses transform (array literals) and clip operators", () => {
+    const src = `
+      g = lineA()
+      c = clip(g, by: g)
+      t = transform(c, translate: [10, -4], rotate: 5, scale: 2)
+      out(t @ "#111")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    parsePatchDoc(doc); // array literal + operators must validate
+    const clip = doc.nodes.find((n) => n.op === "clip") as { from: string; hullOf?: string };
+    expect(clip.hullOf).toBe("g");
+    const tr = doc.nodes.find((n) => n.op === "transform") as { translate?: [number, number]; rotateDeg?: number; scale?: number };
+    expect(tr.translate).toEqual([10, -4]);
+    expect(tr.rotateDeg).toBe(5);
+    expect(tr.scale).toBe(2);
+  });
+
+  it("rejects a malformed translate tuple", () => {
+    expect(() => compileDSL(`g = lineA()\nt = transform(g, translate: [10])\nout(t @ "#111")`, { id: "t" }))
+      .toThrow(/must be \[x, y\]/);
+  });
+
   it("infers the threaded variable in a repeat block", () => {
     const src = `
       g = lineA()

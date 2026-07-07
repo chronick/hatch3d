@@ -158,5 +158,6 @@ out(warped @ "#1d4ed8")
 Operators: `simplexScalar`, `simplexVector`, `density`, `gradient`, `distort`,
 `cull`, `thin`, `regionHatch` (fill a region — the hull of a node, or an explicit
 polygon — with angled parallel lines; scanline even-odd, handles concave zones),
-`pen`. This is the L2 tier (static, deterministic); L3 (a live
+`transform` (translate/rotate/scale; `translate: [x,y]`), `clip` (to a node's
+hull, `by:`), `pen`. This is the L2 tier (static, deterministic); L3 (a live
 temporal runtime) is a separate research track.
