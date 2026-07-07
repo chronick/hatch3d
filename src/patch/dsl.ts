@@ -1,0 +1,170 @@
+/**
+ * Patch DSL — the thin scripting surface that compiles to the JSON patch graph.
+ *
+ * The graph (graph.ts) is the validated wire format; this is the ergonomic layer
+ * an agent (or human) writes, per the AIDL finding: let the model author a small
+ * script, compile to a checked structure. Deliberately flat — every node is
+ * named, so every intermediate signal is inspectable and measurable (which is
+ * also the design's "every node inspectable" stance).
+ *
+ * Grammar (line-oriented):
+ *   name = fn(pos, key: val, ...)     # assignment; fn is a composition id or an operator
+ *   repeat N { <statements> }         # bounded iteration, threads the reused variable
+ *   out(name @ "#color", name2)       # outputs; `@ "color"` wraps in a pen
+ *   # comments with leading '#'
+ *
+ * Operators (reserved fn names): simplexScalar, simplexVector, density, gradient,
+ * distort, cull, thin, pen. Any other fn name is a composition (generator node).
+ * For operators, the first positional arg is the input node (`from`).
+ */
+
+import type { PatchNode, PatchDoc } from "./graph.js";
+
+const OPERATOR_OPS = new Set([
+  "simplexScalar", "simplexVector", "density", "gradient", "distort", "cull", "thin", "pen",
+]);
+
+type Arg = { key: string | null; value: string | number };
+
+function parseValue(raw: string): string | number {
+  const t = raw.trim();
+  if (t.startsWith('"') && t.endsWith('"')) return t.slice(1, -1);
+  const n = Number(t);
+  return Number.isNaN(n) ? t : n; // bare word → node ref (string)
+}
+
+function parseArgs(argStr: string): Arg[] {
+  const s = argStr.trim();
+  if (!s) return [];
+  // Flat grammar: no nested parens, so comma-splitting is safe.
+  return s.split(",").map((part) => {
+    const seg = part.trim();
+    const colon = seg.indexOf(":");
+    // A colon inside a quoted string shouldn't split; values here are simple.
+    if (colon >= 0 && !seg.slice(0, colon).includes('"')) {
+      return { key: seg.slice(0, colon).trim(), value: parseValue(seg.slice(colon + 1)) };
+    }
+    return { key: null, value: parseValue(seg) };
+  });
+}
+
+function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
+  const named = new Map<string, string | number>();
+  const positional: (string | number)[] = [];
+  for (const a of args) {
+    if (a.key) named.set(a.key, a.value);
+    else positional.push(a.value);
+  }
+  const req = (k: string): string | number => {
+    if (!named.has(k)) throw new Error(`patch DSL: ${fn}(...) missing required arg "${k}"`);
+    return named.get(k)!;
+  };
+  const from = () => String(positional[0] ?? named.get("from") ?? err(`${fn}(...) needs an input node`));
+
+  if (!OPERATOR_OPS.has(fn)) {
+    // Generator: any composition id. All args are params.
+    const params: Record<string, unknown> = {};
+    for (const [k, v] of named) params[k] = v;
+    return { op: "generator", id, composition: fn, ...(Object.keys(params).length ? { params } : {}) };
+  }
+  switch (fn) {
+    case "simplexScalar": return { op: "simplexScalar", id, scale: Number(req("scale")), seed: Number(req("seed")) };
+    case "simplexVector": return { op: "simplexVector", id, scale: Number(req("scale")), seed: Number(req("seed")) };
+    case "density": return { op: "density", id, from: from(), cell: Number(req("cell")) };
+    case "gradient": return { op: "gradient", id, from: from() };
+    case "distort": return { op: "distort", id, from: from(), by: String(req("by")), amp: Number(req("amp")) };
+    case "cull": return { op: "cull", id, from: from(), by: String(req("by")), min: Number(req("min")), max: Number(req("max")) };
+    case "thin": return { op: "thin", id, from: from(), by: String(req("by")), strength: Number(req("strength")) };
+    case "pen": return { op: "pen", id, from: from(), ...(named.has("color") ? { color: String(named.get("color")) } : {}), ...(named.has("name") ? { name: String(named.get("name")) } : {}) };
+    default: throw new Error(`patch DSL: unknown operator "${fn}"`);
+  }
+}
+
+function err(msg: string): never {
+  throw new Error(`patch DSL: ${msg}`);
+}
+
+const ASSIGN_RE = /^([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*\((.*)\)\s*$/;
+const REPEAT_RE = /^repeat\s+(\d+)\s*\{\s*$/;
+const OUT_RE = /^out\s*\((.*)\)\s*$/;
+
+interface ParseState {
+  defined: Set<string>;
+  penCounter: { n: number };
+}
+
+/** Parse a list of statement lines into nodes; tracks defined names for repeat threading. */
+function parseBlock(lines: string[], start: number, endToken: string | null, state: ParseState): { nodes: PatchNode[]; next: number } {
+  const nodes: PatchNode[] = [];
+  let i = start;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    if (endToken && line === endToken) return { nodes, next: i + 1 };
+    if (!line || line.startsWith("#")) { i++; continue; }
+
+    const rep = line.match(REPEAT_RE);
+    if (rep) {
+      const times = Number(rep[1]);
+      const before = new Set(state.defined);
+      const { nodes: body, next } = parseBlock(lines, i + 1, "}", state);
+      // Thread = first body assignment that was already defined before the loop.
+      const thread = body.map((n) => n.id).find((id) => before.has(id));
+      if (!thread) throw new Error(`patch DSL: repeat block must reassign a pre-existing variable (found none)`);
+      nodes.push({ op: "repeat", id: `repeat_${i}`, times, thread, body });
+      i = next;
+      continue;
+    }
+
+    if (OUT_RE.test(line)) { i++; continue; } // out handled by the top-level parser
+
+    const m = line.match(ASSIGN_RE);
+    if (!m) throw new Error(`patch DSL: cannot parse line ${i + 1}: "${line}"`);
+    const [, name, fn, argStr] = m;
+    nodes.push(buildNode(name, fn, parseArgs(argStr)));
+    state.defined.add(name);
+    i++;
+  }
+  if (endToken) throw new Error(`patch DSL: unclosed block, expected "${endToken}"`);
+  return { nodes, next: i };
+}
+
+/** Compile DSL source into a validated-ready PatchDoc (still pass through parsePatchDoc). */
+export function compileDSL(source: string, opts: { id?: string; page?: Partial<PatchDoc["page"]> } = {}): PatchDoc {
+  const lines = source.split("\n");
+  const state: ParseState = { defined: new Set(), penCounter: { n: 0 } };
+  const { nodes } = parseBlock(lines, 0, null, state);
+
+  // Parse the out(...) statement (there must be exactly one).
+  const outLine = lines.map((l) => l.trim()).find((l) => OUT_RE.test(l));
+  if (!outLine) throw new Error(`patch DSL: no out(...) statement`);
+  const outArgs = outLine.match(OUT_RE)![1];
+  const out: string[] = [];
+  for (const item of outArgs.split(",").map((s) => s.trim()).filter(Boolean)) {
+    const at = item.match(/^([A-Za-z_]\w*)\s*@\s*"([^"]*)"\s*$/);
+    if (at) {
+      // Wrap the referenced node in an auto-pen.
+      const penId = `pen_${state.penCounter.n++}`;
+      nodes.push({ op: "pen", id: penId, from: at[1], color: at[2] });
+      out.push(penId);
+    } else if (/^[A-Za-z_]\w*$/.test(item)) {
+      out.push(item);
+    } else {
+      throw new Error(`patch DSL: bad out item "${item}"`);
+    }
+  }
+
+  return {
+    version: 1,
+    id: opts.id ?? "patch",
+    page: {
+      size: opts.page?.size ?? "a3",
+      orientation: opts.page?.orientation ?? "landscape",
+      marginMm: opts.page?.marginMm ?? 15,
+      widthPx: opts.page?.widthPx ?? 800,
+      heightPx: opts.page?.heightPx ?? 800,
+      strokeWidthMm: opts.page?.strokeWidthMm ?? 0.5,
+    },
+    nodes,
+    out,
+  };
+}

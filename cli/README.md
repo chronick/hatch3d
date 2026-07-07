@@ -121,3 +121,40 @@ Observed on a real phyllotaxisGarden sweep: varying the structural `count`
 `sizeVariation` (±0.04) gives `pathCountCoV = 0`, `arcLengthCoV ≈ 0.01`
 (**low** — "propose a new parameter"). The LOW=0.05 / HIGH=0.2 thresholds
 cleanly separate the two.
+
+## `patch` — signal-flow patches (L2 prototype)
+
+A **patch** extends the Scene IR from a construction *tree* into a signal-flow
+*graph* — the eurorack model. Nodes are modules; the "cables" carry three signal
+types (the common interface): **Geometry** (polylines, the audio), **Field**
+(scalar/vector functions over the canvas, the CV), and scalars/curves (knobs).
+A parameter can be *modulated* by a field, and a `repeat` block gives **bounded
+iteration** (a `for` loop, not a wall-clock clock) — so a patch still evaluates
+deterministically to polylines and stays measurable by `stats`.
+
+```bash
+npm run patch -- --dsl examples/patches/flow-modulated.patch -o out.svg
+npm run patch -- --dsl examples/patches/flow-modulated.patch --print-graph   # compiled JSON
+npm run patch -- --graph patch.json -o out.png -f png
+```
+
+The DSL is the thin authoring surface; it compiles to a zod-validated JSON graph
+(`src/patch/graph.ts`). Every node is named, so every intermediate signal is
+inspectable. Fn names that aren't reserved operators are composition ids
+(generator nodes).
+
+```
+ground = contourMap(contourLevels: 24)       # generator → Geometry
+d      = density(ground, cell: 24)           # Geometry → ScalarField  (the cable)
+grad   = gradient(d)                          # ScalarField → VectorField
+warped = distort(ground, by: grad, amp: 10)   # modulate geometry by a field (CV)
+repeat 3 {                                     # bounded iteration (deterministic)
+  flow   = simplexVector(scale: 0.006, seed: 9)
+  warped = distort(warped, by: flow, amp: 4)
+}
+out(warped @ "#1d4ed8")
+```
+
+Operators: `simplexScalar`, `simplexVector`, `density`, `gradient`, `distort`,
+`cull`, `thin`, `pen`. This is the L2 tier (static, deterministic); L3 (a live
+temporal runtime) is a separate research track.
