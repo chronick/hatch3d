@@ -5,7 +5,9 @@ Headless Node CLIs (run via `tsx`). No browser required.
 | Script | Command | Purpose |
 | ------ | ------- | ------- |
 | `render` | `npm run render -- -c <id> -o out.svg` | Render a composition to SVG/PNG |
+| `render` (scene) | `npm run render -- --scene s.scene.json -o out.svg` | Render a Scene IR document (see `docs/scene-ir.md`) |
 | `stats` | `npm run stats -- -i out.svg` | Deterministic SVG measurement (report below) |
+| `stats:diff` | `npm run stats:diff -- a.svg b.svg …` | Variability across variants (below) |
 | `feed` | `npm run feed` | Render curated/biased presets and push to the feed app |
 | `pref:sync` | `npm run pref:sync` | Collect curation signals, recompute the preference model |
 
@@ -94,3 +96,28 @@ width).
   off; the composition is overflowing the page.
 - **`penUpTravelMm`** — a rough plot-efficiency signal. High pen-up travel
   relative to `arcLengthMm` means `vpype linesort` will help a lot at prep time.
+
+## `stats:diff` — variability across variants
+
+Given N rendered SVG variants of a composition, computes two variability metrics
+and classifies the set. The improve-mode routine uses this to decide whether a
+composition's parameter space is too thin to be worth keeping as-is.
+
+```bash
+npm run stats:diff -- v0.svg v1.svg v2.svg v3.svg v4.svg
+```
+
+- **`pathCountCoV`** — coefficient of variation of the SVG path count across
+  variants. Catches parameters with no structural effect.
+- **`arcLengthCoV`** — CoV of (total arc length / drawable area). Catches density
+  changes that path count misses (same stroke count, different tightness).
+- **`band`** — `low` / `medium` / `high` off `max(pathCountCoV, arcLengthCoV)`.
+  `low` → the routine proposes a new parameter; `high` → variants are already
+  well-differentiated. Thresholds are named constants in `src/stats/variability.ts`
+  (`VARIABILITY_THRESHOLDS`), pending empirical calibration.
+
+Observed on a real phyllotaxisGarden sweep: varying the structural `count`
+(8→40) gives `pathCountCoV ≈ 0.47` (**high**); varying the cosmetic
+`sizeVariation` (±0.04) gives `pathCountCoV = 0`, `arcLengthCoV ≈ 0.01`
+(**low** — "propose a new parameter"). The LOW=0.05 / HIGH=0.2 thresholds
+cleanly separate the two.

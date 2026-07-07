@@ -16,6 +16,7 @@
     "render:list": "tsx cli/render.ts --list",
     "render:info": "tsx cli/render.ts --info",
     "stats": "tsx cli/stats.ts",
+    "stats:diff": "tsx cli/stats-diff.ts",
     "feed": "tsx cli/feed-push.ts",
     "feed:dry": "tsx cli/feed-push.ts --dry-run",
     "feed:presets": "tsx cli/feed-push.ts --list-presets",
