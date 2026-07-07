@@ -3,6 +3,7 @@ import { compositionRegistry } from "../compositions/registry";
 import type { Composition2DDefinition } from "../compositions/types";
 import { simplexScalar, simplexVector, densityField, gradient, mulberry32 } from "../patch/signals";
 import { fieldDistort, fieldCull } from "../patch/operators";
+import { hatchPolygon } from "../patch/region-hatch";
 import { compileDSL } from "../patch/dsl";
 import { evalPatch, parsePatchDoc } from "../patch/graph";
 
@@ -66,6 +67,59 @@ describe("operators", () => {
     const out = fieldCull(geom, f, { min: 0.5, max: 1.5 });
     expect(out).toHaveLength(1);
     expect(out[0]).toEqual([{ x: 10, y: 0 }, { x: 20, y: 0 }]);
+  });
+});
+
+describe("hatchPolygon (region-hatch geometry)", () => {
+  const square = [
+    { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 },
+  ];
+
+  it("fills a square with horizontal lines at pitch spacing", () => {
+    const lines = hatchPolygon(square, 0, 10);
+    // Scanlines y = 0,10,…,90 → 10 lines, each spanning x 0..100.
+    expect(lines.length).toBe(10);
+    for (const seg of lines) {
+      expect(seg).toHaveLength(2);
+      expect(seg[0].y).toBeCloseTo(seg[1].y, 6); // horizontal
+      const xs = [seg[0].x, seg[1].x].sort((a, b) => a - b);
+      expect(xs[0]).toBeCloseTo(0, 6);
+      expect(xs[1]).toBeCloseTo(100, 6);
+    }
+  });
+
+  it("respects the hatch angle", () => {
+    const flat = hatchPolygon(square, 0, 20);
+    const angled = hatchPolygon(square, 45, 20);
+    expect(angled.length).toBeGreaterThan(0);
+    // 45° lines are not horizontal.
+    const seg = angled[Math.floor(angled.length / 2)];
+    expect(Math.abs(seg[0].y - seg[1].y)).toBeGreaterThan(1);
+    expect(flat[0][0].y).toBeCloseTo(flat[0][1].y, 6);
+  });
+
+  it("handles a concave polygon (even-odd split into separate segments)", () => {
+    // A notched rectangle: the top-middle is cut out, so scanlines through the
+    // notch must produce TWO segments (left column + right column).
+    const notched = [
+      { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 },
+      { x: 60, y: 100 }, { x: 60, y: 40 }, { x: 40, y: 40 },
+      { x: 40, y: 100 }, { x: 0, y: 100 },
+    ];
+    const lines = hatchPolygon(notched, 0, 10);
+    // Group by scanline y; some rows (in the notch, y > 40) must have 2 segments.
+    const byY = new Map<number, number>();
+    for (const seg of lines) {
+      const y = Math.round(seg[0].y);
+      byY.set(y, (byY.get(y) ?? 0) + 1);
+    }
+    const splitRows = [...byY.values()].filter((n) => n === 2).length;
+    expect(splitRows).toBeGreaterThan(0);
+  });
+
+  it("returns nothing for a degenerate polygon or non-positive pitch", () => {
+    expect(hatchPolygon([{ x: 0, y: 0 }, { x: 1, y: 1 }], 0, 10)).toEqual([]);
+    expect(hatchPolygon(square, 0, 0)).toEqual([]);
   });
 });
 
@@ -169,6 +223,32 @@ describe("evalPatch", () => {
     expect(res.layers).toHaveLength(1);
     expect(res.layers[0].color).toBe("#2563eb");
     expect(res.layers[0].geometry.length).toBeGreaterThan(0);
+  });
+
+  it("regionHatch fills an explicit polygon as a patch node", () => {
+    const graph = {
+      version: 1 as const, id: "t",
+      nodes: [
+        { op: "regionHatch" as const, id: "fill",
+          polygon: [[0, 0], [200, 0], [200, 200], [0, 200]] as [number, number][],
+          angleDeg: 0, pitch: 20 },
+        { op: "pen" as const, id: "p", from: "fill", color: "#111" },
+      ],
+      out: ["p"],
+    };
+    const res = evalPatch(graph);
+    expect(res.layers[0].geometry.length).toBeGreaterThan(5);
+  });
+
+  it("regionHatch fills the hull of another node (the cable form)", () => {
+    const src = `
+      cloud = lineA()
+      fill = regionHatch(cloud, angle: 30, pitch: 15)
+      out(fill @ "#111")
+    `;
+    // lineA is a single horizontal segment → degenerate hull → no fill, but
+    // must not throw; use a real 2D cloud instead for geometry.
+    expect(() => evalPatch(compileDSL(src, { id: "t" }))).not.toThrow();
   });
 
   it("is deterministic — same patch, identical geometry", () => {

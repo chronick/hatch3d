@@ -22,11 +22,12 @@ import {
   geometryBBox,
 } from "./signals.js";
 import { fieldDistort, fieldCull, fieldThin } from "./operators.js";
+import { hatchPolygon } from "./region-hatch.js";
 import { compositionRegistry } from "../compositions/registry.js";
 import { is2DComposition, isLayeredComposition } from "../compositions/types.js";
 import { runPipeline } from "../workers/render-pipeline.js";
 import type { RenderRequest } from "../workers/render-worker.types.js";
-import { parseDString } from "../utils/clip.js";
+import { parseDString, convexHull } from "../utils/clip.js";
 
 // ── Node schema (zod — the validated wire format) ──
 
@@ -40,6 +41,15 @@ const GradientNode = z.object({ op: z.literal("gradient"), ...NodeBase, from: z.
 const DistortNode = z.object({ op: z.literal("distort"), ...NodeBase, from: z.string(), by: z.string(), amp: z.number() }).strict();
 const CullNode = z.object({ op: z.literal("cull"), ...NodeBase, from: z.string(), by: z.string(), min: z.number(), max: z.number() }).strict();
 const ThinNode = z.object({ op: z.literal("thin"), ...NodeBase, from: z.string(), by: z.string(), strength: z.number() }).strict();
+const RegionHatchNode = z.object({
+  op: z.literal("regionHatch"), ...NodeBase,
+  /** Region = the convex hull of another node's geometry... */
+  from: z.string().optional(),
+  /** ...or an explicit closed polygon. Exactly one of from/polygon. */
+  polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
+  angleDeg: z.number(),
+  pitch: z.number().positive(),
+}).strict();
 const PenNode = z.object({ op: z.literal("pen"), ...NodeBase, from: z.string(), color: z.string().optional(), name: z.string().optional() }).strict();
 
 export type PatchNode =
@@ -51,6 +61,7 @@ export type PatchNode =
   | z.infer<typeof DistortNode>
   | z.infer<typeof CullNode>
   | z.infer<typeof ThinNode>
+  | z.infer<typeof RegionHatchNode>
   | z.infer<typeof PenNode>
   | RepeatNode;
 
@@ -74,7 +85,7 @@ const RepeatNodeSchema: z.ZodType<RepeatNode> = z.lazy(() =>
 
 export const NodeSchema: z.ZodType<PatchNode> = z.union([
   GeneratorNode, SimplexScalarNode, SimplexVectorNode, DensityNode, GradientNode,
-  DistortNode, CullNode, ThinNode, PenNode, RepeatNodeSchema,
+  DistortNode, CullNode, ThinNode, RegionHatchNode, PenNode, RepeatNodeSchema,
 ]);
 
 export const PatchDocSchema = z.object({
@@ -193,6 +204,19 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"]): void {
     case "thin":
       env.set(node.id, fieldThin(asGeometry(ref(env, node.from, `thin(${node.from})`), `thin(${node.from})`), asScalar(ref(env, node.by, `thin by ${node.by}`), `thin by ${node.by}`), node.strength));
       break;
+    case "regionHatch": {
+      let polygon: { x: number; y: number }[];
+      if (node.polygon) {
+        polygon = node.polygon.map(([x, y]) => ({ x, y }));
+      } else if (node.from) {
+        const g = asGeometry(ref(env, node.from, `regionHatch(${node.from})`), `regionHatch(${node.from})`);
+        polygon = convexHull(g.flat());
+      } else {
+        throw new Error(`patch: regionHatch "${node.id}" needs a "from" node or an explicit polygon.`);
+      }
+      env.set(node.id, hatchPolygon(polygon, node.angleDeg, node.pitch));
+      break;
+    }
     case "pen":
       env.set(node.id, asGeometry(ref(env, node.from, `pen(${node.from})`), `pen(${node.from})`));
       break;

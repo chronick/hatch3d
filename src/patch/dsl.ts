@@ -21,7 +21,7 @@
 import type { PatchNode, PatchDoc } from "./graph.js";
 
 const OPERATOR_OPS = new Set([
-  "simplexScalar", "simplexVector", "density", "gradient", "distort", "cull", "thin", "pen",
+  "simplexScalar", "simplexVector", "density", "gradient", "distort", "cull", "thin", "regionHatch", "pen",
 ]);
 
 type Arg = { key: string | null; value: string | number };
@@ -95,6 +95,7 @@ function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
     case "distort": return { op: "distort", id, from: from(), by: String(req("by")), amp: Number(req("amp")) };
     case "cull": return { op: "cull", id, from: from(), by: String(req("by")), min: Number(req("min")), max: Number(req("max")) };
     case "thin": return { op: "thin", id, from: from(), by: String(req("by")), strength: Number(req("strength")) };
+    case "regionHatch": return { op: "regionHatch", id, from: from(), angleDeg: Number(req("angle")), pitch: Number(req("pitch")) };
     case "pen": return { op: "pen", id, from: from(), ...(named.has("color") ? { color: String(named.get("color")) } : {}), ...(named.has("name") ? { name: String(named.get("name")) } : {}) };
     default: throw new Error(`patch DSL: unknown operator "${fn}"`);
   }
