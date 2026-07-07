@@ -85,6 +85,16 @@ export function computeModel(observations: Observation[]): PreferenceModel {
     );
   }
 
+  // ── Seed-derived composition scores ──
+  const seedCompositionScores: Record<string, ScoreEntry> = {};
+  const seedGroups = groupBy(withSignal.filter((o) => o.features.isSeedDerived), (o) => o.composition);
+  for (const [comp, obs] of Object.entries(seedGroups)) {
+    seedCompositionScores[comp] = scoreEntry(
+      obs.filter(isPositive).length,
+      obs.filter(isNegative).length,
+    );
+  }
+
   // ── Category scores ──
   const categoryScores: Record<string, ScoreEntry> = {};
   const catGroups = groupBy(withSignal, (o) => o.features.category);
@@ -178,6 +188,7 @@ export function computeModel(observations: Observation[]): PreferenceModel {
     computedAt: new Date().toISOString(),
     observationCount: observations.length,
     compositionScores,
+    seedCompositionScores,
     categoryScores,
     tagScores,
     macroPreferences,
@@ -203,6 +214,18 @@ export function summarizeModel(model: PreferenceModel): string {
     lines.push(`  ${comp.padEnd(25)} ${bar} ${(entry.score * 100).toFixed(0)}% (${entry.accepted}/${entry.total})`);
   }
   lines.push("");
+
+  // Seed-derived composition affinity
+  const seedEntries = Object.entries(model.seedCompositionScores)
+    .sort((a, b) => b[1].score - a[1].score);
+  if (seedEntries.length > 0) {
+    lines.push("Seed-derived composition affinity:");
+    for (const [comp, entry] of seedEntries) {
+      const bar = "█".repeat(Math.round(entry.score * 20));
+      lines.push(`  ${comp.padEnd(25)} ${bar} ${(entry.score * 100).toFixed(0)}% (${entry.accepted}/${entry.total})`);
+    }
+    lines.push("");
+  }
 
   // Tag preferences
   const tagEntries = Object.entries(model.tagScores)

@@ -14,7 +14,7 @@
 import type { CompositionDefinition } from "../compositions/types.js";
 import { is2DComposition } from "../compositions/types.js";
 import type { CompositionRegistry } from "../compositions/registry.js";
-import type { Observation, PreferenceModel, GeneratedPreset, IntentVector } from "./types.js";
+import type { Observation, PreferenceModel, GeneratedPreset, IntentVector, ScoreEntry } from "./types.js";
 import { macrosToValues } from "./features.js";
 
 interface GeneratorOptions {
@@ -241,6 +241,8 @@ export function mutatePreset(
     source: "mutation",
     confidence: 0.7, // Higher than exploration, slightly lower than pure preference
     parentId: parent.id,
+    // Seed lineage survives mutation, so seed-derived taste signal keeps compounding
+    seedRef: parent.seedRef,
   };
 }
 
@@ -257,6 +259,25 @@ function clamp(val: number, min: number, max: number): number {
 
 // ── Composition selection ──
 
+/**
+ * Number of seed-derived observations at which the seed score is weighted
+ * equally with the base composition score. Below this, seed signal only
+ * nudges the blend — a single seed-derived accept/reject can't dominate.
+ */
+const SEED_BLEND_HALFLIFE = 4;
+
+/**
+ * Blend a composition's base preference score with its seed-derived score,
+ * confidence-weighted by how much seed-derived signal exists (n). This keeps
+ * one early seed-derived outlier from overwhelming the base score while
+ * letting sustained seed-derived signal shift the blend toward it.
+ */
+export function blendSeedScore(baseScore: number, seedEntry: ScoreEntry | undefined): number {
+  if (!seedEntry || seedEntry.total === 0) return baseScore;
+  const seedWeight = seedEntry.total / (seedEntry.total + SEED_BLEND_HALFLIFE);
+  return baseScore * (1 - seedWeight) + seedEntry.score * seedWeight;
+}
+
 function selectComposition(
   model: PreferenceModel,
   allComps: [string, CompositionDefinition][],
@@ -270,11 +291,12 @@ function selectComposition(
     return pool[Math.floor(Math.random() * pool.length)][0];
   }
 
-  // Weighted by preference score
+  // Weighted by preference score, blended with seed-derived affinity
   const weights = allComps.map(([id]) => {
     const entry = model.compositionScores[id];
     // Unseen compositions get a curiosity bonus (0.6 > neutral 0.5)
-    return entry ? entry.score : 0.6;
+    const baseScore = entry ? entry.score : 0.6;
+    return blendSeedScore(baseScore, model.seedCompositionScores[id]);
   });
 
   // Penalize already-used compositions in this batch
@@ -378,9 +400,10 @@ function selectDirectedComposition(
   usedCompositions: Set<string>,
   intent: IntentVector,
 ): string {
-  // Combine preference scores with intent weights
+  // Combine preference scores (blended with seed-derived affinity) with intent weights
   const weights = allComps.map(([id]) => {
-    const prefScore = model.compositionScores[id]?.score ?? 0.6;
+    const baseScore = model.compositionScores[id]?.score ?? 0.6;
+    const prefScore = blendSeedScore(baseScore, model.seedCompositionScores[id]);
     const intentWeight = intent.compositionWeights[id] ?? 1.0;
     // Multiply: intent amplifies or suppresses the preference score
     return prefScore * intentWeight;
