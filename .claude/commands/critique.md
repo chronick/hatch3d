@@ -21,6 +21,15 @@ Follow these steps to perform a deep evaluation of a composition idea or existin
    - Parse the concept, techniques, surface choices, and layer structure
    - Cross-reference against existing compositions for overlap
 
+2.5. **Load calibration anchors** (when critiquing a rendered image): if the
+   plotter-art vault's `corpus/art/anchors.md` is available, read it first. It
+   pins the four image-judgeable axes (Visual Composition, Line Quality,
+   Novelty, Plotter Feasibility) to fixed, scored reference pieces from the
+   print queue. Score those axes *relative to the anchors* — find the band whose
+   exemplars the render most resembles, then place it — so the same render earns
+   the same score across sessions. Parameter Space and Technical Soundness are
+   not image-anchorable; judge them from the config/code as before.
+
 3. **Score on 6 axes** (1-10 each, with specific reasoning):
 
    - **Visual Composition** (1-10): Does the arrangement create visual interest? Is there a focal point? Does it use negative space well? Would it work at different aspect ratios?
