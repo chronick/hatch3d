@@ -21,7 +21,7 @@ import {
   gradient,
   geometryBBox,
 } from "./signals.js";
-import { fieldDistort, fieldCull, fieldThin } from "./operators.js";
+import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry } from "./operators.js";
 import { hatchPolygon } from "./region-hatch.js";
 import { compositionRegistry } from "../compositions/registry.js";
 import { is2DComposition, isLayeredComposition } from "../compositions/types.js";
@@ -50,6 +50,22 @@ const GradientNode = z.object({ op: z.literal("gradient"), ...NodeBase, from: z.
 const DistortNode = z.object({ op: z.literal("distort"), ...NodeBase, from: z.string(), by: z.string(), amp: z.number() }).strict();
 const CullNode = z.object({ op: z.literal("cull"), ...NodeBase, from: z.string(), by: z.string(), min: z.number(), max: z.number() }).strict();
 const ThinNode = z.object({ op: z.literal("thin"), ...NodeBase, from: z.string(), by: z.string(), strength: z.number() }).strict();
+const TransformNode = z.object({
+  op: z.literal("transform"), ...NodeBase, from: z.string(),
+  translate: z.tuple([z.number(), z.number()]).optional(),
+  rotateDeg: z.number().optional(),
+  scale: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+}).strict();
+const ClipNode = z.object({
+  op: z.literal("clip"), ...NodeBase, from: z.string(),
+  /** Clip to the hull of another node's geometry... */
+  hullOf: z.string().optional(),
+  /** ...or to an explicit polygon. Exactly one of hullOf/polygon. */
+  polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
+}).strict().refine(
+  (n) => (n.hullOf == null) !== (n.polygon == null),
+  { message: "clip needs exactly one of `hullOf` or `polygon`" },
+);
 const RegionHatchNode = z.object({
   op: z.literal("regionHatch"), ...NodeBase,
   /** Region = the convex hull of another node's geometry... */
@@ -73,6 +89,8 @@ export type PatchNode =
   | z.infer<typeof DistortNode>
   | z.infer<typeof CullNode>
   | z.infer<typeof ThinNode>
+  | z.infer<typeof TransformNode>
+  | z.infer<typeof ClipNode>
   | z.infer<typeof RegionHatchNode>
   | z.infer<typeof PenNode>
   | RepeatNode;
@@ -97,7 +115,7 @@ const RepeatNodeSchema: z.ZodType<RepeatNode> = z.lazy(() =>
 
 export const NodeSchema: z.ZodType<PatchNode> = z.union([
   GeneratorNode, SimplexScalarNode, SimplexVectorNode, DensityNode, GradientNode,
-  DistortNode, CullNode, ThinNode, RegionHatchNode, PenNode, RepeatNodeSchema,
+  DistortNode, CullNode, ThinNode, TransformNode, ClipNode, RegionHatchNode, PenNode, RepeatNodeSchema,
 ]);
 
 export const PatchDocSchema = z.object({
@@ -242,6 +260,17 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
     case "thin":
       env.set(node.id, fieldThin(asGeometry(ref(env, node.from, `thin(${node.from})`), `thin(${node.from})`), asScalar(ref(env, node.by, `thin by ${node.by}`), `thin by ${node.by}`), node.strength));
       break;
+    case "transform":
+      env.set(node.id, transformGeometry(asGeometry(ref(env, node.from, `transform(${node.from})`), `transform(${node.from})`), { translate: node.translate, rotateDeg: node.rotateDeg, scale: node.scale }));
+      break;
+    case "clip": {
+      const geom = asGeometry(ref(env, node.from, `clip(${node.from})`), `clip(${node.from})`);
+      const region = node.polygon
+        ? node.polygon.map(([x, y]) => ({ x, y }))
+        : asGeometry(ref(env, node.hullOf!, `clip by ${node.hullOf}`), `clip by ${node.hullOf}`).flat();
+      env.set(node.id, clipGeometry(geom, region));
+      break;
+    }
     case "regionHatch": {
       let polygon: { x: number; y: number }[];
       if (node.polygon) {

@@ -129,19 +129,37 @@ i.e. this parameter set over-inks the page for a 0.3mm pen. That is exactly the
 deterministic signal an agent loop uses to reject a candidate before spending a
 vision critique on it.
 
-## Compiler internals (v1)
+## Compiler internals — unified with the patch engine
 
-`compileScene(doc)` flattens the tree to a `LayeredCompositionDefinition`
-(registered under a synthetic `scene:<id>` key) and renders it through
-`runLayeredPipeline`. Reusing the layered definition shape is what guarantees
-the byte-identical equivalence. `layeredToScene` / `sceneToLayers`
-(`src/scene/convert.ts`) provide the round trip, so every existing layered
-composition can migrate to a scene doc and back.
+`render --scene` lowers the scene document to a **patch graph** (`sceneToPatch`,
+`src/scene/to-patch.ts`) and evaluates it through the single patch engine
+(`src/patch/graph.ts`) — the same path `cli/patch.ts` uses. This is the
+convergence: one evaluator for both scene docs and patches (see
+`active/plotter-art-workflow/design/patch-model.md`).
+
+Byte-identical is preserved because the patch `generator` node applies the same
+per-layer semantics as `runLayeredPipeline` (`resolveLayerInnerValues` + macros +
+hatchGroups + camera). A layered scene lowers to generator + pen nodes and
+renders the same SVG it always did (verified in tests + the examples).
+
+Operator lowering (`sceneToPatch`):
+- `op:field-distort` → a `simplexVector` field + a `distort` node
+- `op:region-hatch` → a `regionHatch` node
+- `op:transform` → a `transform` node
+- `op:clip` / `op:mask` → a `clip` node (hull of the region / mask sibling)
+
+`compileScene` (`src/scene/compile.ts`) remains as the alternate scene →
+`LayeredCompositionDefinition` converter (no operators — the layered shape can't
+hold them); `layeredToScene` / `sceneToLayers` (`src/scene/convert.ts`) provide
+the round trip.
 
 ## Not yet (follow-ups)
 
-- **Operators** — region-hatch, field-distort, transform, clip: vault-23w2.
 - **Browser UI authoring** — the compiler is headless-first; wiring scene docs
-  into `App.tsx`'s live editor is a separate UI task (vault-see5 follow-up).
-- **Multiple generators per layer** — v1 is one generator per pen; merging
-  several into one pen needs the operator layer first.
+  into `App.tsx`'s live editor is a separate UI task (vault-2v4c).
+- **Multiple generators per layer** — a layer holds one child subtree; merging
+  several generators into one pen would need a `merge` node.
+- **`op:field-distort` `field: "flow"`** — currently always lowers to simplex;
+  a flow-field source is a follow-up.
+- **Non-convex clip** — `clip` uses the convex hull of the region; true concave
+  clipping is a follow-up.
