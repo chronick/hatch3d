@@ -1,0 +1,9 @@
+# Contours pushed by a blend of (distance-from-their-hull) and noise —
+# rings tighten toward the shape edge, noise breaks up the regularity.
+g      = contourMap(contourLevels: 16, noiseScale: 0.006, seed: 2)
+shape  = sdf(g)
+noise  = simplexScalar(scale: 0.01, seed: 4)
+field  = blend(shape, noise, mode: mix, mix: 0.4)
+push   = gradient(field)
+warped = distort(g, by: push, amp: 6)
+out(warped @ "#1d4ed8")
