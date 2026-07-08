@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { compositionRegistry } from "../compositions/registry";
 import type { Composition2DDefinition } from "../compositions/types";
-import { simplexScalar, simplexVector, densityField, gradient, mulberry32 } from "../patch/signals";
+import { simplexScalar, simplexVector, densityField, gradient, mulberry32, sdfField, blendFields } from "../patch/signals";
 import { fieldDistort, fieldCull } from "../patch/operators";
 import { hatchPolygon } from "../patch/region-hatch";
 import { compileDSL } from "../patch/dsl";
@@ -48,6 +48,30 @@ describe("signals", () => {
     const [dx, dy] = g.sample(50, 50);
     expect(typeof dx).toBe("number");
     expect(typeof dy).toBe("number");
+  });
+
+  it("sdfField is negative inside a polygon and positive outside", () => {
+    const square = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }];
+    const f = sdfField(square);
+    expect(f.kind).toBe("scalar");
+    expect(f.sample(50, 50)).toBeLessThan(0); // center, ~-50
+    expect(f.sample(50, 50)).toBeCloseTo(-50, 5);
+    expect(f.sample(150, 50)).toBeGreaterThan(0); // outside, ~50
+    expect(f.sample(150, 50)).toBeCloseTo(50, 5);
+  });
+
+  it("sdfField is flat 0 for a degenerate polygon", () => {
+    expect(sdfField([{ x: 0, y: 0 }, { x: 1, y: 1 }]).sample(5, 5)).toBe(0);
+  });
+
+  it("blendFields combines two scalar fields by mode", () => {
+    const a = { kind: "scalar" as const, sample: () => 2 };
+    const b = { kind: "scalar" as const, sample: () => 6 };
+    expect(blendFields(a, b, "add").sample(0, 0)).toBe(8);
+    expect(blendFields(a, b, "mul").sample(0, 0)).toBe(12);
+    expect(blendFields(a, b, "max").sample(0, 0)).toBe(6);
+    expect(blendFields(a, b, "min").sample(0, 0)).toBe(2);
+    expect(blendFields(a, b, "mix", 0.25).sample(0, 0)).toBe(3); // 2*.75 + 6*.25
   });
 });
 
@@ -145,6 +169,27 @@ describe("DSL → graph", () => {
     expect(ops).toContain("distort");
     expect(ops).toContain("pen");
     expect(doc.out).toHaveLength(1);
+  });
+
+  it("parses and evaluates sdf + blend field operators", () => {
+    const src = `
+      g = lineA()
+      shape = sdf(g)
+      noise = simplexScalar(scale: 0.01, seed: 1)
+      field = blend(shape, noise, mode: mix, mix: 0.3)
+      push = gradient(field)
+      w = distort(g, by: push, amp: 2)
+      out(w @ "#111")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    parsePatchDoc(doc);
+    const ops = doc.nodes.map((n) => n.op);
+    expect(ops).toContain("sdf");
+    expect(ops).toContain("blend");
+    const blend = doc.nodes.find((n) => n.op === "blend") as { mode: string; mix: number };
+    expect(blend.mode).toBe("mix");
+    expect(blend.mix).toBe(0.3);
+    expect(() => evalPatch(doc)).not.toThrow();
   });
 
   it("parses transform (array literals) and clip operators", () => {

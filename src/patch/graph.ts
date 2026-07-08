@@ -20,6 +20,8 @@ import {
   densityField,
   gradient,
   geometryBBox,
+  sdfField,
+  blendFields,
 } from "./signals.js";
 import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry } from "./operators.js";
 import { hatchPolygon } from "./region-hatch.js";
@@ -47,6 +49,12 @@ const SimplexScalarNode = z.object({ op: z.literal("simplexScalar"), ...NodeBase
 const SimplexVectorNode = z.object({ op: z.literal("simplexVector"), ...NodeBase, scale: z.number(), seed: z.number() }).strict();
 const DensityNode = z.object({ op: z.literal("density"), ...NodeBase, from: z.string(), cell: z.number().positive() }).strict();
 const GradientNode = z.object({ op: z.literal("gradient"), ...NodeBase, from: z.string() }).strict();
+const SdfNode = z.object({ op: z.literal("sdf"), ...NodeBase, from: z.string() }).strict();
+const BlendNode = z.object({
+  op: z.literal("blend"), ...NodeBase, a: z.string(), b: z.string(),
+  mode: z.enum(["add", "mul", "max", "min", "mix"]).default("add"),
+  mix: z.number().default(0.5),
+}).strict();
 const DistortNode = z.object({ op: z.literal("distort"), ...NodeBase, from: z.string(), by: z.string(), amp: z.number() }).strict();
 const CullNode = z.object({ op: z.literal("cull"), ...NodeBase, from: z.string(), by: z.string(), min: z.number(), max: z.number() }).strict();
 const ThinNode = z.object({ op: z.literal("thin"), ...NodeBase, from: z.string(), by: z.string(), strength: z.number() }).strict();
@@ -86,6 +94,8 @@ export type PatchNode =
   | z.infer<typeof SimplexVectorNode>
   | z.infer<typeof DensityNode>
   | z.infer<typeof GradientNode>
+  | z.infer<typeof SdfNode>
+  | z.infer<typeof BlendNode>
   | z.infer<typeof DistortNode>
   | z.infer<typeof CullNode>
   | z.infer<typeof ThinNode>
@@ -115,6 +125,7 @@ const RepeatNodeSchema: z.ZodType<RepeatNode> = z.lazy(() =>
 
 export const NodeSchema: z.ZodType<PatchNode> = z.union([
   GeneratorNode, SimplexScalarNode, SimplexVectorNode, DensityNode, GradientNode,
+  SdfNode, BlendNode,
   DistortNode, CullNode, ThinNode, TransformNode, ClipNode, RegionHatchNode, PenNode, RepeatNodeSchema,
 ]);
 
@@ -250,6 +261,18 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
     }
     case "gradient":
       env.set(node.id, gradient(asScalar(ref(env, node.from, `gradient(${node.from})`), `gradient(${node.from})`)));
+      break;
+    case "sdf": {
+      const g = asGeometry(ref(env, node.from, `sdf(${node.from})`), `sdf(${node.from})`);
+      env.set(node.id, sdfField(convexHull(g.flat())));
+      break;
+    }
+    case "blend":
+      env.set(node.id, blendFields(
+        asScalar(ref(env, node.a, `blend a=${node.a}`), `blend a=${node.a}`),
+        asScalar(ref(env, node.b, `blend b=${node.b}`), `blend b=${node.b}`),
+        node.mode, node.mix,
+      ));
       break;
     case "distort":
       env.set(node.id, fieldDistort(asGeometry(ref(env, node.from, `distort(${node.from})`), `distort(${node.from})`), asVector(ref(env, node.by, `distort by ${node.by}`), `distort by ${node.by}`), node.amp));

@@ -159,3 +159,72 @@ export function geometryBBox(
   if (!Number.isFinite(xMin)) return { xMin: 0, yMin: 0, xMax: fallback.w, yMax: fallback.h };
   return { xMin, yMin, xMax, yMax };
 }
+
+type Pt = { x: number; y: number };
+
+function pointToSegmentDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+function pointInPolygon(px: number, py: number, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Signed-distance field of a polygon (typically a node's convex hull): the
+ * distance to the nearest edge, negative inside and positive outside. A "how
+ * far from this shape" CV — modulate hatch pitch by distance from a form, ring
+ * a shape, fade an effect with distance. Degenerate polygons give a flat 0.
+ */
+export function sdfField(polygon: Pt[]): ScalarField {
+  if (polygon.length < 3) return { kind: "scalar", sample: () => 0 };
+  const n = polygon.length;
+  return {
+    kind: "scalar",
+    sample: (x, y) => {
+      let min = Infinity;
+      for (let i = 0; i < n; i++) {
+        const a = polygon[i];
+        const b = polygon[(i + 1) % n];
+        const d = pointToSegmentDist(x, y, a.x, a.y, b.x, b.y);
+        if (d < min) min = d;
+      }
+      return pointInPolygon(x, y, polygon) ? -min : min;
+    },
+  };
+}
+
+/** Combine two scalar fields into one — the field-domain mixer. */
+export function blendFields(
+  a: ScalarField,
+  b: ScalarField,
+  mode: "add" | "mul" | "max" | "min" | "mix",
+  mix = 0.5,
+): ScalarField {
+  return {
+    kind: "scalar",
+    sample: (x, y) => {
+      const va = a.sample(x, y);
+      const vb = b.sample(x, y);
+      switch (mode) {
+        case "add": return va + vb;
+        case "mul": return va * vb;
+        case "max": return Math.max(va, vb);
+        case "min": return Math.min(va, vb);
+        case "mix": return va * (1 - mix) + vb * mix;
+      }
+    },
+  };
+}

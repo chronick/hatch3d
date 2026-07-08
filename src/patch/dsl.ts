@@ -14,15 +14,15 @@
  *   # comments with leading '#'
  *
  * Operators (reserved fn names): simplexScalar, simplexVector, density, gradient,
- * distort, cull, thin, regionHatch, transform, clip, pen. Any other fn name is a
- * composition (generator node). For operators, the first positional arg is the
- * input node (`from`). Array literals (`translate: [10, -4]`) are supported.
+ * sdf, blend, distort, cull, thin, regionHatch, transform, clip, pen. Any other
+ * fn name is a composition (generator node). For operators, the first positional
+ * arg is the input node (`from`). Array literals (`translate: [10, -4]`) work.
  */
 
 import type { PatchNode, PatchDoc } from "./graph.js";
 
 const OPERATOR_OPS = new Set([
-  "simplexScalar", "simplexVector", "density", "gradient", "distort", "cull", "thin", "regionHatch", "transform", "clip", "pen",
+  "simplexScalar", "simplexVector", "density", "gradient", "sdf", "blend", "distort", "cull", "thin", "regionHatch", "transform", "clip", "pen",
 ]);
 
 type ArgValue = string | number | number[];
@@ -102,6 +102,14 @@ function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
     case "simplexVector": return { op: "simplexVector", id, scale: Number(req("scale")), seed: Number(req("seed")) };
     case "density": return { op: "density", id, from: from(), cell: Number(req("cell")) };
     case "gradient": return { op: "gradient", id, from: from() };
+    case "sdf": return { op: "sdf", id, from: from() };
+    case "blend": return {
+      op: "blend", id,
+      a: String(positional[0] ?? req("a")),
+      b: String(positional[1] ?? req("b")),
+      mode: (named.has("mode") ? String(named.get("mode")) : "add") as "add" | "mul" | "max" | "min" | "mix",
+      mix: named.has("mix") ? Number(named.get("mix")) : 0.5,
+    };
     case "distort": return { op: "distort", id, from: from(), by: String(req("by")), amp: Number(req("amp")) };
     case "cull": return { op: "cull", id, from: from(), by: String(req("by")), min: Number(req("min")), max: Number(req("max")) };
     case "thin": return { op: "thin", id, from: from(), by: String(req("by")), strength: Number(req("strength")) };

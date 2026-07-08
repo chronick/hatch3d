@@ -155,7 +155,8 @@ repeat 3 {                                     # bounded iteration (deterministi
 out(warped @ "#1d4ed8")
 ```
 
-Operators: `simplexScalar`, `simplexVector`, `density`, `gradient`, `distort`,
+Operators: `simplexScalar`, `simplexVector`, `density`, `gradient`, `sdf` (signed
+distance to a node's hull), `blend` (combine two scalar fields: add/mul/max/min/mix), `distort`,
 `cull`, `thin`, `regionHatch` (fill a region — the hull of a node, or an explicit
 polygon — with angled parallel lines; scanline even-odd, handles concave zones),
 `transform` (translate/rotate/scale; `translate: [x,y]`), `clip` (to a node's
