@@ -214,6 +214,12 @@ describe("DSL → graph", () => {
       .toThrow(/must be \[x, y\]/);
   });
 
+  it("rejects a trailing comma in an array literal (no silent 0)", () => {
+    // `[10,]` must not silently become [10, 0]; parsePatchDoc rejects the NaN.
+    const doc = compileDSL(`g = lineA()\nt = transform(g, translate: [10,])\nout(t @ "#111")`, { id: "t" });
+    expect(() => parsePatchDoc(doc)).toThrow(/Invalid patch document/);
+  });
+
   it("infers the threaded variable in a repeat block", () => {
     const src = `
       g = lineA()

@@ -32,8 +32,13 @@ function parseValue(raw: string): ArgValue {
   const t = raw.trim();
   if (t.startsWith('"') && t.endsWith('"')) return t.slice(1, -1);
   if (t.startsWith("[") && t.endsWith("]")) {
-    // Numeric array literal, e.g. translate: [10, -4].
-    return t.slice(1, -1).split(",").map((s) => Number(s.trim()));
+    // Numeric array literal, e.g. translate: [10, -4]. Empty elements (a
+    // trailing comma `[10,]`) become NaN so validation rejects them rather
+    // than silently coercing "" → 0.
+    return t.slice(1, -1).split(",").map((s) => {
+      const el = s.trim();
+      return el === "" ? NaN : Number(el);
+    });
   }
   const n = Number(t);
   return Number.isNaN(n) ? t : n; // bare word → node ref (string)
