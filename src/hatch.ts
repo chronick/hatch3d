@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { createNoise2D } from "simplex-noise";
+import { mulberry32, hash01 } from "./utils/prng";
 import type { SurfaceFn } from "./surfaces";
 
 export interface HatchParams {
@@ -23,6 +24,64 @@ export interface HatchParams {
   // Lines are oversampled by densityOversample and probabilistically filtered.
   densityFn?: (u: number, v: number) => number;
   densityOversample?: number;
+  /**
+   * Point-level UV clip: return false to omit the point, splitting the
+   * polyline at that boundary. Enables tonal layering — clip each
+   * cross-hatch angle set to the surface region dark enough for it
+   * (Krbn's tonal model: shading is density, form is direction).
+   */
+  clipFn?: (u: number, v: number) => boolean;
+  /**
+   * Seed for all stochastic post-processing (noise displacement, dash
+   * randomness, density filtering). Same params + same seed → identical
+   * output. Defaults to 0.
+   */
+  seed?: number;
+}
+
+/**
+ * Accumulates surface points for one hatch line, splitting the polyline
+ * wherever clipFn rejects a point. Out-of-range UV samples are still simply
+ * skipped by callers (joining across the gap) to preserve legacy behavior;
+ * only clipFn causes a split.
+ */
+class LineCollector {
+  private current: THREE.Vector3[] = [];
+  private lines: THREE.Vector3[][] = [];
+  private surfaceFn: SurfaceFn;
+  private params: Record<string, number>;
+  private clipFn?: (u: number, v: number) => boolean;
+
+  constructor(
+    surfaceFn: SurfaceFn,
+    params: Record<string, number>,
+    clipFn?: (u: number, v: number) => boolean,
+  ) {
+    this.surfaceFn = surfaceFn;
+    this.params = params;
+    this.clipFn = clipFn;
+  }
+
+  add(u: number, v: number): void {
+    if (this.clipFn && !this.clipFn(u, v)) {
+      this.split();
+      return;
+    }
+    this.current.push(this.surfaceFn(u, v, this.params));
+  }
+
+  private split(): void {
+    if (this.current.length >= 2) this.lines.push(this.current);
+    this.current = [];
+  }
+
+  /** Finish the line and return the collected polyline segments (each ≥ 2 points). */
+  end(): THREE.Vector3[][] {
+    this.split();
+    const out = this.lines;
+    this.lines = [];
+    return out;
+  }
 }
 
 /**
@@ -36,7 +95,8 @@ function generateDiagonalLines(
   count: number,
   samples: number,
   uRange: [number, number],
-  vRange: [number, number]
+  vRange: [number, number],
+  clipFn?: (u: number, v: number) => boolean
 ): THREE.Vector3[][] {
   const ca = Math.cos(angle);
   const sa = Math.sin(angle);
@@ -54,7 +114,7 @@ function generateDiagonalLines(
   const lines: THREE.Vector3[][] = [];
   for (let i = 0; i < count; i++) {
     const isoVal = isoMin + (i / (count - 1)) * (isoMax - isoMin);
-    const pts: THREE.Vector3[] = [];
+    const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
     const maxExtent = Math.max(uSpan, vSpan);
     for (let j = 0; j <= samples; j++) {
       const t = (j / samples) * 2 - 1;
@@ -63,24 +123,30 @@ function generateDiagonalLines(
       const uc = uRange[0] + ((u - isoMin) / (isoMax - isoMin)) * uSpan;
       const vc = vRange[0] + ((v - isoMin) / (isoMax - isoMin)) * vSpan;
       if (uc >= uRange[0] && uc <= uRange[1] && vc >= vRange[0] && vc <= vRange[1]) {
-        pts.push(surfaceFn(uc, vc, surfaceParams));
+        col.add(uc, vc);
       }
     }
-    if (pts.length >= 2) lines.push(pts);
+    lines.push(...col.end());
   }
   return lines;
 }
 
 /**
- * Post-process: apply Perlin noise displacement perpendicular to each line's direction.
+ * Post-process: apply noise displacement perpendicular to each line's direction.
  * Adds organic imperfection to otherwise-regular hatch lines.
+ *
+ * The noise field is sampled at each point's object-space position (not by
+ * emission order), so lines that share geometry get coherent offsets and the
+ * wobble stays anchored to the surface as parameters change — Krbn's
+ * anti-"boiling" property. Seeded: same seed → same displacement.
  */
 function applyNoiseDisplacement(
   polylines: THREE.Vector3[][],
   amplitude: number,
   frequency: number,
+  seed: number,
 ): void {
-  const noise2D = createNoise2D();
+  const noise2D = createNoise2D(mulberry32(seed ^ 0x9e3779b9));
 
   for (let lineIdx = 0; lineIdx < polylines.length; lineIdx++) {
     const pts = polylines[lineIdx];
@@ -133,6 +199,7 @@ function applyDashing(
   dashLength: number,
   gapLength: number,
   dashRandom: number,
+  rng: () => number,
 ): THREE.Vector3[][] {
   const result: THREE.Vector3[][] = [];
 
@@ -144,7 +211,7 @@ function applyDashing(
 
     // Walk along the polyline measuring cumulative arc length
     let drawing = true;
-    let remaining = randomize(dashLength, dashRandom);
+    let remaining = randomize(dashLength, dashRandom, rng);
     let current: THREE.Vector3[] = [pts[0].clone()];
 
     for (let i = 1; i < pts.length; i++) {
@@ -178,19 +245,14 @@ function applyDashing(
           }
           drawing = !drawing;
           remaining = drawing
-            ? randomize(dashLength, dashRandom)
-            : randomize(gapLength, dashRandom);
+            ? randomize(dashLength, dashRandom, rng)
+            : randomize(gapLength, dashRandom, rng);
           if (drawing) {
             current = [interp.clone()];
           } else {
             current = [];
           }
         }
-      }
-
-      // If we're drawing and haven't switched yet, add the endpoint
-      if (drawing && consumed >= segLen) {
-        // Already added interpolated point at end
       }
     }
 
@@ -203,9 +265,9 @@ function applyDashing(
   return result;
 }
 
-function randomize(base: number, randomness: number): number {
+function randomize(base: number, randomness: number, rng: () => number): number {
   if (randomness <= 0) return base;
-  return base * (1 + (Math.random() * 2 - 1) * randomness);
+  return base * (1 + (rng() * 2 - 1) * randomness);
 }
 
 export function generateUVHatchLines(
@@ -229,6 +291,8 @@ export function generateUVHatchLines(
     dashRandom = 0,
     densityFn,
     densityOversample = 3,
+    clipFn,
+    seed = 0,
   } = hatchParams;
 
   // If densityFn is provided, oversample the line count and filter afterward
@@ -238,35 +302,40 @@ export function generateUVHatchLines(
   // Track UV midpoints per line for density filtering
   const lineMidUV: { u: number; v: number }[] = [];
 
+  const emit = (col: LineCollector, mid: { u: number; v: number }) => {
+    for (const line of col.end()) {
+      polylines3D.push(line);
+      lineMidUV.push(mid);
+    }
+  };
+
   if (family === "u") {
     for (let i = 0; i < effectiveCount; i++) {
       const u = uRange[0] + (i / (effectiveCount - 1)) * (uRange[1] - uRange[0]);
       const vMid = (vRange[0] + vRange[1]) / 2;
-      const pts: THREE.Vector3[] = [];
+      const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
       for (let j = 0; j <= samples; j++) {
         const v = vRange[0] + (j / samples) * (vRange[1] - vRange[0]);
-        pts.push(surfaceFn(u, v, surfaceParams));
+        col.add(u, v);
       }
-      polylines3D.push(pts);
-      lineMidUV.push({ u, v: vMid });
+      emit(col, { u, v: vMid });
     }
   } else if (family === "v") {
     for (let i = 0; i < effectiveCount; i++) {
       const v = vRange[0] + (i / (effectiveCount - 1)) * (vRange[1] - vRange[0]);
       const uMid = (uRange[0] + uRange[1]) / 2;
-      const pts: THREE.Vector3[] = [];
+      const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
       for (let j = 0; j <= samples; j++) {
         const u = uRange[0] + (j / samples) * (uRange[1] - uRange[0]);
-        pts.push(surfaceFn(u, v, surfaceParams));
+        col.add(u, v);
       }
-      polylines3D.push(pts);
-      lineMidUV.push({ u: uMid, v });
+      emit(col, { u: uMid, v });
     }
   } else if (family === "diagonal") {
-    const lines = generateDiagonalLines(surfaceFn, surfaceParams, angle, effectiveCount, samples, uRange, vRange);
+    const lines = generateDiagonalLines(surfaceFn, surfaceParams, angle, effectiveCount, samples, uRange, vRange, clipFn);
     for (let i = 0; i < lines.length; i++) {
       polylines3D.push(lines[i]);
-      const t = effectiveCount > 1 ? i / (effectiveCount - 1) : 0.5;
+      const t = lines.length > 1 ? i / (lines.length - 1) : 0.5;
       lineMidUV.push({
         u: (uRange[0] + uRange[1]) / 2,
         v: vRange[0] + t * (vRange[1] - vRange[0]),
@@ -281,28 +350,25 @@ export function generateUVHatchLines(
 
     for (let i = 0; i < effectiveCount; i++) {
       const r = ((i + 1) / effectiveCount) * maxRadius;
-      const pts: THREE.Vector3[] = [];
+      const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
       for (let j = 0; j <= samples; j++) {
         const theta = (j / samples) * Math.PI * 2;
         const u = uMid + r * Math.cos(theta);
         const v = vMid + r * Math.sin(theta);
         if (u >= uRange[0] && u <= uRange[1] && v >= vRange[0] && v <= vRange[1]) {
-          pts.push(surfaceFn(u, v, surfaceParams));
+          col.add(u, v);
         }
       }
-      if (pts.length >= 2) {
-        polylines3D.push(pts);
-        lineMidUV.push({ u: uMid + r, v: vMid });
-      }
+      emit(col, { u: uMid + r, v: vMid });
     }
   } else if (family === "hex") {
     const perDir = Math.max(1, Math.floor(effectiveCount / 3));
     const angles = [0, Math.PI / 3, (2 * Math.PI) / 3];
     for (const a of angles) {
-      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange);
+      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange, clipFn);
       for (let i = 0; i < lines.length; i++) {
         polylines3D.push(lines[i]);
-        const t = perDir > 1 ? i / (perDir - 1) : 0.5;
+        const t = lines.length > 1 ? i / (lines.length - 1) : 0.5;
         lineMidUV.push({
           u: (uRange[0] + uRange[1]) / 2,
           v: vRange[0] + t * (vRange[1] - vRange[0]),
@@ -312,10 +378,10 @@ export function generateUVHatchLines(
   } else if (family === "crosshatch") {
     const perDir = Math.max(1, Math.floor(effectiveCount / 2));
     for (const a of [angle, angle + Math.PI / 2]) {
-      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange);
+      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange, clipFn);
       for (let i = 0; i < lines.length; i++) {
         polylines3D.push(lines[i]);
-        const t = perDir > 1 ? i / (perDir - 1) : 0.5;
+        const t = lines.length > 1 ? i / (lines.length - 1) : 0.5;
         lineMidUV.push({
           u: (uRange[0] + uRange[1]) / 2,
           v: vRange[0] + t * (vRange[1] - vRange[0]),
@@ -333,20 +399,17 @@ export function generateUVHatchLines(
 
     for (let i = 0; i < effectiveCount; i++) {
       const armOffset = (i / effectiveCount) * Math.PI * 2;
-      const pts: THREE.Vector3[] = [];
+      const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
       for (let j = 0; j <= samples; j++) {
         const theta = (j / samples) * maxTheta;
         const r = (theta / maxTheta) * maxRadius;
         const u = uMid + r * Math.cos(theta + armOffset);
         const v = vMid + r * Math.sin(theta + armOffset);
         if (u >= uRange[0] && u <= uRange[1] && v >= vRange[0] && v <= vRange[1]) {
-          pts.push(surfaceFn(u, v, surfaceParams));
+          col.add(u, v);
         }
       }
-      if (pts.length >= 2) {
-        polylines3D.push(pts);
-        lineMidUV.push({ u: uMid, v: vMid });
-      }
+      emit(col, { u: uMid, v: vMid });
     }
   } else if (family === "wave") {
     // Sinusoidal hatch lines — like v-constant lines but with sine modulation
@@ -354,20 +417,21 @@ export function generateUVHatchLines(
     for (let i = 0; i < effectiveCount; i++) {
       const vBase = vRange[0] + (i / (effectiveCount - 1)) * vSpan;
       const phaseShift = i * 0.3;
-      const pts: THREE.Vector3[] = [];
+      const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
       for (let j = 0; j <= samples; j++) {
         const u = uRange[0] + (j / samples) * (uRange[1] - uRange[0]);
         const v = vBase + waveAmplitude * Math.sin(u * waveFrequency * Math.PI * 2 + phaseShift);
         // Clamp v to range
         const vc = Math.max(vRange[0], Math.min(vRange[1], v));
-        pts.push(surfaceFn(u, vc, surfaceParams));
+        col.add(u, vc);
       }
-      polylines3D.push(pts);
-      lineMidUV.push({ u: (uRange[0] + uRange[1]) / 2, v: vBase });
+      emit(col, { u: (uRange[0] + uRange[1]) / 2, v: vBase });
     }
   }
 
-  // Post-process: density-based filtering (oversample-and-filter)
+  // Post-process: density-based filtering (oversample-and-filter).
+  // Keep decisions are hashed per line index (stable identity), not drawn
+  // from a sequential RNG — so one line's fate never depends on another's.
   if (densityFn && polylines3D.length > 0) {
     const filtered: THREE.Vector3[][] = [];
     for (let i = 0; i < polylines3D.length; i++) {
@@ -377,8 +441,8 @@ export function generateUVHatchLines(
         continue;
       }
       const density = densityFn(mid.u, mid.v);
-      // Probabilistic keep: density 1 = always keep, density 0 = always drop
-      if (Math.random() < Math.max(0, Math.min(1, density))) {
+      // Deterministic keep: density 1 = always keep, density 0 = always drop
+      if (hash01(seed, i) < Math.max(0, Math.min(1, density))) {
         filtered.push(polylines3D[i]);
       }
     }
@@ -387,12 +451,12 @@ export function generateUVHatchLines(
 
   // Post-process: noise perturbation
   if (noiseAmplitude && noiseAmplitude > 0 && noiseFrequency && noiseFrequency > 0) {
-    applyNoiseDisplacement(polylines3D, noiseAmplitude, noiseFrequency);
+    applyNoiseDisplacement(polylines3D, noiseAmplitude, noiseFrequency, seed);
   }
 
   // Post-process: dashed lines
   if (dashLength && dashLength > 0 && gapLength && gapLength > 0) {
-    polylines3D = applyDashing(polylines3D, dashLength, gapLength, dashRandom);
+    polylines3D = applyDashing(polylines3D, dashLength, gapLength, dashRandom, mulberry32(seed ^ 0x85ebca6b));
   }
 
   return polylines3D;

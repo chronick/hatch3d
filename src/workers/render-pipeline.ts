@@ -13,8 +13,8 @@ import {
   polylinesToSVGPaths,
   buildSurfaceMesh,
 } from "../projection";
-import { renderDepthBufferOffscreen, clipPolylineByDepth } from "../occlusion";
-import { filterByProjectedDensity } from "../density";
+import { renderDepthBufferOffscreen, splitPolylineByDepth } from "../occlusion";
+import { filterByProjectedDensity, filterByProjectedDensityIndices } from "../density";
 import { compositionRegistry } from "../compositions/registry";
 import {
   type Composition3DDefinition,
@@ -40,6 +40,42 @@ import type {
 /**
  * Reconstruct a Three.js camera from serialized params.
  */
+// ── Depth-emphasis stroke width (Krbn's depthEmphasis cue) ──
+// Strokes nearer than the camera target get bolder, farther ones finer:
+//   scale = clamp((refDist / dist)^0.55, 0.55, 1.6)
+// Per-polyline scales are quantized into bands so each band can be emitted
+// as one pen layer (a plotter can't vary width along a stroke, but it can
+// swap pens per band).
+const DEPTH_WIDTH_EXP = 0.55;
+const DEPTH_WIDTH_MIN = 0.55;
+const DEPTH_WIDTH_MAX = 1.6;
+const DEPTH_WIDTH_BANDS = 3;
+const DEPTH_BAND_NAMES = ["width-far", "width-mid", "width-near"];
+
+function depthWidthBand(pts: THREE.Vector3[], camPos: THREE.Vector3, refDist: number): number {
+  let sum = 0;
+  for (const p of pts) sum += p.distanceTo(camPos);
+  const dist = Math.max(1e-6, sum / pts.length);
+  const scale = Math.min(
+    DEPTH_WIDTH_MAX,
+    Math.max(DEPTH_WIDTH_MIN, Math.pow(refDist / dist, DEPTH_WIDTH_EXP))
+  );
+  return Math.min(
+    DEPTH_WIDTH_BANDS - 1,
+    Math.floor(((scale - DEPTH_WIDTH_MIN) / (DEPTH_WIDTH_MAX - DEPTH_WIDTH_MIN)) * DEPTH_WIDTH_BANDS)
+  );
+}
+
+function depthBandScale(band: number): number {
+  return DEPTH_WIDTH_MIN + ((band + 0.5) * (DEPTH_WIDTH_MAX - DEPTH_WIDTH_MIN)) / DEPTH_WIDTH_BANDS;
+}
+
+// Ghosted hidden lines (Krbn's hidden:"ghost"): faint, dashed, slightly
+// thinner than visible strokes.
+const GHOST_WIDTH_SCALE = 0.9;
+const GHOST_OPACITY = 0.32;
+const GHOST_DASH: [number, number] = [4, 3];
+
 function buildCamera(cam: CameraParams): THREE.Camera {
   const pos = new THREE.Vector3(
     cam.dist * Math.sin(cam.theta) * Math.cos(cam.phi),
@@ -107,6 +143,10 @@ function runLayeredPipeline(
       currentHatchGroups: layer.hatchGroupOverrides ?? {},
       densityFilterEnabled: false,
       showMesh: false,
+      // Style-group features would be flattened away by the parse below —
+      // keep inner renders plain.
+      depthWidthEnabled: false,
+      hiddenMode: "drop",
     };
 
     const innerResult = runPipeline(innerReq);
@@ -185,6 +225,7 @@ export function runPipeline(req: RenderRequest): RenderResult {
         cellSize: req.densityCellSize,
         width: req.width,
         height: req.height,
+        seed: req.seed ?? 0,
       });
     }
     const paths = polylinesToSVGPaths(polylines2D);
@@ -251,8 +292,29 @@ export function runPipeline(req: RenderRequest): RenderResult {
     }
   }
 
+  // Inject the request seed into layers that don't set their own, so all
+  // stochastic post-processing (noise, dashes, density) is reproducible.
+  const reqSeed = req.seed ?? 0;
+  for (const layer of layers) {
+    if (layer.hatch.seed === undefined) {
+      layer.hatch = { ...layer.hatch, seed: reqSeed };
+    }
+  }
+
+  const depthWidthEnabled = req.depthWidthEnabled === true;
+  const hiddenGhost = req.hiddenMode === "ghost";
+  const camPos = threeCamera.position;
+  const refDist = Math.max(
+    1e-6,
+    camPos.distanceTo(new THREE.Vector3(req.camera.panX, req.camera.panY, 0))
+  );
+
   const allMeshPaths: string[] = [];
   let allPolylines2D: { x: number; y: number }[][] = [];
+  // Depth-emphasis width band per polyline, aligned with allPolylines2D.
+  let polyBands: number[] = [];
+  // Occluded runs kept for ghosting (hiddenMode: "ghost").
+  const hiddenPolylines2D: { x: number; y: number }[][] = [];
   const meshGeometries: THREE.BufferGeometry[] = [];
 
   // ── WASM fast path ──
@@ -306,6 +368,9 @@ export function runPipeline(req: RenderRequest): RenderResult {
 
     const projected = projectPolylines(polylines3D, threeCamera, req.width, req.height);
     allPolylines2D.push(...projected);
+    if (depthWidthEnabled) {
+      for (const pl of polylines3D) polyBands.push(depthWidthBand(pl, camPos, refDist));
+    }
 
     if (req.showMesh) {
       const pos = meshGeo.getAttribute("position");
@@ -388,6 +453,13 @@ export function runPipeline(req: RenderRequest): RenderResult {
       const offsetY = (depthH - req.depthRes) / 2;
 
       const occludedPolylines: { x: number; y: number }[][] = [];
+      const occludedBands: number[] = [];
+      const toContent = (seg: { x: number; y: number }[]) =>
+        seg.map((p) => ({
+          x: (p.x - offsetX) * (req.width / req.depthRes),
+          y: (p.y - offsetY) * (req.height / req.depthRes),
+        }));
+
       for (let li = 0; li < layers.length; li++) {
         const layer = layers[li];
         const sf = SURFACES[layer.surface];
@@ -411,18 +483,26 @@ export function runPipeline(req: RenderRequest): RenderResult {
 
         const projected = projectPolylines(polylines3D, extCamera, depthW, depthH);
 
-        for (const pl of projected) {
-          const visibleSegments = clipPolylineByDepth(pl, depthBuffer, req.depthBias);
-          for (const seg of visibleSegments) {
-            const scaled = seg.map((p) => ({
-              x: (p.x - offsetX) * (req.width / req.depthRes),
-              y: (p.y - offsetY) * (req.height / req.depthRes),
-            }));
-            occludedPolylines.push(scaled);
+        for (let pi = 0; pi < projected.length; pi++) {
+          const band = depthWidthEnabled
+            ? depthWidthBand(polylines3D[pi], camPos, refDist)
+            : 0;
+          const { visible, hidden } = splitPolylineByDepth(
+            projected[pi],
+            depthBuffer,
+            req.depthBias
+          );
+          for (const seg of visible) {
+            occludedPolylines.push(toContent(seg));
+            occludedBands.push(band);
+          }
+          if (hiddenGhost) {
+            for (const seg of hidden) hiddenPolylines2D.push(toContent(seg));
           }
         }
       }
       allPolylines2D = occludedPolylines;
+      polyBands = occludedBands;
     } catch (e) {
       console.warn("Depth buffer occlusion failed:", (e as Error).message);
     }
@@ -430,12 +510,15 @@ export function runPipeline(req: RenderRequest): RenderResult {
 
   // ── Density filter ──
   if (req.densityFilterEnabled) {
-    allPolylines2D = filterByProjectedDensity(allPolylines2D, {
+    const kept = filterByProjectedDensityIndices(allPolylines2D, {
       maxDensity: req.densityMax,
       cellSize: req.densityCellSize,
       width: req.width,
       height: req.height,
+      seed: reqSeed,
     });
+    allPolylines2D = kept.map((i) => allPolylines2D[i]);
+    if (depthWidthEnabled) polyBands = kept.map((i) => polyBands[i]);
   }
 
   meshGeometries.forEach((g) => g.dispose());
@@ -444,11 +527,47 @@ export function runPipeline(req: RenderRequest): RenderResult {
   const totalVerts = allPolylines2D.reduce((s, p) => s + p.length, 0);
   const allPaths = polylinesToSVGPaths(allPolylines2D);
 
+  // ── Style groups: ghosted hidden runs + depth-emphasis width bands ──
+  // Emitted as layerGroups (pen layers); flat svgPaths stays the visible
+  // union for back-compat. Absent both features, no groups are emitted and
+  // the output is identical to the pre-feature pipeline.
+  let layerGroups: LayerGroupResult[] | undefined;
+  if (hiddenGhost && hiddenPolylines2D.length > 0) {
+    layerGroups = [
+      {
+        id: "hidden",
+        name: "hidden",
+        widthScale: GHOST_WIDTH_SCALE,
+        dash: GHOST_DASH,
+        opacity: GHOST_OPACITY,
+        svgPaths: polylinesToSVGPaths(hiddenPolylines2D),
+      },
+    ];
+  }
+  if (depthWidthEnabled) {
+    layerGroups = layerGroups ?? [];
+    for (let band = 0; band < DEPTH_WIDTH_BANDS; band++) {
+      const bandPolys = allPolylines2D.filter((_, i) => polyBands[i] === band);
+      if (bandPolys.length === 0) continue;
+      layerGroups.push({
+        id: DEPTH_BAND_NAMES[band],
+        name: DEPTH_BAND_NAMES[band],
+        widthScale: depthBandScale(band),
+        svgPaths: polylinesToSVGPaths(bandPolys),
+      });
+    }
+  } else if (layerGroups) {
+    // Ghost group alone — visible strokes still need a group of their own,
+    // since consumers render either groups or the flat list, never both.
+    layerGroups.push({ id: "visible", name: "visible", svgPaths: allPaths });
+  }
+
   return {
     type: "render-result",
     id: req.id,
     svgPaths: allPaths,
     meshPaths: allMeshPaths,
+    layerGroups,
     stats: { lines: totalLines, verts: totalVerts, paths: allPaths.length },
     durationMs: performance.now() - t0,
   };

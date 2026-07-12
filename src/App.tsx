@@ -95,6 +95,9 @@ const DEFAULTS = {
   densityFilterEnabled: true,
   densityMax: 20,
   densityCellSize: 40,
+  seed: 0,
+  depthWidthEnabled: false,
+  hiddenGhost: false,
 };
 
 /** Load saved state, keeping only keys that exist in DEFAULTS with matching type. */
@@ -166,6 +169,11 @@ export default function App() {
   // Display
   const [strokeWidth, setStrokeWidth] = useState(INITIAL.strokeWidth);
   const [showMesh, setShowMesh] = useState(INITIAL.showMesh);
+
+  // Stroke style (Krbn-inspired): seed, depth-emphasis width, ghost hidden
+  const [seed, setSeed] = useState(INITIAL.seed);
+  const [depthWidthEnabled, setDepthWidthEnabled] = useState(INITIAL.depthWidthEnabled);
+  const [hiddenGhost, setHiddenGhost] = useState(INITIAL.hiddenGhost);
 
   // Export settings
   const [pageSize, setPageSize] = useState(INITIAL.pageSize);
@@ -398,6 +406,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
+    seed, depthWidthEnabled, hiddenGhost,
   }), [
     surfaceKey, compositionKey, controlsPanel,
     paramA, paramB, paramC, paramD,
@@ -407,6 +416,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
+    seed, depthWidthEnabled, hiddenGhost,
   ]);
   useEffect(() => {
     clearTimeout(persistTimer.current);
@@ -446,6 +456,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
+    seed, depthWidthEnabled, hiddenGhost,
     compValues, macroValues, hatchGroupValues, layeredLayersByKey,
   }), [
     surfaceKey, compositionKey,
@@ -456,6 +467,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
+    seed, depthWidthEnabled, hiddenGhost,
     compValues, macroValues, hatchGroupValues, layeredLayersByKey,
   ]);
 
@@ -489,6 +501,9 @@ export default function App() {
     setDensityFilterEnabled(snap.densityFilterEnabled);
     setDensityMax(snap.densityMax);
     setDensityCellSize(snap.densityCellSize);
+    setSeed(snap.seed);
+    setDepthWidthEnabled(snap.depthWidthEnabled);
+    setHiddenGhost(snap.hiddenGhost);
     setCompValues(snap.compValues);
     setMacroValues(snap.macroValues);
     setHatchGroupValues(snap.hatchGroupValues);
@@ -612,6 +627,9 @@ export default function App() {
       densityFilterEnabled,
       densityMax,
       densityCellSize,
+      seed,
+      depthWidthEnabled,
+      hiddenGhost,
       renderMode: effectiveRenderMode,
       layeredLayersOverride: isLayered ? currentLayers : undefined,
     });
@@ -695,15 +713,26 @@ export default function App() {
 
     let body: string;
     if (layerGroups && layerGroups.length > 0) {
-      // Per-layer <g> groups, each with its own stroke color (pen layer).
+      // Per-layer <g> groups, each with its own stroke style (pen layer).
       body = layerGroups
         .map((lg, i) => {
           const clipped = lg.svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
           if (clipped.length === 0) return "";
           const idAttr = ` id="${escAttr(lg.name ?? `layer-${i}`)}"`;
           const strokeAttr = lg.color ? ` stroke="${escAttr(lg.color)}"` : "";
+          // Path coordinates are baked to page-mm by clipSVGPath, so
+          // width/dash convert alongside: width is relative to the global
+          // stroke width; dash values are viewport px × scale.
+          const widthAttr =
+            lg.widthScale !== undefined
+              ? ` stroke-width="${(strokeWidth * lg.widthScale).toFixed(3)}"`
+              : "";
+          const dashAttr = lg.dash
+            ? ` stroke-dasharray="${lg.dash.map((d) => (d * scale).toFixed(2)).join(" ")}"`
+            : "";
+          const opacityAttr = lg.opacity !== undefined ? ` opacity="${lg.opacity}"` : "";
           const paths = clipped.map((d) => `<path d="${d}"/>`).join("\n      ");
-          return `    <g${idAttr}${strokeAttr}>\n      ${paths}\n    </g>`;
+          return `    <g${idAttr}${strokeAttr}${widthAttr}${dashAttr}${opacityAttr}>\n      ${paths}\n    </g>`;
         })
         .filter(Boolean)
         .join("\n");
@@ -1066,6 +1095,15 @@ ${body}
 
           <Section title="DISPLAY" preview={`sw ${strokeWidth.toFixed(1)}`}>
             <Slider label="Stroke W" value={strokeWidth} onChange={setStrokeWidth} min={0.1} max={2} step={0.05} />
+            <Slider label="Seed" value={seed} onChange={(v) => setSeed(Math.round(v))} min={0} max={999} step={1} />
+            {!is2d && (
+              <>
+                <Toggle label="Depth width" value={depthWidthEnabled} onChange={setDepthWidthEnabled} />
+                {useOcclusion && (
+                  <Toggle label="Ghost hidden" value={hiddenGhost} onChange={setHiddenGhost} />
+                )}
+              </>
+            )}
           </Section>
 
           <Section title="DENSITY" preview={densityFilterEnabled ? `max ${densityMax}` : "off"}>
@@ -1336,7 +1374,18 @@ ${body}
                 >
                   {layerGroups && layerGroups.length > 0
                     ? layerGroups.map((lg, gi) => (
-                        <g key={`lg${gi}`} id={lg.name ?? `layer-${gi}`} stroke={lg.color ?? undefined}>
+                        <g
+                          key={`lg${gi}`}
+                          id={lg.name ?? `layer-${gi}`}
+                          stroke={lg.color ?? undefined}
+                          strokeWidth={
+                            lg.widthScale !== undefined
+                              ? (strokeWidth * lg.widthScale) / exportLayout.scale
+                              : undefined
+                          }
+                          strokeDasharray={lg.dash ? lg.dash.join(" ") : undefined}
+                          opacity={lg.opacity}
+                        >
                           {lg.svgPaths.map((d, i) => (
                             <path key={`${gi}-${i}`} d={d} />
                           ))}

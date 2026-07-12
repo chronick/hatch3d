@@ -78,11 +78,21 @@ export function isWasmReady(): boolean {
 const FIELDS_PER_LAYER = 23;
 
 /**
- * Check if a layer can be handled by WASM (supported surface, no densityFn).
+ * Check if a layer can be handled by WASM (supported surface, no JS callbacks).
+ *
+ * Layers with a non-default seed that actually feeds stochastic
+ * post-processing (noise/dash) also fall back to JS: the Rust path uses its
+ * own fixed-seed RNGs (OpenSimplex::new(0), fixed LCG) and would ignore the
+ * requested seed.
  */
 export function isLayerWasmCompatible(layer: LayerConfig): boolean {
   if (!(layer.surface in SURFACE_IDS)) return false;
   if (layer.hatch.densityFn) return false;
+  if (layer.hatch.clipFn) return false;
+  const h = layer.hatch;
+  const usesStochastic =
+    (h.noiseAmplitude ?? 0) > 0 || ((h.dashLength ?? 0) > 0 && (h.dashRandom ?? 0) > 0);
+  if ((h.seed ?? 0) !== 0 && usesStochastic) return false;
   return true;
 }
 

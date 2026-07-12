@@ -24,6 +24,7 @@ import atmosphericDepth from "../src/compositions/3d/studies/atmospheric-depth.j
 import engravingStudy from "../src/compositions/3d/studies/engraving-study.js";
 import explodedView from "../src/compositions/3d/studies/exploded-view.js";
 import multiTechnique from "../src/compositions/3d/studies/multi-technique.js";
+import tonalShading from "../src/compositions/3d/studies/tonal-shading.js";
 
 // 2D compositions
 import contourMap from "../src/compositions/2d/generative/contour-map.js";
@@ -60,7 +61,7 @@ const allCompositions: CompositionDefinition[] = [
   // 3D
   single, crystalLattice, doubleRing, nestedShells, starburst, vortexTunnel,
   sentinelTerrain3D, totemStack, towerAndBase, crystalSpire, phyllotaxisGarden, ribbonCage,
-  dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique,
+  dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique, tonalShading,
   // 2D
   contourMap, differentialGrowth, flowField, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
   meshLineart, perlinWorms, photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor,
