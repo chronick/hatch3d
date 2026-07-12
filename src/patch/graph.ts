@@ -22,6 +22,7 @@ import {
   geometryBBox,
   sdfField,
   blendFields,
+  luminanceField,
 } from "./signals.js";
 import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry } from "./operators.js";
 import { hatchPolygon } from "./region-hatch.js";
@@ -50,6 +51,12 @@ const SimplexVectorNode = z.object({ op: z.literal("simplexVector"), ...NodeBase
 const DensityNode = z.object({ op: z.literal("density"), ...NodeBase, from: z.string(), cell: z.number().positive() }).strict();
 const GradientNode = z.object({ op: z.literal("gradient"), ...NodeBase, from: z.string() }).strict();
 const SdfNode = z.object({ op: z.literal("sdf"), ...NodeBase, from: z.string() }).strict();
+const LuminanceNode = z.object({
+  op: z.literal("luminance"), ...NodeBase,
+  /** Image path resolved by the caller's resolveImage (CLI decodes; browser uploads). */
+  image: z.string(),
+  invert: z.boolean().default(false),
+}).strict();
 const BlendNode = z.object({
   op: z.literal("blend"), ...NodeBase, a: z.string(), b: z.string(),
   mode: z.enum(["add", "mul", "max", "min", "mix"]).default("add"),
@@ -95,6 +102,7 @@ export type PatchNode =
   | z.infer<typeof DensityNode>
   | z.infer<typeof GradientNode>
   | z.infer<typeof SdfNode>
+  | z.infer<typeof LuminanceNode>
   | z.infer<typeof BlendNode>
   | z.infer<typeof DistortNode>
   | z.infer<typeof CullNode>
@@ -125,7 +133,7 @@ const RepeatNodeSchema: z.ZodType<RepeatNode> = z.lazy(() =>
 
 export const NodeSchema: z.ZodType<PatchNode> = z.union([
   GeneratorNode, SimplexScalarNode, SimplexVectorNode, DensityNode, GradientNode,
-  SdfNode, BlendNode,
+  SdfNode, LuminanceNode, BlendNode,
   DistortNode, CullNode, ThinNode, TransformNode, ClipNode, RegionHatchNode, PenNode, RepeatNodeSchema,
 ]);
 
@@ -243,7 +251,15 @@ function generatorGeometry(
   return runPipeline(req).svgPaths.map(parseDString).filter((p) => p.length >= 2);
 }
 
-function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: PatchDoc["camera"]): void {
+/** Resolves a `luminance` node's image path to a row-major brightness grid. */
+export type ImageResolver = (path: string) => { brightness: ArrayLike<number>; width: number; height: number };
+
+export interface EvalOptions {
+  /** Required only if the patch uses `luminance` nodes; the CLI decodes PNGs. */
+  resolveImage?: ImageResolver;
+}
+
+function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: PatchDoc["camera"], resolveImage?: ImageResolver): void {
   switch (node.op) {
     case "generator":
       env.set(node.id, generatorGeometry(node, page, camera));
@@ -265,6 +281,14 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
     case "sdf": {
       const g = asGeometry(ref(env, node.from, `sdf(${node.from})`), `sdf(${node.from})`);
       env.set(node.id, sdfField(convexHull(g.flat())));
+      break;
+    }
+    case "luminance": {
+      if (!resolveImage) {
+        throw new Error(`patch: luminance node "${node.id}" needs an image resolver (run via the CLI, which decodes images).`);
+      }
+      const img = resolveImage(node.image);
+      env.set(node.id, luminanceField(img.brightness, img.width, img.height, page.widthPx, page.heightPx, { invert: node.invert }));
       break;
     }
     case "blend":
@@ -316,7 +340,7 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
         throw new Error(`patch: repeat threads "${node.thread}" but its body never reassigns it — the loop would be a no-op.`);
       }
       for (let i = 0; i < node.times; i++) {
-        for (const child of node.body) evalNode(child, env, page, camera);
+        for (const child of node.body) evalNode(child, env, page, camera, resolveImage);
       }
       break;
     }
@@ -324,10 +348,10 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
 }
 
 /** Evaluate a patch document into per-pen geometry layers. */
-export function evalPatch(input: unknown): EvalResult {
+export function evalPatch(input: unknown, opts: EvalOptions = {}): EvalResult {
   const doc = parsePatchDoc(input);
   const env: Env = new Map();
-  for (const node of doc.nodes) evalNode(node, env, doc.page, doc.camera);
+  for (const node of doc.nodes) evalNode(node, env, doc.page, doc.camera, opts.resolveImage);
 
   const layers: PatchLayer[] = doc.out.map((id) => {
     const node = findPen(doc.nodes, id);

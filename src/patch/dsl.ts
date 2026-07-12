@@ -22,7 +22,7 @@
 import type { PatchNode, PatchDoc } from "./graph.js";
 
 const OPERATOR_OPS = new Set([
-  "simplexScalar", "simplexVector", "density", "gradient", "sdf", "blend", "distort", "cull", "thin", "regionHatch", "transform", "clip", "pen",
+  "simplexScalar", "simplexVector", "density", "gradient", "sdf", "luminance", "blend", "distort", "cull", "thin", "regionHatch", "transform", "clip", "pen",
 ]);
 
 type ArgValue = string | number | number[];
@@ -108,6 +108,11 @@ function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
     case "density": return { op: "density", id, from: from(), cell: Number(req("cell")) };
     case "gradient": return { op: "gradient", id, from: from() };
     case "sdf": return { op: "sdf", id, from: from() };
+    case "luminance": return {
+      op: "luminance", id,
+      image: String(positional[0] ?? req("image")),
+      invert: String(named.get("invert")) === "true",
+    };
     case "blend": return {
       op: "blend", id,
       a: String(positional[0] ?? req("a")),

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { compositionRegistry } from "../compositions/registry";
 import type { Composition2DDefinition } from "../compositions/types";
-import { simplexScalar, simplexVector, densityField, gradient, mulberry32, sdfField, blendFields } from "../patch/signals";
+import { simplexScalar, simplexVector, densityField, gradient, mulberry32, sdfField, blendFields, luminanceField } from "../patch/signals";
 import { fieldDistort, fieldCull } from "../patch/operators";
 import { hatchPolygon } from "../patch/region-hatch";
 import { compileDSL } from "../patch/dsl";
@@ -62,6 +62,23 @@ describe("signals", () => {
 
   it("sdfField is flat 0 for a degenerate polygon", () => {
     expect(sdfField([{ x: 0, y: 0 }, { x: 1, y: 1 }]).sample(5, 5)).toBe(0);
+  });
+
+  it("luminanceField samples image brightness across the canvas (with invert)", () => {
+    // 2×1 image: left pixel 0, right pixel 1 — a horizontal brightness ramp.
+    const bright = [0, 1];
+    const f = luminanceField(bright, 2, 1, 100, 100);
+    expect(f.kind).toBe("scalar");
+    expect(f.sample(0, 50)).toBeCloseTo(0, 5); // left edge → dark
+    expect(f.sample(100, 50)).toBeCloseTo(1, 5); // right edge → bright
+    expect(f.sample(50, 50)).toBeCloseTo(0.5, 5); // middle → mid
+    // Invert flips it.
+    const inv = luminanceField(bright, 2, 1, 100, 100, { invert: true });
+    expect(inv.sample(100, 50)).toBeCloseTo(0, 5);
+  });
+
+  it("luminanceField is flat 0 for a malformed grid", () => {
+    expect(luminanceField([0.5], 4, 4, 100, 100).sample(50, 50)).toBe(0); // grid too small
   });
 
   it("blendFields combines two scalar fields by mode", () => {
@@ -190,6 +207,28 @@ describe("DSL → graph", () => {
     expect(blend.mode).toBe("mix");
     expect(blend.mix).toBe(0.3);
     expect(() => evalPatch(doc)).not.toThrow();
+  });
+
+  it("evaluates a luminance node via an injected image resolver", () => {
+    const src = `
+      lum = luminance("portrait.png", invert: true)
+      push = gradient(lum)
+      g = lineA()
+      w = distort(g, by: push, amp: 3)
+      out(w @ "#111")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    const lumNode = doc.nodes.find((n) => n.op === "luminance") as { image: string; invert: boolean };
+    expect(lumNode.image).toBe("portrait.png");
+    expect(lumNode.invert).toBe(true);
+    // Resolver returns a synthetic 2×2 grid — no decoder needed in the test.
+    const resolveImage = () => ({ brightness: [0, 1, 0.5, 0.5], width: 2, height: 2 });
+    expect(() => evalPatch(doc, { resolveImage })).not.toThrow();
+  });
+
+  it("errors clearly when a luminance node has no image resolver", () => {
+    const doc = compileDSL(`lum = luminance("x.png")\nlg = gradient(lum)\ng = lineA()\nw = distort(g, by: lg, amp: 1)\nout(w @ "#111")`, { id: "t" });
+    expect(() => evalPatch(doc)).toThrow(/needs an image resolver/);
   });
 
   it("parses transform (array literals) and clip operators", () => {
