@@ -276,3 +276,19 @@ export function luminanceField(
     },
   };
 }
+
+/**
+ * Turn a scalar field into a **directional displacement** vector field: the
+ * scalar scales a fixed direction. Lets any scalar CV (luminance, density, sdf)
+ * push geometry along an axis — e.g. displace horizontal scanlines vertically
+ * by image brightness (the isolinePortrait move).
+ */
+export function directionalField(field: ScalarField, dir: [number, number]): VectorField {
+  return {
+    kind: "vector",
+    sample: (x, y) => {
+      const s = field.sample(x, y);
+      return [s * dir[0], s * dir[1]];
+    },
+  };
+}

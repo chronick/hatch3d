@@ -19,6 +19,7 @@ import { resolve } from "node:path";
 import { loadCompositions } from "./load-compositions.js";
 import { compileDSL } from "../src/patch/dsl.js";
 import { evalPatch } from "../src/patch/graph.js";
+import { pngImageResolver } from "./load-image.js";
 import { polylinesToSVGPaths } from "../src/projection.js";
 import { buildLayeredSVGContent, computeExportLayout } from "./svg-export.js";
 import type { LayerGroupResult } from "../src/workers/render-worker.types.js";
@@ -69,7 +70,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { layers, page } = evalPatch(doc);
+  const { layers, page } = evalPatch(doc, { resolveImage: pngImageResolver });
   const layout = computeExportLayout(page.size, page.orientation, page.marginMm, page.widthPx, page.heightPx);
   const groups: LayerGroupResult[] = layers.map((l) => ({
     id: l.id,

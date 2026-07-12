@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { compositionRegistry } from "../compositions/registry";
 import type { Composition2DDefinition } from "../compositions/types";
-import { simplexScalar, simplexVector, densityField, gradient, mulberry32, sdfField, blendFields, luminanceField } from "../patch/signals";
-import { fieldDistort, fieldCull } from "../patch/operators";
+import { simplexScalar, simplexVector, densityField, gradient, mulberry32, sdfField, blendFields, luminanceField, directionalField } from "../patch/signals";
+import { fieldDistort, fieldCull, resampleGeometry } from "../patch/operators";
 import { hatchPolygon } from "../patch/region-hatch";
 import { compileDSL } from "../patch/dsl";
 import { evalPatch, parsePatchDoc } from "../patch/graph";
@@ -81,6 +81,13 @@ describe("signals", () => {
     expect(luminanceField([0.5], 4, 4, 100, 100).sample(50, 50)).toBe(0); // grid too small
   });
 
+  it("directionalField scales a direction by a scalar field", () => {
+    const half = { kind: "scalar" as const, sample: () => 0.5 };
+    const v = directionalField(half, [0, 2]);
+    expect(v.kind).toBe("vector");
+    expect(v.sample(10, 20)).toEqual([0, 1]); // 0.5 × [0,2]
+  });
+
   it("blendFields combines two scalar fields by mode", () => {
     const a = { kind: "scalar" as const, sample: () => 2 };
     const b = { kind: "scalar" as const, sample: () => 6 };
@@ -99,6 +106,16 @@ describe("operators", () => {
     const out = fieldDistort(geom, constField, 5);
     expect(out[0][0]).toEqual({ x: 5, y: 0 });
     expect(out[0][1]).toEqual({ x: 15, y: 0 });
+  });
+
+  it("resampleGeometry inserts interior vertices up to a max step", () => {
+    const line = [[{ x: 0, y: 0 }, { x: 100, y: 0 }]];
+    const dense = resampleGeometry(line, 10);
+    expect(dense[0].length).toBe(11); // 0,10,20,…,100
+    expect(dense[0][5]).toEqual({ x: 50, y: 0 });
+    // step <= 0 → unchanged; short polylines pass through.
+    expect(resampleGeometry(line, 0)).toEqual(line);
+    expect(resampleGeometry([[{ x: 1, y: 1 }]], 5)).toEqual([[{ x: 1, y: 1 }]]);
   });
 
   it("fieldCull keeps only in-range vertices, splitting at gaps", () => {
@@ -229,6 +246,25 @@ describe("DSL → graph", () => {
   it("errors clearly when a luminance node has no image resolver", () => {
     const doc = compileDSL(`lum = luminance("x.png")\nlg = gradient(lum)\ng = lineA()\nw = distort(g, by: lg, amp: 1)\nout(w @ "#111")`, { id: "t" });
     expect(() => evalPatch(doc)).toThrow(/needs an image resolver/);
+  });
+
+  it("parses directional + resample operators", () => {
+    const src = `
+      lines = lineA()
+      dense = resample(lines, step: 8)
+      lum = luminance("p.png")
+      push = directional(lum, dir: [0, 1])
+      w = distort(dense, by: push, amp: 10)
+      out(w @ "#111")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    const ops = doc.nodes.map((n) => n.op);
+    expect(ops).toContain("resample");
+    expect(ops).toContain("directional");
+    const dir = doc.nodes.find((n) => n.op === "directional") as { dir: [number, number] };
+    expect(dir.dir).toEqual([0, 1]);
+    const rs = doc.nodes.find((n) => n.op === "resample") as { step: number };
+    expect(rs.step).toBe(8);
   });
 
   it("parses transform (array literals) and clip operators", () => {
