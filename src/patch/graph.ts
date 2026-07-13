@@ -360,7 +360,12 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
 
 /** Evaluate a patch document into per-pen geometry layers. */
 export function evalPatch(input: unknown, opts: EvalOptions = {}): EvalResult {
-  const doc = parsePatchDoc(input);
+  return evalPatchDoc(parsePatchDoc(input), opts);
+}
+
+/** Evaluate an already-parsed, validated document — shared by evalPatch and the
+ * iteration sweep so a scrub doesn't re-validate the doc on every frame. */
+function evalPatchDoc(doc: PatchDoc, opts: EvalOptions): EvalResult {
   const env: Env = new Map();
   for (const node of doc.nodes) evalNode(node, env, doc.page, doc.camera, opts.resolveImage);
 
@@ -370,6 +375,72 @@ export function evalPatch(input: unknown, opts: EvalOptions = {}): EvalResult {
     return { id, color: node?.color, name: node?.name ?? id, geometry: geom };
   });
   return { layers, page: doc.page };
+}
+
+/** One frame of an iteration sweep: the document evaluated with the scrubbed
+ * repeat's `times` set to `iter`. */
+export interface IterationFrame {
+  /** 1-based iteration count this frame corresponds to (repeat.times = iter). */
+  iter: number;
+  result: EvalResult;
+}
+
+export interface IterationSweep {
+  /** id of the repeat node that was scrubbed (the first top-level repeat). */
+  repeatId: string;
+  /** the repeat's declared count — the number of frames in a full (stride 1) sweep. */
+  times: number;
+  /** ids of any other top-level repeats, held at full count in every frame. */
+  otherRepeatIds: string[];
+  frames: IterationFrame[];
+}
+
+/**
+ * Scrub a `repeat`: evaluate the document once per iteration count i = 1..N of
+ * its first top-level repeat node, so a caller can render each frame and pick the
+ * count where an open-ended generator "looks right" instead of guessing N upfront
+ * and re-rendering (the concrete L2 gap flagged by the L3 research, vault-176t).
+ *
+ * Frame i is the document evaluated with the repeat's `times` set to i — exactly
+ * what `repeat i { … }` produces, so it is the ground truth for choosing a count,
+ * not an approximation. `times` is schema-capped at 64, so the full sweep is at
+ * most 64 evaluations. Nested repeats and any later top-level repeats run at their
+ * full declared count in every frame; only the first top-level repeat is swept.
+ *
+ * `stride` (>=1) samples every k-th frame to trim output; the final frame
+ * (i = times) is always included so the full-count result is present.
+ */
+export function evalPatchIterations(
+  input: unknown,
+  opts: EvalOptions & { stride?: number } = {},
+): IterationSweep {
+  const doc = parsePatchDoc(input);
+  const repeats = doc.nodes.filter((n): n is RepeatNode => n.op === "repeat");
+  if (repeats.length === 0) {
+    throw new Error("evalPatchIterations: document has no top-level repeat node to scrub");
+  }
+  const target = repeats[0];
+  const stride = Math.max(1, Math.floor(opts.stride ?? 1));
+  const frames: IterationFrame[] = [];
+  for (let i = 1; i <= target.times; i++) {
+    if (i % stride !== 0 && i !== target.times) continue;
+    frames.push({ iter: i, result: evalPatchDoc(withRepeatTimes(doc, target.id, i), opts) });
+  }
+  return {
+    repeatId: target.id,
+    times: target.times,
+    otherRepeatIds: repeats.slice(1).map((r) => r.id),
+    frames,
+  };
+}
+
+/** Shallow-clone a doc with one top-level repeat's `times` overridden. Nodes are
+ * never mutated during evaluation, so a shallow copy of the changed node is safe. */
+function withRepeatTimes(doc: PatchDoc, repeatId: string, times: number): PatchDoc {
+  return {
+    ...doc,
+    nodes: doc.nodes.map((n) => (n.op === "repeat" && n.id === repeatId ? { ...n, times } : n)),
+  };
 }
 
 function findPen(nodes: PatchNode[], id: string): { color?: string; name?: string } | undefined {
