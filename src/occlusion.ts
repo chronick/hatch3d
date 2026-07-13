@@ -157,25 +157,42 @@ export function clipPolylineByDepth(
   depthBuffer: DepthBuffer,
   bias = 0.005
 ): ProjectedPoint[][] {
+  return splitPolylineByDepth(polyline2D, depthBuffer, bias).visible;
+}
+
+/**
+ * Split a projected polyline into visible and hidden runs against the depth
+ * buffer. Hidden runs let callers ghost occluded geometry (faint dashed
+ * strokes) instead of dropping it — the draughtsman's x-ray convention.
+ */
+export function splitPolylineByDepth(
+  polyline2D: ProjectedPoint[],
+  depthBuffer: DepthBuffer,
+  bias = 0.005
+): { visible: ProjectedPoint[][]; hidden: ProjectedPoint[][] } {
   const visible: ProjectedPoint[][] = [];
+  const hidden: ProjectedPoint[][] = [];
   let currentSegment: ProjectedPoint[] = [];
+  let currentVisible: boolean | null = null;
+
+  const flush = () => {
+    if (currentSegment.length >= 2) {
+      (currentVisible ? visible : hidden).push(currentSegment);
+    }
+    currentSegment = [];
+  };
 
   for (const pt of polyline2D) {
     const bufferDepth = sampleDepthBuffer(depthBuffer, pt.x, pt.y);
     const isVisible = pt.depth <= bufferDepth + bias;
 
-    if (isVisible) {
-      currentSegment.push(pt);
-    } else {
-      if (currentSegment.length >= 2) {
-        visible.push([...currentSegment]);
-      }
-      currentSegment = [];
+    if (currentVisible !== null && isVisible !== currentVisible) {
+      flush();
     }
+    currentVisible = isVisible;
+    currentSegment.push(pt);
   }
-  if (currentSegment.length >= 2) {
-    visible.push(currentSegment);
-  }
+  flush();
 
-  return visible;
+  return { visible, hidden };
 }

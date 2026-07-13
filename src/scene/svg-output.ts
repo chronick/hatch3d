@@ -93,8 +93,17 @@ export function buildLayeredSVGContent(
     .map((g, i) => {
       const idAttr = g.name ? ` id="${escapeAttr(g.name)}"` : ` id="layer-${i}"`;
       const stroke = g.color ? ` stroke="${escapeAttr(g.color)}"` : "";
+      // Paths are in viewport px inside the scale() transform, so per-group
+      // width compensates by /scale like the parent <g> does; dash values
+      // are viewport px and scale naturally with the transform.
+      const widthAttr =
+        g.widthScale !== undefined
+          ? ` stroke-width="${((strokeWidth * g.widthScale) / scale).toFixed(4)}"`
+          : "";
+      const dashAttr = g.dash ? ` stroke-dasharray="${g.dash.join(" ")}"` : "";
+      const opacityAttr = g.opacity !== undefined ? ` opacity="${g.opacity}"` : "";
       const paths = g.svgPaths.map((d) => `<path d="${d}"/>`).join("\n        ");
-      return `      <g${idAttr}${stroke}>
+      return `      <g${idAttr}${stroke}${widthAttr}${dashAttr}${opacityAttr}>
         ${paths}
       </g>`;
     })

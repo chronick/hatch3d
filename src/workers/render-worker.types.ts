@@ -39,6 +39,32 @@ export interface RenderRequest {
   densityMax: number;
   densityCellSize: number;
   /**
+   * Global seed for stochastic hatch post-processing (noise displacement,
+   * dash randomness, density filtering). Injected into each layer's
+   * HatchParams unless the layer sets its own. Same request → same SVG.
+   * Default 0.
+   */
+  seed?: number;
+  /**
+   * Depth-emphasis stroke widths (3D only): strokes nearer than the camera
+   * target render bolder, farther ones finer — Krbn's depthEmphasis cue.
+   * Widths are quantized into bands, each emitted as its own layer group
+   * (pen layer) with a `widthScale`. Default off.
+   */
+  depthWidthEnabled?: boolean;
+  /**
+   * What to do with occluded line runs (3D + occlusion only):
+   * "drop" (default) discards them; "ghost" emits them as a separate
+   * faint dashed layer group — the draughtsman's x-ray convention.
+   */
+  hiddenMode?: "drop" | "ghost";
+  /**
+   * Silhouette/contour extraction (3D only): traces the N·V = 0 zero-set
+   * of each layer's surface analytically and emits it as a bold outline
+   * layer group ordered last (the heavy outline pen). Default off.
+   */
+  silhouetteEnabled?: boolean;
+  /**
    * For layered compositions only — replaces the composition's static
    * `layers` array with a user-edited list (visibility/order/colors/etc).
    * Worker structurally clones it like any other request field.
@@ -57,6 +83,18 @@ export interface LayerGroupResult {
   name?: string;
   /** Stroke color for this pen layer (CSS color string). */
   color?: string;
+  /**
+   * Stroke-width multiplier for this group, relative to the global stroke
+   * width (depth-emphasis bands, ghosted hidden lines). Absent = 1.
+   */
+  widthScale?: number;
+  /**
+   * Dash pattern in screen-space pixels (e.g. [6, 4]). Consumers scale it
+   * to their coordinate space alongside stroke width. Absent = solid.
+   */
+  dash?: [number, number];
+  /** Group opacity (ghosted hidden lines). Absent = 1. */
+  opacity?: number;
   /** SVG path `d` strings for this layer only. */
   svgPaths: string[];
 }

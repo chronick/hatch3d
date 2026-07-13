@@ -23,10 +23,8 @@ import type { RenderRequest } from "../src/workers/render-worker.types.js";
 import { buildSVGContent, buildLayeredSVGContent, computeExportLayout } from "./svg-export.js";
 import { parseSceneDoc } from "../src/scene/schema.js";
 import { sceneToPatch } from "../src/scene/to-patch.js";
-import { evalPatch } from "../src/patch/graph.js";
+import { evalPatch, patchLayersToGroups } from "../src/patch/graph.js";
 import { pngImageResolver } from "./load-image.js";
-import { polylinesToSVGPaths } from "../src/projection.js";
-import type { LayerGroupResult } from "../src/workers/render-worker.types.js";
 
 // ── Parse CLI arguments ──
 
@@ -378,12 +376,9 @@ function renderScene(scenePath: string): {
   const { layers, page } = evalPatch(patch, { resolveImage: pngImageResolver });
 
   const layout = computeExportLayout(page.size, page.orientation, page.marginMm, page.widthPx, page.heightPx);
-  const groups: LayerGroupResult[] = layers.map((l) => ({
-    id: l.id,
-    name: l.name,
-    color: l.color,
-    svgPaths: polylinesToSVGPaths(l.geometry),
-  }));
+  // Pen widths (mm) become per-group widthScale here — buildLayeredSVGContent
+  // emits the per-layer stroke-width from it.
+  const groups = patchLayersToGroups(layers, page);
   const svgContent = buildLayeredSVGContent(groups, layout, page.marginMm, page.strokeWidthMm);
   const lines = layers.reduce((s, l) => s + l.geometry.length, 0);
   const verts = layers.reduce((s, l) => s + l.geometry.reduce((n, p) => n + p.length, 0), 0);

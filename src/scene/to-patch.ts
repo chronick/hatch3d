@@ -126,6 +126,7 @@ export function sceneToPatch(doc: SceneDoc): PatchDoc {
         op: "pen", id: penId, from: childId,
         ...(L.pen?.color ? { color: L.pen.color } : {}),
         ...(L.pen?.name ? { name: L.pen.name } : {}),
+        ...(L.pen?.width !== undefined ? { width: L.pen.width } : {}),
       });
       out.push(penId);
       return;

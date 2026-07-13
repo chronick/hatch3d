@@ -61,7 +61,7 @@ same functions the CLI does.
 | `type` | Role | v1 |
 | ------ | ---- | -- |
 | `group` | Nesting; holds layers (and, later, a transform cascade) | ✅ |
-| `layer` | Binds a pen (`color`/`name`/`widthMm`); holds one generator | ✅ |
+| `layer` | Binds a pen (`color`/`name`/`width`); holds one generator | ✅ |
 | `generator` | A registered composition by id + `params`/`macros`/`hatchGroups`/`seed` | ✅ |
 | `op:transform` | Translate/rotate/scale a subtree | declared, deferred → vault-23w2 |
 | `op:clip` | Clip a subtree to a polygon / another node's hull | declared, deferred |
@@ -72,6 +72,13 @@ same functions the CLI does.
 A `layer` may set `blend: "masked"` with `maskBy: "<sibling layer id>"` — this
 maps to the layered pipeline's convex-hull masking. Default blend is `over`
 (additive stacking).
+
+A layer's `pen` may set `width` (mm, positive) in addition to `color`/`name`.
+It becomes a per-layer `stroke-width` on that pen's `<g>` in the exported SVG
+(as a scale relative to `page.strokeWidthMm` — e.g. `width: 0.8` on a 0.5mm
+page renders that group at 1.6× the global width). Layers without a `width`
+inherit the global `page.strokeWidthMm`, and a doc with no pen widths renders
+byte-identically to before the field existed.
 
 The schema is **strict**: unknown keys are rejected, so a malformed doc fails
 loudly at parse time rather than silently mis-rendering (`parseSceneDoc` throws a

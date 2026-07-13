@@ -18,12 +18,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadCompositions } from "./load-compositions.js";
 import { compileDSL } from "../src/patch/dsl.js";
-import { evalPatch, evalPatchIterations } from "../src/patch/graph.js";
+import { evalPatch, evalPatchIterations, patchLayersToGroups } from "../src/patch/graph.js";
 import type { EvalResult } from "../src/patch/graph.js";
 import { pngImageResolver } from "./load-image.js";
-import { polylinesToSVGPaths } from "../src/projection.js";
 import { buildLayeredSVGContent, computeExportLayout } from "./svg-export.js";
-import type { LayerGroupResult } from "../src/workers/render-worker.types.js";
 
 const { values: args } = parseArgs({
   options: {
@@ -73,12 +71,7 @@ loadCompositions();
 function resultToSVG(result: EvalResult): { svg: string; layers: number; totalPaths: number } {
   const { layers, page } = result;
   const layout = computeExportLayout(page.size, page.orientation, page.marginMm, page.widthPx, page.heightPx);
-  const groups: LayerGroupResult[] = layers.map((l) => ({
-    id: l.id,
-    name: l.name,
-    color: l.color,
-    svgPaths: polylinesToSVGPaths(l.geometry),
-  }));
+  const groups = patchLayersToGroups(layers, page);
   const svg = buildLayeredSVGContent(groups, layout, page.marginMm, page.strokeWidthMm);
   const totalPaths = groups.reduce((s, g) => s + g.svgPaths.length, 0);
   return { svg, layers: layers.length, totalPaths };
