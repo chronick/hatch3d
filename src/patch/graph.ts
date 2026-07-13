@@ -30,8 +30,9 @@ import { is2DComposition, isLayeredComposition } from "../compositions/types.js"
 import type { LayeredLayer, HatchGroupConfig } from "../compositions/types.js";
 import { resolveLayerInnerValues } from "../compositions/helpers.js";
 import { runPipeline } from "../workers/render-pipeline.js";
-import type { RenderRequest } from "../workers/render-worker.types.js";
+import type { RenderRequest, LayerGroupResult } from "../workers/render-worker.types.js";
 import { parseDString, convexHull } from "../utils/clip.js";
+import { polylinesToSVGPaths } from "../projection.js";
 
 // ── Node schema (zod — the validated wire format) ──
 
@@ -86,7 +87,12 @@ const RegionHatchNode = z.object({
   (n) => (n.from == null) !== (n.polygon == null),
   { message: "regionHatch needs exactly one of `from` or `polygon`" },
 );
-const PenNode = z.object({ op: z.literal("pen"), ...NodeBase, from: z.string(), color: z.string().optional(), name: z.string().optional() }).strict();
+const PenNode = z.object({
+  op: z.literal("pen"), ...NodeBase, from: z.string(),
+  color: z.string().optional(), name: z.string().optional(),
+  /** Per-pen stroke width in mm (converts to widthScale = width / page.strokeWidthMm at export). */
+  width: z.number().positive().optional(),
+}).strict();
 
 export type PatchNode =
   | z.infer<typeof GeneratorNode>
@@ -171,6 +177,8 @@ export interface PatchLayer {
   id: string;
   color?: string;
   name?: string;
+  /** Per-pen stroke width in mm (from the pen node). Absent = global width. */
+  width?: number;
   geometry: Geometry;
 }
 
@@ -332,18 +340,35 @@ export function evalPatch(input: unknown): EvalResult {
   const layers: PatchLayer[] = doc.out.map((id) => {
     const node = findPen(doc.nodes, id);
     const geom = asGeometry(ref(env, id, `out "${id}"`), `out "${id}"`);
-    return { id, color: node?.color, name: node?.name ?? id, geometry: geom };
+    return { id, color: node?.color, name: node?.name ?? id, width: node?.width, geometry: geom };
   });
   return { layers, page: doc.page };
 }
 
-function findPen(nodes: PatchNode[], id: string): { color?: string; name?: string } | undefined {
+function findPen(nodes: PatchNode[], id: string): { color?: string; name?: string; width?: number } | undefined {
   for (const n of nodes) {
-    if (n.op === "pen" && n.id === id) return { color: n.color, name: n.name };
+    if (n.op === "pen" && n.id === id) return { color: n.color, name: n.name, width: n.width };
     if (n.op === "repeat") {
       const f = findPen(n.body, id);
       if (f) return f;
     }
   }
   return undefined;
+}
+
+/**
+ * Convert evaluated patch layers into the exporter's per-pen group shape
+ * (LayerGroupResult). A pen's width (mm) becomes a widthScale relative to the
+ * page's global stroke width — buildLayeredSVGContent then emits a per-group
+ * `stroke-width`. Layers without a width get no widthScale key, so the
+ * emitted SVG stays byte-identical to the pre-width output.
+ */
+export function patchLayersToGroups(layers: PatchLayer[], page: PatchDoc["page"]): LayerGroupResult[] {
+  return layers.map((l) => ({
+    id: l.id,
+    name: l.name,
+    color: l.color,
+    ...(l.width !== undefined ? { widthScale: l.width / page.strokeWidthMm } : {}),
+    svgPaths: polylinesToSVGPaths(l.geometry),
+  }));
 }

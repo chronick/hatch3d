@@ -130,7 +130,7 @@ function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
       return node;
     }
     case "clip": return { op: "clip", id, from: from(), hullOf: String(req("by")) };
-    case "pen": return { op: "pen", id, from: from(), ...(named.has("color") ? { color: String(named.get("color")) } : {}), ...(named.has("name") ? { name: String(named.get("name")) } : {}) };
+    case "pen": return { op: "pen", id, from: from(), ...(named.has("color") ? { color: String(named.get("color")) } : {}), ...(named.has("name") ? { name: String(named.get("name")) } : {}), ...(named.has("width") ? { width: Number(named.get("width")) } : {}) };
     default: throw new Error(`patch DSL: unknown operator "${fn}"`);
   }
 }

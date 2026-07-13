@@ -109,9 +109,13 @@ export const PenSchema = z
     color: z.string().optional(),
     /** Human-readable name → becomes <g id="..."> in exported SVG. */
     name: z.string().optional(),
-    // Per-pen stroke width is deferred — the render pipeline uses one global
-    // width (page.strokeWidthMm). Reintroduce widthMm here once the exporter
-    // supports per-layer stroke widths, rather than advertising a no-op field.
+    /**
+     * Per-pen stroke width in mm. The exporter emits a per-layer
+     * `stroke-width` on this pen's <g> via LayerGroupResult.widthScale
+     * (= width / page.strokeWidthMm). Absent → the group inherits the global
+     * width and the output is byte-identical to a widthless doc.
+     */
+    width: z.number().positive().optional(),
   })
   .strict();
 
@@ -202,6 +206,8 @@ export const SceneDocSchema = z
 export interface Pen {
   color?: string;
   name?: string;
+  /** Stroke width in mm (positive). */
+  width?: number;
 }
 
 export interface GeneratorNode {
