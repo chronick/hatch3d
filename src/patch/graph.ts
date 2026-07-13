@@ -22,8 +22,10 @@ import {
   geometryBBox,
   sdfField,
   blendFields,
+  luminanceField,
+  directionalField,
 } from "./signals.js";
-import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry } from "./operators.js";
+import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry, resampleGeometry } from "./operators.js";
 import { hatchPolygon } from "./region-hatch.js";
 import { compositionRegistry } from "../compositions/registry.js";
 import { is2DComposition, isLayeredComposition } from "../compositions/types.js";
@@ -50,6 +52,13 @@ const SimplexVectorNode = z.object({ op: z.literal("simplexVector"), ...NodeBase
 const DensityNode = z.object({ op: z.literal("density"), ...NodeBase, from: z.string(), cell: z.number().positive() }).strict();
 const GradientNode = z.object({ op: z.literal("gradient"), ...NodeBase, from: z.string() }).strict();
 const SdfNode = z.object({ op: z.literal("sdf"), ...NodeBase, from: z.string() }).strict();
+const DirectionalNode = z.object({ op: z.literal("directional"), ...NodeBase, from: z.string(), dir: z.tuple([z.number(), z.number()]) }).strict();
+const LuminanceNode = z.object({
+  op: z.literal("luminance"), ...NodeBase,
+  /** Image path resolved by the caller's resolveImage (CLI decodes; browser uploads). */
+  image: z.string(),
+  invert: z.boolean().default(false),
+}).strict();
 const BlendNode = z.object({
   op: z.literal("blend"), ...NodeBase, a: z.string(), b: z.string(),
   mode: z.enum(["add", "mul", "max", "min", "mix"]).default("add"),
@@ -58,6 +67,7 @@ const BlendNode = z.object({
 const DistortNode = z.object({ op: z.literal("distort"), ...NodeBase, from: z.string(), by: z.string(), amp: z.number() }).strict();
 const CullNode = z.object({ op: z.literal("cull"), ...NodeBase, from: z.string(), by: z.string(), min: z.number(), max: z.number() }).strict();
 const ThinNode = z.object({ op: z.literal("thin"), ...NodeBase, from: z.string(), by: z.string(), strength: z.number() }).strict();
+const ResampleNode = z.object({ op: z.literal("resample"), ...NodeBase, from: z.string(), step: z.number().positive() }).strict();
 const TransformNode = z.object({
   op: z.literal("transform"), ...NodeBase, from: z.string(),
   translate: z.tuple([z.number(), z.number()]).optional(),
@@ -95,10 +105,13 @@ export type PatchNode =
   | z.infer<typeof DensityNode>
   | z.infer<typeof GradientNode>
   | z.infer<typeof SdfNode>
+  | z.infer<typeof DirectionalNode>
+  | z.infer<typeof LuminanceNode>
   | z.infer<typeof BlendNode>
   | z.infer<typeof DistortNode>
   | z.infer<typeof CullNode>
   | z.infer<typeof ThinNode>
+  | z.infer<typeof ResampleNode>
   | z.infer<typeof TransformNode>
   | z.infer<typeof ClipNode>
   | z.infer<typeof RegionHatchNode>
@@ -125,8 +138,8 @@ const RepeatNodeSchema: z.ZodType<RepeatNode> = z.lazy(() =>
 
 export const NodeSchema: z.ZodType<PatchNode> = z.union([
   GeneratorNode, SimplexScalarNode, SimplexVectorNode, DensityNode, GradientNode,
-  SdfNode, BlendNode,
-  DistortNode, CullNode, ThinNode, TransformNode, ClipNode, RegionHatchNode, PenNode, RepeatNodeSchema,
+  SdfNode, DirectionalNode, LuminanceNode, BlendNode,
+  DistortNode, CullNode, ThinNode, ResampleNode, TransformNode, ClipNode, RegionHatchNode, PenNode, RepeatNodeSchema,
 ]);
 
 export const PatchDocSchema = z.object({
@@ -243,7 +256,15 @@ function generatorGeometry(
   return runPipeline(req).svgPaths.map(parseDString).filter((p) => p.length >= 2);
 }
 
-function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: PatchDoc["camera"]): void {
+/** Resolves a `luminance` node's image path to a row-major brightness grid. */
+export type ImageResolver = (path: string) => { brightness: ArrayLike<number>; width: number; height: number };
+
+export interface EvalOptions {
+  /** Required only if the patch uses `luminance` nodes; the CLI decodes PNGs. */
+  resolveImage?: ImageResolver;
+}
+
+function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: PatchDoc["camera"], resolveImage?: ImageResolver): void {
   switch (node.op) {
     case "generator":
       env.set(node.id, generatorGeometry(node, page, camera));
@@ -267,6 +288,17 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
       env.set(node.id, sdfField(convexHull(g.flat())));
       break;
     }
+    case "directional":
+      env.set(node.id, directionalField(asScalar(ref(env, node.from, `directional(${node.from})`), `directional(${node.from})`), node.dir));
+      break;
+    case "luminance": {
+      if (!resolveImage) {
+        throw new Error(`patch: luminance node "${node.id}" needs an image resolver (run via the CLI, which decodes images).`);
+      }
+      const img = resolveImage(node.image);
+      env.set(node.id, luminanceField(img.brightness, img.width, img.height, page.widthPx, page.heightPx, { invert: node.invert }));
+      break;
+    }
     case "blend":
       env.set(node.id, blendFields(
         asScalar(ref(env, node.a, `blend a=${node.a}`), `blend a=${node.a}`),
@@ -282,6 +314,9 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
       break;
     case "thin":
       env.set(node.id, fieldThin(asGeometry(ref(env, node.from, `thin(${node.from})`), `thin(${node.from})`), asScalar(ref(env, node.by, `thin by ${node.by}`), `thin by ${node.by}`), node.strength));
+      break;
+    case "resample":
+      env.set(node.id, resampleGeometry(asGeometry(ref(env, node.from, `resample(${node.from})`), `resample(${node.from})`), node.step));
       break;
     case "transform":
       env.set(node.id, transformGeometry(asGeometry(ref(env, node.from, `transform(${node.from})`), `transform(${node.from})`), { translate: node.translate, rotateDeg: node.rotateDeg, scale: node.scale }));
@@ -316,7 +351,7 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
         throw new Error(`patch: repeat threads "${node.thread}" but its body never reassigns it — the loop would be a no-op.`);
       }
       for (let i = 0; i < node.times; i++) {
-        for (const child of node.body) evalNode(child, env, page, camera);
+        for (const child of node.body) evalNode(child, env, page, camera, resolveImage);
       }
       break;
     }
@@ -324,10 +359,10 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
 }
 
 /** Evaluate a patch document into per-pen geometry layers. */
-export function evalPatch(input: unknown): EvalResult {
+export function evalPatch(input: unknown, opts: EvalOptions = {}): EvalResult {
   const doc = parsePatchDoc(input);
   const env: Env = new Map();
-  for (const node of doc.nodes) evalNode(node, env, doc.page, doc.camera);
+  for (const node of doc.nodes) evalNode(node, env, doc.page, doc.camera, opts.resolveImage);
 
   const layers: PatchLayer[] = doc.out.map((id) => {
     const node = findPen(doc.nodes, id);

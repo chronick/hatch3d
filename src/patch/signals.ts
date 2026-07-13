@@ -228,3 +228,67 @@ export function blendFields(
     },
   };
 }
+
+/**
+ * A scalar field sampled from an image's per-pixel **luminance** in [0,1] — the
+ * "CV" for image-driven work (deflect scanlines by brightness, extract contours
+ * from a photo → the isolinePortrait motif). Pure and decoder-free: it takes a
+ * precomputed row-major brightness grid, so it stays browser-bundle-safe. The
+ * caller (a CLI-side loader, or a browser canvas) does the decoding and passes
+ * the grid in. The canvas rect [0,canvasW]×[0,canvasH] maps onto the image
+ * (stretched); samples are bilinear and edge-clamped.
+ */
+export function luminanceField(
+  brightness: ArrayLike<number>,
+  imgW: number,
+  imgH: number,
+  canvasW: number,
+  canvasH: number,
+  opts: { invert?: boolean } = {},
+): ScalarField {
+  const invert = opts.invert ?? false;
+  const at = (cx: number, cy: number): number => {
+    const bx = Math.max(0, Math.min(imgW - 1, cx));
+    const by = Math.max(0, Math.min(imgH - 1, cy));
+    return brightness[by * imgW + bx] ?? 0;
+  };
+  if (imgW < 1 || imgH < 1 || brightness.length < imgW * imgH) {
+    return { kind: "scalar", sample: () => 0 };
+  }
+  return {
+    kind: "scalar",
+    sample: (x, y) => {
+      // Canvas → image pixel space (stretch fit).
+      const ix = (x / Math.max(1e-6, canvasW)) * (imgW - 1);
+      const iy = (y / Math.max(1e-6, canvasH)) * (imgH - 1);
+      const x0 = Math.floor(ix);
+      const y0 = Math.floor(iy);
+      const fx = ix - x0;
+      const fy = iy - y0;
+      const v00 = at(x0, y0);
+      const v10 = at(x0 + 1, y0);
+      const v01 = at(x0, y0 + 1);
+      const v11 = at(x0 + 1, y0 + 1);
+      const top = v00 * (1 - fx) + v10 * fx;
+      const bot = v01 * (1 - fx) + v11 * fx;
+      const v = top * (1 - fy) + bot * fy;
+      return invert ? 1 - v : v;
+    },
+  };
+}
+
+/**
+ * Turn a scalar field into a **directional displacement** vector field: the
+ * scalar scales a fixed direction. Lets any scalar CV (luminance, density, sdf)
+ * push geometry along an axis — e.g. displace horizontal scanlines vertically
+ * by image brightness (the isolinePortrait move).
+ */
+export function directionalField(field: ScalarField, dir: [number, number]): VectorField {
+  return {
+    kind: "vector",
+    sample: (x, y) => {
+      const s = field.sample(x, y);
+      return [s * dir[0], s * dir[1]];
+    },
+  };
+}

@@ -112,3 +112,27 @@ export function fieldThin(
     return keepNoise < keepProb;
   });
 }
+
+/**
+ * Subdivide polylines so every segment is at most `step` long — inserting
+ * interior vertices. Needed before distort/directional bends a coarse line
+ * (e.g. a 2-point scanline) by a field: without interior points there is
+ * nothing to displace mid-line.
+ */
+export function resampleGeometry(geometry: Geometry, step: number): Geometry {
+  if (step <= 0) return geometry;
+  return geometry.map((pl) => {
+    if (pl.length < 2) return pl;
+    const out = [pl[0]];
+    for (let i = 1; i < pl.length; i++) {
+      const a = pl[i - 1];
+      const b = pl[i];
+      const n = Math.max(1, Math.floor(Math.hypot(b.x - a.x, b.y - a.y) / step));
+      for (let k = 1; k <= n; k++) {
+        const t = k / n;
+        out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      }
+    }
+    return out;
+  });
+}

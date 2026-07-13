@@ -22,7 +22,7 @@
 import type { PatchNode, PatchDoc } from "./graph.js";
 
 const OPERATOR_OPS = new Set([
-  "simplexScalar", "simplexVector", "density", "gradient", "sdf", "blend", "distort", "cull", "thin", "regionHatch", "transform", "clip", "pen",
+  "simplexScalar", "simplexVector", "density", "gradient", "sdf", "directional", "luminance", "blend", "distort", "cull", "thin", "resample", "regionHatch", "transform", "clip", "pen",
 ]);
 
 type ArgValue = string | number | number[];
@@ -108,6 +108,12 @@ function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
     case "density": return { op: "density", id, from: from(), cell: Number(req("cell")) };
     case "gradient": return { op: "gradient", id, from: from() };
     case "sdf": return { op: "sdf", id, from: from() };
+    case "directional": return { op: "directional", id, from: from(), dir: asTuple(req("dir"), "dir") };
+    case "luminance": return {
+      op: "luminance", id,
+      image: String(positional[0] ?? req("image")),
+      invert: String(named.get("invert")) === "true",
+    };
     case "blend": return {
       op: "blend", id,
       a: String(positional[0] ?? req("a")),
@@ -118,6 +124,7 @@ function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
     case "distort": return { op: "distort", id, from: from(), by: String(req("by")), amp: Number(req("amp")) };
     case "cull": return { op: "cull", id, from: from(), by: String(req("by")), min: Number(req("min")), max: Number(req("max")) };
     case "thin": return { op: "thin", id, from: from(), by: String(req("by")), strength: Number(req("strength")) };
+    case "resample": return { op: "resample", id, from: from(), step: Number(req("step")) };
     case "regionHatch": return { op: "regionHatch", id, from: from(), angleDeg: Number(req("angle")), pitch: Number(req("pitch")) };
     case "transform": {
       const node: PatchNode = { op: "transform", id, from: from() };

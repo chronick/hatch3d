@@ -30,6 +30,7 @@
   "dependencies": {
     "@resvg/resvg-js": "^2.6.2",
     "@types/three": "^0.183.1",
+    "pngjs": "^7.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "simplex-noise": "^4.0.3",
@@ -41,6 +42,7 @@
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^24.10.1",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
