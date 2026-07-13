@@ -14,6 +14,7 @@ import {
   buildSurfaceMesh,
 } from "../projection";
 import { renderDepthBufferOffscreen, splitPolylineByDepth } from "../occlusion";
+import { extractSilhouettePolylines } from "../silhouette";
 import { filterByProjectedDensity, filterByProjectedDensityIndices } from "../density";
 import { compositionRegistry } from "../compositions/registry";
 import {
@@ -75,6 +76,14 @@ function depthBandScale(band: number): number {
 const GHOST_WIDTH_SCALE = 0.9;
 const GHOST_OPACITY = 0.32;
 const GHOST_DASH: [number, number] = [4, 3];
+
+// Silhouette outline pen: bolder than the hatch strokes so the contour
+// reads as the drawing's heavy outline. A silhouette point by definition
+// grazes the surface (N·V = 0), so under occlusion it sits exactly at the
+// depth-buffer value — clip it with a larger bias than hatch lines to
+// avoid self-occlusion speckle.
+const SILHOUETTE_WIDTH_SCALE = 1.4;
+const SILHOUETTE_DEPTH_BIAS_MULT = 3;
 
 function buildCamera(cam: CameraParams): THREE.Camera {
   const pos = new THREE.Vector3(
@@ -147,6 +156,7 @@ function runLayeredPipeline(
       // keep inner renders plain.
       depthWidthEnabled: false,
       hiddenMode: "drop",
+      silhouetteEnabled: false,
     };
 
     const innerResult = runPipeline(innerReq);
@@ -303,6 +313,7 @@ export function runPipeline(req: RenderRequest): RenderResult {
 
   const depthWidthEnabled = req.depthWidthEnabled === true;
   const hiddenGhost = req.hiddenMode === "ghost";
+  const silhouetteEnabled = req.silhouetteEnabled === true;
   const camPos = threeCamera.position;
   const refDist = Math.max(
     1e-6,
@@ -397,6 +408,24 @@ export function runPipeline(req: RenderRequest): RenderResult {
       }
     }
   }
+
+  // ── Silhouette extraction (analytic N·V zero-set per layer) ──
+  const silhouette3D: THREE.Vector3[][] = [];
+  if (silhouetteEnabled) {
+    for (const layer of layers) {
+      const sf = SURFACES[layer.surface];
+      const lParams = layer.params || req.surfaceParams;
+      silhouette3D.push(
+        ...extractSilhouettePolylines(sf.fn, lParams, layer.transform, camPos, {
+          uRange: layer.hatch.uRange,
+          vRange: layer.hatch.vRange,
+        })
+      );
+    }
+  }
+  let silhouettePolylines2D: { x: number; y: number }[][] = silhouetteEnabled
+    ? projectPolylines(silhouette3D, threeCamera, req.width, req.height)
+    : [];
 
   // ── Occlusion ──
   // Prefer the composition's unified depth mesh (if provided) over the
@@ -501,6 +530,25 @@ export function runPipeline(req: RenderRequest): RenderResult {
           }
         }
       }
+
+      if (silhouetteEnabled && silhouette3D.length > 0) {
+        // Silhouette points graze the surface by definition (N·V = 0), so
+        // they sit exactly at the depth-buffer value — clip with a larger
+        // bias than hatch lines to avoid self-occlusion speckle. Hidden
+        // silhouette runs are dropped (not ghosted) in v1.
+        const projectedSil = projectPolylines(silhouette3D, extCamera, depthW, depthH);
+        const occludedSil: { x: number; y: number }[][] = [];
+        for (const pl of projectedSil) {
+          const { visible } = splitPolylineByDepth(
+            pl,
+            depthBuffer,
+            req.depthBias * SILHOUETTE_DEPTH_BIAS_MULT
+          );
+          for (const seg of visible) occludedSil.push(toContent(seg));
+        }
+        silhouettePolylines2D = occludedSil;
+      }
+
       allPolylines2D = occludedPolylines;
       polyBands = occludedBands;
     } catch (e) {
@@ -560,6 +608,23 @@ export function runPipeline(req: RenderRequest): RenderResult {
     // Ghost group alone — visible strokes still need a group of their own,
     // since consumers render either groups or the flat list, never both.
     layerGroups.push({ id: "visible", name: "visible", svgPaths: allPaths });
+  }
+  if (silhouetteEnabled) {
+    const silhouettePaths = polylinesToSVGPaths(silhouettePolylines2D);
+    if (silhouettePaths.length > 0) {
+      if (!layerGroups) {
+        // Silhouette group alone — visible strokes still need a group of
+        // their own (same rule as the ghost-only case above).
+        layerGroups = [{ id: "visible", name: "visible", svgPaths: allPaths }];
+      }
+      // Ordered last so it reads as the heavy outline pen on top.
+      layerGroups.push({
+        id: "silhouette",
+        name: "silhouette",
+        widthScale: SILHOUETTE_WIDTH_SCALE,
+        svgPaths: silhouettePaths,
+      });
+    }
   }
 
   return {

@@ -59,6 +59,12 @@ export interface RenderRequest {
    */
   hiddenMode?: "drop" | "ghost";
   /**
+   * Silhouette/contour extraction (3D only): traces the N·V = 0 zero-set
+   * of each layer's surface analytically and emits it as a bold outline
+   * layer group ordered last (the heavy outline pen). Default off.
+   */
+  silhouetteEnabled?: boolean;
+  /**
    * For layered compositions only — replaces the composition's static
    * `layers` array with a user-edited list (visibility/order/colors/etc).
    * Worker structurally clones it like any other request field.

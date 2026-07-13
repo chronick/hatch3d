@@ -98,6 +98,7 @@ const DEFAULTS = {
   seed: 0,
   depthWidthEnabled: false,
   hiddenGhost: false,
+  silhouetteEnabled: false,
 };
 
 /** Load saved state, keeping only keys that exist in DEFAULTS with matching type. */
@@ -174,6 +175,7 @@ export default function App() {
   const [seed, setSeed] = useState(INITIAL.seed);
   const [depthWidthEnabled, setDepthWidthEnabled] = useState(INITIAL.depthWidthEnabled);
   const [hiddenGhost, setHiddenGhost] = useState(INITIAL.hiddenGhost);
+  const [silhouetteEnabled, setSilhouetteEnabled] = useState(INITIAL.silhouetteEnabled);
 
   // Export settings
   const [pageSize, setPageSize] = useState(INITIAL.pageSize);
@@ -406,7 +408,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
-    seed, depthWidthEnabled, hiddenGhost,
+    seed, depthWidthEnabled, hiddenGhost, silhouetteEnabled,
   }), [
     surfaceKey, compositionKey, controlsPanel,
     paramA, paramB, paramC, paramD,
@@ -416,7 +418,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
-    seed, depthWidthEnabled, hiddenGhost,
+    seed, depthWidthEnabled, hiddenGhost, silhouetteEnabled,
   ]);
   useEffect(() => {
     clearTimeout(persistTimer.current);
@@ -456,7 +458,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
-    seed, depthWidthEnabled, hiddenGhost,
+    seed, depthWidthEnabled, hiddenGhost, silhouetteEnabled,
     compValues, macroValues, hatchGroupValues, layeredLayersByKey,
   }), [
     surfaceKey, compositionKey,
@@ -467,7 +469,7 @@ export default function App() {
     strokeWidth, showMesh,
     pageSize, orientation, margin, borderEnabled, borderStyle,
     densityFilterEnabled, densityMax, densityCellSize,
-    seed, depthWidthEnabled, hiddenGhost,
+    seed, depthWidthEnabled, hiddenGhost, silhouetteEnabled,
     compValues, macroValues, hatchGroupValues, layeredLayersByKey,
   ]);
 
@@ -504,6 +506,7 @@ export default function App() {
     setSeed(snap.seed);
     setDepthWidthEnabled(snap.depthWidthEnabled);
     setHiddenGhost(snap.hiddenGhost);
+    setSilhouetteEnabled(snap.silhouetteEnabled);
     setCompValues(snap.compValues);
     setMacroValues(snap.macroValues);
     setHatchGroupValues(snap.hatchGroupValues);
@@ -630,6 +633,7 @@ export default function App() {
       seed,
       depthWidthEnabled,
       hiddenGhost,
+      silhouetteEnabled,
       renderMode: effectiveRenderMode,
       layeredLayersOverride: isLayered ? currentLayers : undefined,
     });
@@ -1099,6 +1103,7 @@ ${body}
             {!is2d && (
               <>
                 <Toggle label="Depth width" value={depthWidthEnabled} onChange={setDepthWidthEnabled} />
+                <Toggle label="Silhouette" value={silhouetteEnabled} onChange={setSilhouetteEnabled} />
                 {useOcclusion && (
                   <Toggle label="Ghost hidden" value={hiddenGhost} onChange={setHiddenGhost} />
                 )}
