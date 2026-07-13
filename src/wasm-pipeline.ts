@@ -89,6 +89,8 @@ export function isLayerWasmCompatible(layer: LayerConfig): boolean {
   if (!(layer.surface in SURFACE_IDS)) return false;
   if (layer.hatch.densityFn) return false;
   if (layer.hatch.clipFn) return false;
+  // Rust path only implements uniform placement (src/wasm/src/hatch.rs)
+  if (layer.hatch.placement === "dyadic") return false;
   const h = layer.hatch;
   const usesStochastic =
     (h.noiseAmplitude ?? 0) > 0 || ((h.dashLength ?? 0) > 0 && (h.dashRandom ?? 0) > 0);

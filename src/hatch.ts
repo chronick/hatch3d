@@ -37,6 +37,53 @@ export interface HatchParams {
    * output. Defaults to 0.
    */
   seed?: number;
+  /**
+   * Iso-line placement. "uniform" (default) spaces lines at i/(count-1).
+   * "dyadic" places lines on a fixed dyadic grid — level 0 = {1/2},
+   * level 1 = {1/4, 3/4}, level 2 = {1/8, 3/8, 5/8, 7/8}, … — taking
+   * complete levels until the next whole level would exceed `count`.
+   * Growing the count adds new lines without moving existing ones, and a
+   * line's dyadic fraction is its stable identity for noise/density keying
+   * (Krbn: fractional per-line fades read as banding — sparse hatch lines
+   * must arrive in complete levels). Applies to the u, v, and diagonal
+   * families; hex and crosshatch inherit via generateDiagonalLines.
+   * rings/spiral/wave always place uniformly.
+   */
+  placement?: "uniform" | "dyadic";
+}
+
+/**
+ * Iso fractions in (0,1) on the dyadic grid, in complete levels
+ * (1, 2, 4, … lines per level; cumulative 2^(L+1) − 1), stopping before the
+ * level that would push the total past `count`. Sorted ascending so output
+ * order is stable by t.
+ */
+function dyadicFractions(count: number): number[] {
+  const fractions: number[] = [];
+  let level = 0;
+  while (fractions.length + (1 << level) <= count) {
+    const denom = 1 << (level + 1);
+    for (let num = 1; num < denom; num += 2) {
+      fractions.push(num / denom);
+    }
+    level++;
+  }
+  fractions.sort((a, b) => a - b);
+  return fractions;
+}
+
+/**
+ * Iso fractions for a line family. Uniform reproduces the legacy
+ * i/(count-1) spacing exactly (including NaN for count 1) so the default
+ * path is byte-identical.
+ */
+function isoFractions(placement: "uniform" | "dyadic", count: number): number[] {
+  if (placement === "dyadic") return dyadicFractions(count);
+  const fractions: number[] = [];
+  for (let i = 0; i < count; i++) {
+    fractions.push(i / (count - 1));
+  }
+  return fractions;
 }
 
 /**
@@ -96,8 +143,9 @@ function generateDiagonalLines(
   samples: number,
   uRange: [number, number],
   vRange: [number, number],
-  clipFn?: (u: number, v: number) => boolean
-): THREE.Vector3[][] {
+  clipFn?: (u: number, v: number) => boolean,
+  placement: "uniform" | "dyadic" = "uniform"
+): { points: THREE.Vector3[]; t: number }[] {
   const ca = Math.cos(angle);
   const sa = Math.sin(angle);
   const uSpan = uRange[1] - uRange[0];
@@ -111,9 +159,10 @@ function generateDiagonalLines(
   const isoMin = Math.min(...corners);
   const isoMax = Math.max(...corners);
 
-  const lines: THREE.Vector3[][] = [];
-  for (let i = 0; i < count; i++) {
-    const isoVal = isoMin + (i / (count - 1)) * (isoMax - isoMin);
+  const fractions = isoFractions(placement, count);
+  const lines: { points: THREE.Vector3[]; t: number }[] = [];
+  for (const frac of fractions) {
+    const isoVal = isoMin + frac * (isoMax - isoMin);
     const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
     const maxExtent = Math.max(uSpan, vSpan);
     for (let j = 0; j <= samples; j++) {
@@ -126,7 +175,9 @@ function generateDiagonalLines(
         col.add(uc, vc);
       }
     }
-    lines.push(...col.end());
+    for (const points of col.end()) {
+      lines.push({ points, t: frac });
+    }
   }
   return lines;
 }
@@ -145,6 +196,7 @@ function applyNoiseDisplacement(
   amplitude: number,
   frequency: number,
   seed: number,
+  noiseKeys?: number[],
 ): void {
   const noise2D = createNoise2D(mulberry32(seed ^ 0x9e3779b9));
 
@@ -175,9 +227,12 @@ function applyNoiseDisplacement(
       const perpY = dx / len;
       const perpZ = 0;
 
-      // Noise offset, seeded by line index for variation between lines
+      // Noise offset, keyed per line for variation between lines. Default
+      // key is emission index (legacy); dyadic placement passes noiseKeys
+      // derived from each line's fraction so wobble is count-independent.
+      const key = noiseKeys ? noiseKeys[lineIdx] : lineIdx * 0.1;
       const n = noise2D(
-        pts[i].x * frequency + lineIdx * 0.1,
+        pts[i].x * frequency + key,
         pts[i].y * frequency,
       );
       const offset = amplitude * n;
@@ -293,54 +348,76 @@ export function generateUVHatchLines(
     densityOversample = 3,
     clipFn,
     seed = 0,
+    placement = "uniform",
   } = hatchParams;
 
   // If densityFn is provided, oversample the line count and filter afterward
   const effectiveCount = densityFn ? count * densityOversample : count;
 
+  // Dyadic placement only applies to iso-fraction families (u, v, diagonal —
+  // hex/crosshatch inherit). rings/spiral/wave always place uniformly.
+  const dyadicActive =
+    placement === "dyadic" &&
+    (family === "u" || family === "v" || family === "diagonal" ||
+      family === "hex" || family === "crosshatch");
+  const familyPlacement = dyadicActive ? "dyadic" : "uniform";
+
   let polylines3D: THREE.Vector3[][] = [];
   // Track UV midpoints per line for density filtering
   const lineMidUV: { u: number; v: number }[] = [];
+  // Per-line iso fraction — a line's stable identity under dyadic placement
+  let lineKeys: number[] = [];
 
-  const emit = (col: LineCollector, mid: { u: number; v: number }) => {
+  const emit = (col: LineCollector, mid: { u: number; v: number }, key = 0) => {
     for (const line of col.end()) {
       polylines3D.push(line);
       lineMidUV.push(mid);
+      lineKeys.push(key);
+    }
+  };
+
+  const pushDiagonal = (lines: { points: THREE.Vector3[]; t: number }[]) => {
+    for (let i = 0; i < lines.length; i++) {
+      polylines3D.push(lines[i].points);
+      // Uniform keeps the legacy emission-index midpoint; dyadic uses the
+      // iso fraction so a line's density lookup is count-independent.
+      const t = dyadicActive
+        ? lines[i].t
+        : lines.length > 1 ? i / (lines.length - 1) : 0.5;
+      lineMidUV.push({
+        u: (uRange[0] + uRange[1]) / 2,
+        v: vRange[0] + t * (vRange[1] - vRange[0]),
+      });
+      lineKeys.push(lines[i].t);
     }
   };
 
   if (family === "u") {
-    for (let i = 0; i < effectiveCount; i++) {
-      const u = uRange[0] + (i / (effectiveCount - 1)) * (uRange[1] - uRange[0]);
+    const fractions = isoFractions(familyPlacement, effectiveCount);
+    for (const frac of fractions) {
+      const u = uRange[0] + frac * (uRange[1] - uRange[0]);
       const vMid = (vRange[0] + vRange[1]) / 2;
       const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
       for (let j = 0; j <= samples; j++) {
         const v = vRange[0] + (j / samples) * (vRange[1] - vRange[0]);
         col.add(u, v);
       }
-      emit(col, { u, v: vMid });
+      emit(col, { u, v: vMid }, frac);
     }
   } else if (family === "v") {
-    for (let i = 0; i < effectiveCount; i++) {
-      const v = vRange[0] + (i / (effectiveCount - 1)) * (vRange[1] - vRange[0]);
+    const fractions = isoFractions(familyPlacement, effectiveCount);
+    for (const frac of fractions) {
+      const v = vRange[0] + frac * (vRange[1] - vRange[0]);
       const uMid = (uRange[0] + uRange[1]) / 2;
       const col = new LineCollector(surfaceFn, surfaceParams, clipFn);
       for (let j = 0; j <= samples; j++) {
         const u = uRange[0] + (j / samples) * (uRange[1] - uRange[0]);
         col.add(u, v);
       }
-      emit(col, { u: uMid, v });
+      emit(col, { u: uMid, v }, frac);
     }
   } else if (family === "diagonal") {
-    const lines = generateDiagonalLines(surfaceFn, surfaceParams, angle, effectiveCount, samples, uRange, vRange, clipFn);
-    for (let i = 0; i < lines.length; i++) {
-      polylines3D.push(lines[i]);
-      const t = lines.length > 1 ? i / (lines.length - 1) : 0.5;
-      lineMidUV.push({
-        u: (uRange[0] + uRange[1]) / 2,
-        v: vRange[0] + t * (vRange[1] - vRange[0]),
-      });
-    }
+    pushDiagonal(generateDiagonalLines(surfaceFn, surfaceParams, angle, effectiveCount, samples, uRange, vRange, clipFn, familyPlacement));
   } else if (family === "rings") {
     const uMid = (uRange[0] + uRange[1]) / 2;
     const vMid = (vRange[0] + vRange[1]) / 2;
@@ -365,28 +442,12 @@ export function generateUVHatchLines(
     const perDir = Math.max(1, Math.floor(effectiveCount / 3));
     const angles = [0, Math.PI / 3, (2 * Math.PI) / 3];
     for (const a of angles) {
-      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange, clipFn);
-      for (let i = 0; i < lines.length; i++) {
-        polylines3D.push(lines[i]);
-        const t = lines.length > 1 ? i / (lines.length - 1) : 0.5;
-        lineMidUV.push({
-          u: (uRange[0] + uRange[1]) / 2,
-          v: vRange[0] + t * (vRange[1] - vRange[0]),
-        });
-      }
+      pushDiagonal(generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange, clipFn, familyPlacement));
     }
   } else if (family === "crosshatch") {
     const perDir = Math.max(1, Math.floor(effectiveCount / 2));
     for (const a of [angle, angle + Math.PI / 2]) {
-      const lines = generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange, clipFn);
-      for (let i = 0; i < lines.length; i++) {
-        polylines3D.push(lines[i]);
-        const t = lines.length > 1 ? i / (lines.length - 1) : 0.5;
-        lineMidUV.push({
-          u: (uRange[0] + uRange[1]) / 2,
-          v: vRange[0] + t * (vRange[1] - vRange[0]),
-        });
-      }
+      pushDiagonal(generateDiagonalLines(surfaceFn, surfaceParams, a, perDir, samples, uRange, vRange, clipFn, familyPlacement));
     }
   } else if (family === "spiral") {
     const uMid = (uRange[0] + uRange[1]) / 2;
@@ -434,24 +495,35 @@ export function generateUVHatchLines(
   // from a sequential RNG — so one line's fate never depends on another's.
   if (densityFn && polylines3D.length > 0) {
     const filtered: THREE.Vector3[][] = [];
+    const filteredKeys: number[] = [];
     for (let i = 0; i < polylines3D.length; i++) {
       const mid = lineMidUV[i];
       if (!mid) {
         filtered.push(polylines3D[i]);
+        filteredKeys.push(lineKeys[i]);
         continue;
       }
       const density = densityFn(mid.u, mid.v);
-      // Deterministic keep: density 1 = always keep, density 0 = always drop
-      if (hash01(seed, i) < Math.max(0, Math.min(1, density))) {
+      // Deterministic keep: density 1 = always keep, density 0 = always drop.
+      // Dyadic hashes the iso fraction (a line's identity) instead of the
+      // emission index, so a kept line stays kept as count grows.
+      const id = dyadicActive ? Math.round(lineKeys[i] * 1e6) : i;
+      if (hash01(seed, id) < Math.max(0, Math.min(1, density))) {
         filtered.push(polylines3D[i]);
+        filteredKeys.push(lineKeys[i]);
       }
     }
     polylines3D = filtered;
+    lineKeys = filteredKeys;
   }
 
   // Post-process: noise perturbation
   if (noiseAmplitude && noiseAmplitude > 0 && noiseFrequency && noiseFrequency > 0) {
-    applyNoiseDisplacement(polylines3D, noiseAmplitude, noiseFrequency, seed);
+    // Dyadic keys the per-line noise offset on the iso fraction (scaled for
+    // spread comparable to the index-keyed default) so an existing line's
+    // wobble does not change when count grows.
+    const noiseKeys = dyadicActive ? lineKeys.map((t) => t * 10) : undefined;
+    applyNoiseDisplacement(polylines3D, noiseAmplitude, noiseFrequency, seed, noiseKeys);
   }
 
   // Post-process: dashed lines
