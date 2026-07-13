@@ -24,6 +24,7 @@ import { buildSVGContent, buildLayeredSVGContent, computeExportLayout } from "./
 import { parseSceneDoc } from "../src/scene/schema.js";
 import { sceneToPatch } from "../src/scene/to-patch.js";
 import { evalPatch, patchLayersToGroups } from "../src/patch/graph.js";
+import { pngImageResolver } from "./load-image.js";
 
 // ── Parse CLI arguments ──
 
@@ -372,7 +373,7 @@ function renderScene(scenePath: string): {
   const raw = JSON.parse(readFileSync(resolve(scenePath), "utf-8"));
   const doc = parseSceneDoc(raw);
   const patch = sceneToPatch(doc);
-  const { layers, page } = evalPatch(patch);
+  const { layers, page } = evalPatch(patch, { resolveImage: pngImageResolver });
 
   const layout = computeExportLayout(page.size, page.orientation, page.marginMm, page.widthPx, page.heightPx);
   // Pen widths (mm) become per-group widthScale here — buildLayeredSVGContent

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "isoline-portrait",
+  "page": { "size": "a4", "orientation": "portrait", "widthPx": 600, "heightPx": 600, "strokeWidthMm": 0.3 },
+  "nodes": [
+    { "op": "regionHatch", "id": "lines", "polygon": [[0, 0], [600, 0], [600, 600], [0, 600]], "angleDeg": 0, "pitch": 7 },
+    { "op": "resample", "id": "dense", "from": "lines", "step": 5 },
+    { "op": "luminance", "id": "lum", "image": "examples/images/test-portrait.png", "invert": false },
+    { "op": "directional", "id": "push", "from": "lum", "dir": [0, 1] },
+    { "op": "distort", "id": "port", "from": "dense", "by": "push", "amp": 40 },
+    { "op": "pen", "id": "p", "from": "port", "color": "#111111" }
+  ],
+  "out": ["p"]
+}
