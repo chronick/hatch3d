@@ -5,7 +5,7 @@ import { simplexScalar, simplexVector, densityField, gradient, mulberry32, sdfFi
 import { fieldDistort, fieldCull, resampleGeometry } from "../patch/operators";
 import { hatchPolygon } from "../patch/region-hatch";
 import { compileDSL } from "../patch/dsl";
-import { evalPatch, parsePatchDoc } from "../patch/graph";
+import { evalPatch, evalPatchIterations, parsePatchDoc } from "../patch/graph";
 
 function makeGrid2D(id: string): Composition2DDefinition {
   // A deterministic 3x1 horizontal line at y=400.
@@ -441,5 +441,79 @@ describe("evalPatch", () => {
     const drift = (r: ReturnType<typeof evalPatch>) =>
       Math.max(...r.layers[0].geometry.flat().map((p) => Math.abs(p.y - 400)));
     expect(drift(thrice)).toBeGreaterThan(drift(once));
+  });
+});
+
+describe("evalPatchIterations (repeat scrub)", () => {
+  const scrubSrc = `
+    g = lineA()
+    repeat 4 {
+      n = simplexVector(scale: 0.02, seed: 3)
+      g = distort(g, by: n, amp: 10)
+    }
+    out(g @ "#111")
+  `;
+
+  it("emits one frame per iteration count, tagged 1..N", () => {
+    const sweep = evalPatchIterations(compileDSL(scrubSrc, { id: "t" }));
+    expect(sweep.times).toBe(4);
+    expect(sweep.frames.map((f) => f.iter)).toEqual([1, 2, 3, 4]);
+    expect(sweep.otherRepeatIds).toEqual([]);
+  });
+
+  it("frame i equals a full render with repeat.times = i (ground truth, not an approximation)", () => {
+    const sweep = evalPatchIterations(compileDSL(scrubSrc, { id: "t" }));
+    for (const i of [1, 2, 3, 4]) {
+      const direct = evalPatch(compileDSL(scrubSrc.replace("repeat 4", `repeat ${i}`), { id: `d${i}` }));
+      const frame = sweep.frames.find((f) => f.iter === i)!;
+      expect(JSON.stringify(frame.result.layers)).toBe(JSON.stringify(direct.layers));
+    }
+  });
+
+  it("frames are distinct and net drift accumulates across the sweep", () => {
+    const sweep = evalPatchIterations(compileDSL(scrubSrc, { id: "t" }));
+    // Every frame is a genuinely different render (the scrub isn't emitting copies).
+    const fingerprints = sweep.frames.map((f) => JSON.stringify(f.result.layers));
+    expect(new Set(fingerprints).size).toBe(sweep.frames.length);
+    // Cumulative distortion over the whole sweep: the final frame has drifted
+    // further from the y=400 baseline than the first (net accumulation — robust
+    // to a single simplex step nudging one point back).
+    const totalDrift = (f: (typeof sweep.frames)[number]) =>
+      f.result.layers[0].geometry.flat().reduce((s, p) => s + Math.abs(p.y - 400), 0);
+    const first = sweep.frames[0], last = sweep.frames[sweep.frames.length - 1];
+    expect(totalDrift(last)).toBeGreaterThan(totalDrift(first));
+  });
+
+  it("stride keeps every Nth frame and always the final full-count frame", () => {
+    const sweep = evalPatchIterations(compileDSL(scrubSrc, { id: "t" }), { stride: 2 });
+    // times=4, stride 2 → iters 2 and 4.
+    expect(sweep.frames.map((f) => f.iter)).toEqual([2, 4]);
+    const odd = evalPatchIterations(compileDSL(scrubSrc, { id: "t" }), { stride: 3 });
+    // times=4, stride 3 → iter 3, plus the always-included final iter 4.
+    expect(odd.frames.map((f) => f.iter)).toEqual([3, 4]);
+  });
+
+  it("reports later top-level repeats as held at full count (only the first is swept)", () => {
+    const src = `
+      g = lineA()
+      repeat 2 {
+        n = simplexVector(scale: 0.02, seed: 1)
+        g = distort(g, by: n, amp: 5)
+      }
+      repeat 3 {
+        m = simplexVector(scale: 0.02, seed: 2)
+        g = distort(g, by: m, amp: 5)
+      }
+      out(g @ "#111")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    const sweep = evalPatchIterations(doc);
+    expect(sweep.times).toBe(2);
+    expect(sweep.otherRepeatIds).toHaveLength(1);
+  });
+
+  it("throws a clear error when the document has no repeat to scrub", () => {
+    const src = `g = lineA()\nout(g @ "#111")`;
+    expect(() => evalPatchIterations(compileDSL(src, { id: "t" }))).toThrow(/no top-level repeat/);
   });
 });

@@ -164,3 +164,25 @@ polygon — with angled parallel lines; scanline even-odd, handles concave zones
 `transform` (translate/rotate/scale; `translate: [x,y]`), `clip` (to a node's
 hull, `by:`), `pen`. This is the L2 tier (static, deterministic); L3 (a live
 temporal runtime) is a separate research track.
+
+### Scrubbing a `repeat` — `--emit-each-iteration`
+
+`repeat N { … }` is bounded iteration, but you have to pick `N` up front — for an
+open-ended generator (drift, reaction-diffusion) you re-render until it "looks
+right." Instead, scrub it: write one file per iteration count and pick the frame.
+
+```bash
+npm run patch -- --dsl examples/patches/flow-modulated.patch -o out.svg --emit-each-iteration
+# → out.iter1.svg, out.iter2.svg, out.iter3.svg   (repeat is `repeat 3`)
+npm run patch -- --graph patch.json -o out.png -f png --emit-each-iteration --stride 4
+```
+
+Frame `i` is the document evaluated with the first top-level `repeat`'s count set
+to `i` — **exactly** what `repeat i { … }` produces, so the frame you pick is the
+count you set, not an approximation. `times` is capped at 64, so a full sweep is
+at most 64 renders. `--stride N` keeps every Nth frame (the final full-count frame
+is always kept) to trim output; nested/later repeats run at full count in every
+frame. Each frame is an ordinary SVG the `stats` CLI measures, so you can pick by
+number (arc length, ink density) as well as by eye. This is the smaller-than-L3
+answer to "watch the process, pick the good frame" (the L2 gap the
+`docs/research/l3-live-patch-runtime.md` study flagged).
