@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "isoline-portrait",
+  "page": { "size": "a4", "orientation": "portrait", "widthPx": 600, "heightPx": 600, "strokeWidthMm": 0.3 },
+  "root": {
+    "type": "layer",
+    "id": "portrait",
+    "pen": { "color": "#111111" },
+    "children": [
+      {
+        "type": "op:image-luminance",
+        "id": "port",
+        "image": "examples/images/test-portrait.png",
+        "amplitude": 40,
+        "dir": [0, 1],
+        "resampleStep": 5,
+        "invert": false,
+        "child": {
+          "type": "op:region-hatch",
+          "id": "lines",
+          "region": { "polygon": [[0, 0], [600, 0], [600, 600], [0, 600]] },
+          "hatch": { "angle": 0, "pitch": 7 }
+        }
+      }
+    ]
+  }
+}

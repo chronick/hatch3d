@@ -124,3 +124,83 @@ describe("sceneToPatch — operators (previously rejected in scenes)", () => {
     expect(() => evalPatch(patch)).not.toThrow();
   });
 });
+
+describe("sceneToPatch — op:image-luminance (isolinePortrait)", () => {
+  // A synthetic 8×8 brightness grid so the test needs no PNG decoder — bright
+  // top, dark bottom, like a portrait's tonal gradient.
+  const resolveImage = () => ({
+    brightness: Array.from({ length: 64 }, (_, i) => 1 - Math.floor(i / 8) / 7),
+    width: 8, height: 8,
+  });
+
+  const portraitScene = (extra: Record<string, unknown> = {}) => ({
+    version: 1, id: "port",
+    page: { size: "a4", orientation: "portrait", widthPx: 600, heightPx: 600 },
+    root: { type: "layer", id: "l", pen: { color: "#111" },
+      children: [{
+        type: "op:image-luminance", id: "port", image: "x.png", amplitude: 40, ...extra,
+        child: { type: "op:region-hatch", id: "lines",
+          region: { polygon: [[0, 0], [600, 0], [600, 600], [0, 600]] as [number, number][] },
+          hatch: { angle: 0, pitch: 7 } },
+      }] },
+  });
+
+  it("lowers to luminance → directional → resample → distort", () => {
+    const patch = sceneToPatch(parseSceneDoc(portraitScene()));
+    const ops = patch.nodes.map((n) => n.op);
+    for (const op of ["regionHatch", "luminance", "directional", "resample", "distort"]) {
+      expect(ops).toContain(op);
+    }
+    // The distort node carries the operator's id and amplitude.
+    const distort = patch.nodes.find((n) => n.op === "distort") as { amp: number; id: string };
+    expect(distort.id).toBe("port");
+    expect(distort.amp).toBe(40);
+  });
+
+  it("applies dir=[0,1] and resampleStep=5 defaults when omitted", () => {
+    const patch = sceneToPatch(parseSceneDoc(portraitScene()));
+    const dir = patch.nodes.find((n) => n.op === "directional") as { dir: [number, number] };
+    const res = patch.nodes.find((n) => n.op === "resample") as { step: number };
+    expect(dir.dir).toEqual([0, 1]);
+    expect(res.step).toBe(5);
+  });
+
+  it("deflects scanlines by brightness — output differs from the undistorted fill", () => {
+    const patch = sceneToPatch(parseSceneDoc(portraitScene()));
+    const deflected = evalPatch(patch, { resolveImage });
+    // A flat region-hatch (no image op) as the baseline.
+    const flat = evalPatch(sceneToPatch(parseSceneDoc({
+      version: 1, id: "flat",
+      page: { size: "a4", orientation: "portrait", widthPx: 600, heightPx: 600 },
+      root: { type: "layer", id: "l", pen: { color: "#111" },
+        children: [{ type: "op:region-hatch", id: "lines",
+          region: { polygon: [[0, 0], [600, 0], [600, 600], [0, 600]] as [number, number][] },
+          hatch: { angle: 0, pitch: 7 } }] },
+    })), { resolveImage });
+    expect(deflected.layers[0].geometry.length).toBeGreaterThan(0);
+    expect(JSON.stringify(deflected.layers[0].geometry))
+      .not.toBe(JSON.stringify(flat.layers[0].geometry));
+  });
+
+  it("is byte-identical to the equivalent hand-authored patch", () => {
+    const scenePatch = sceneToPatch(parseSceneDoc(portraitScene()));
+    const viaScene = evalPatch(scenePatch, { resolveImage });
+    // The same pipeline written directly as a patch graph.
+    const handPatch = {
+      version: 1 as const, id: "hand",
+      page: { size: "a4" as const, orientation: "portrait" as const, widthPx: 600, heightPx: 600, marginMm: 15, strokeWidthMm: 0.5 },
+      nodes: [
+        { op: "regionHatch" as const, id: "lines", polygon: [[0, 0], [600, 0], [600, 600], [0, 600]] as [number, number][], angleDeg: 0, pitch: 7 },
+        { op: "luminance" as const, id: "lum", image: "x.png", invert: false },
+        { op: "directional" as const, id: "push", from: "lum", dir: [0, 1] as [number, number] },
+        { op: "resample" as const, id: "dense", from: "lines", step: 5 },
+        { op: "distort" as const, id: "port", from: "dense", by: "push", amp: 40 },
+        { op: "pen" as const, id: "p", from: "port", color: "#111" },
+      ],
+      out: ["p"],
+    };
+    const viaHand = evalPatch(handPatch, { resolveImage });
+    expect(JSON.stringify(viaScene.layers[0].geometry))
+      .toBe(JSON.stringify(viaHand.layers[0].geometry));
+  });
+});

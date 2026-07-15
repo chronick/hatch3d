@@ -63,11 +63,12 @@ same functions the CLI does.
 | `group` | Nesting; holds layers (and, later, a transform cascade) | ✅ |
 | `layer` | Binds a pen (`color`/`name`/`width`); holds one generator | ✅ |
 | `generator` | A registered composition by id + `params`/`macros`/`hatchGroups`/`seed` | ✅ |
-| `op:transform` | Translate/rotate/scale a subtree | declared, deferred → vault-23w2 |
-| `op:clip` | Clip a subtree to a polygon / another node's hull | declared, deferred |
-| `op:mask` | Mask a subtree by another node's convex hull | declared, deferred |
-| `op:region-hatch` | Hatch-fill a region at angle/pitch | declared, deferred |
-| `op:field-distort` | Displace a subtree by a noise/flow field | declared, deferred |
+| `op:transform` | Translate/rotate/scale a subtree | ✅ |
+| `op:clip` | Clip a subtree to a polygon / another node's hull | ✅ |
+| `op:mask` | Mask a subtree by another node's convex hull | ✅ |
+| `op:region-hatch` | Hatch-fill a region at angle/pitch | ✅ |
+| `op:field-distort` | Displace a subtree by a noise/flow field | ✅ |
+| `op:image-luminance` | Deflect a subtree's scanlines by an image's brightness (isolinePortrait) | ✅ |
 
 A `layer` may set `blend: "masked"` with `maskBy: "<sibling layer id>"` — this
 maps to the layered pipeline's convex-hull masking. Default blend is `over`
@@ -82,9 +83,28 @@ byte-identically to before the field existed.
 
 The schema is **strict**: unknown keys are rejected, so a malformed doc fails
 loudly at parse time rather than silently mis-rendering (`parseSceneDoc` throws a
-path-prefixed error). Operator nodes parse but the compiler rejects them with a
-pointer to vault-23w2, so the format is forward-compatible without pretending
-the operators exist yet.
+path-prefixed error). Operator nodes lower to the patch engine's operators (see
+"Compiler internals" below) — the `--scene` render path evaluates them exactly
+like a hand-authored patch.
+
+### `op:image-luminance` — the isolinePortrait motif
+
+Deflects a child subtree's scanlines by an image's brightness — the corpus's
+most-recurring motif (`corpus/art/motifs/isoline.md`): horizontal lines pushed by
+a portrait's tone. Fields:
+
+| Field | Meaning | Default |
+| ----- | ------- | ------- |
+| `image` | Path to the image; the CLI decodes a PNG, the browser passes an uploaded grid | (required) |
+| `amplitude` | Peak displacement (canvas px) at full brightness | (required) |
+| `dir` | Displacement axis | `[0, 1]` (down) |
+| `resampleStep` | Subdivide the child to this max step so coarse scanlines can bend | `5` |
+| `invert` | Invert brightness | `false` |
+| `child` | Geometry to deflect — usually an `op:region-hatch` scanline fill | (required) |
+
+It lowers to `luminance → directional → resample(child) → distort`, byte-identical
+to the hand-authored `examples/patches/isoline-portrait.json`. Full example:
+`examples/scenes/isoline-portrait.scene.json`.
 
 ## Example 1 — two-pen layered (byte-identical to `phyllotaxisIsoblocks`)
 
@@ -154,6 +174,7 @@ Operator lowering (`sceneToPatch`):
 - `op:region-hatch` → a `regionHatch` node
 - `op:transform` → a `transform` node
 - `op:clip` / `op:mask` → a `clip` node (hull of the region / mask sibling)
+- `op:image-luminance` → a `luminance` field + `directional` + `resample`(child) + `distort`
 
 `compileScene` (`src/scene/compile.ts`) remains as the alternate scene →
 `LayeredCompositionDefinition` converter (no operators — the layered shape can't

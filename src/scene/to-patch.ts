@@ -58,6 +58,21 @@ export function sceneToPatch(doc: SceneDoc): PatchDoc {
         }
         return node.id;
       }
+      case "op:image-luminance": {
+        // Deflect the child's scanlines by an image's brightness: luminance
+        // field → directional displacement → resample the child (so coarse
+        // scanlines have vertices to bend) → distort. Mirrors the hand-authored
+        // isoline-portrait patch (examples/patches/isoline-portrait.json).
+        const childId = lowerNode(node.child);
+        const lumId = uid(`${node.id}_lum`);
+        const dirId = uid(`${node.id}_dir`);
+        const resId = uid(`${node.id}_res`);
+        nodes.push({ op: "luminance", id: lumId, image: node.image, invert: node.invert ?? false });
+        nodes.push({ op: "directional", id: dirId, from: lumId, dir: node.dir ?? [0, 1] });
+        nodes.push({ op: "resample", id: resId, from: childId, step: node.resampleStep ?? 5 });
+        nodes.push({ op: "distort", id: node.id, from: resId, by: dirId, amp: node.amplitude });
+        return node.id;
+      }
       case "op:transform": {
         const childId = lowerNode(node.child);
         nodes.push({
