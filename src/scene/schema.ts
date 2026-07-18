@@ -13,9 +13,10 @@
  * param/macro/hatch overrides). This is exactly the surface needed to represent
  * a LayeredComposition, so it compiles down the proven layered pipeline for
  * byte-identical output. Operator nodes (transform, clip, mask, region-hatch,
- * field-distort) are declared in the schema for forward compatibility but the
- * v1 compiler rejects them with a pointer to the operator-extraction task
- * (vault-23w2). Stable node ids make mutations legible (design principle #2).
+ * field-distort, image-luminance) lower to the patch engine's operators
+ * (src/scene/to-patch.ts), so a scene using them renders exactly like the
+ * equivalent hand-authored patch. Stable node ids make mutations legible
+ * (design principle #2).
  */
 
 import { z } from "zod";
@@ -102,6 +103,27 @@ export const FieldDistortNodeSchema = z
   })
   .strict();
 
+export const ImageLuminanceNodeSchema = z
+  .object({
+    type: z.literal("op:image-luminance"),
+    ...OperatorBase,
+    /** Image whose brightness drives the deflection; resolved by the caller's
+     * ImageResolver (the CLI decodes a PNG; the browser passes an uploaded grid). */
+    image: z.string().min(1),
+    /** Peak displacement in canvas px at full brightness. */
+    amplitude: z.number(),
+    /** Displacement axis; default [0, 1] pushes scanlines downward. */
+    dir: z.tuple([z.number(), z.number()]).optional(),
+    /** Subdivide the child to this max step so coarse scanlines can bend
+     * (distort only moves vertices). Default 5. */
+    resampleStep: z.number().positive().optional(),
+    /** Invert brightness (bright pushes less instead of more). */
+    invert: z.boolean().optional(),
+    /** The geometry to deflect — typically an op:region-hatch scanline fill. */
+    child: z.lazy((): z.ZodTypeAny => NodeSchema),
+  })
+  .strict();
+
 // ── Pen ──
 
 export const PenSchema = z
@@ -109,9 +131,13 @@ export const PenSchema = z
     color: z.string().optional(),
     /** Human-readable name → becomes <g id="..."> in exported SVG. */
     name: z.string().optional(),
-    // Per-pen stroke width is deferred — the render pipeline uses one global
-    // width (page.strokeWidthMm). Reintroduce widthMm here once the exporter
-    // supports per-layer stroke widths, rather than advertising a no-op field.
+    /**
+     * Per-pen stroke width in mm. The exporter emits a per-layer
+     * `stroke-width` on this pen's <g> via LayerGroupResult.widthScale
+     * (= width / page.strokeWidthMm). Absent → the group inherits the global
+     * width and the output is byte-identical to a widthless doc.
+     */
+    width: z.number().positive().optional(),
   })
   .strict();
 
@@ -152,6 +178,7 @@ export const NodeSchema: z.ZodType = z.discriminatedUnion("type", [
   MaskNodeSchema,
   RegionHatchNodeSchema,
   FieldDistortNodeSchema,
+  ImageLuminanceNodeSchema,
 ]);
 
 // ── Page & camera ──
@@ -202,6 +229,8 @@ export const SceneDocSchema = z
 export interface Pen {
   color?: string;
   name?: string;
+  /** Stroke width in mm (positive). */
+  width?: number;
 }
 
 export interface GeneratorNode {
@@ -269,6 +298,17 @@ export interface FieldDistortNode {
   child: SceneNode;
 }
 
+export interface ImageLuminanceNode {
+  type: "op:image-luminance";
+  id: string;
+  image: string;
+  amplitude: number;
+  dir?: [number, number];
+  resampleStep?: number;
+  invert?: boolean;
+  child: SceneNode;
+}
+
 export type SceneNode =
   | GroupNode
   | LayerNode
@@ -277,7 +317,8 @@ export type SceneNode =
   | ClipNode
   | MaskNode
   | RegionHatchNode
-  | FieldDistortNode;
+  | FieldDistortNode
+  | ImageLuminanceNode;
 
 export interface ResolvedPage {
   size: "a3" | "a4" | "a5" | "letter";

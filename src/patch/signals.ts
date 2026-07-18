@@ -31,16 +31,8 @@ export interface VectorField {
 export type Field = ScalarField | VectorField;
 
 /** Deterministic PRNG (mulberry32) — seeds simplex so patches are reproducible. */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+import { mulberry32 } from "../utils/prng";
+export { mulberry32 };
 
 import { createNoise2D } from "simplex-noise";
 
@@ -158,4 +150,137 @@ export function geometryBBox(
     }
   if (!Number.isFinite(xMin)) return { xMin: 0, yMin: 0, xMax: fallback.w, yMax: fallback.h };
   return { xMin, yMin, xMax, yMax };
+}
+
+type Pt = { x: number; y: number };
+
+function pointToSegmentDist(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  let t = len2 > 0 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+function pointInPolygon(px: number, py: number, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    if ((yi > py) !== (yj > py) && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Signed-distance field of a polygon (typically a node's convex hull): the
+ * distance to the nearest edge, negative inside and positive outside. A "how
+ * far from this shape" CV — modulate hatch pitch by distance from a form, ring
+ * a shape, fade an effect with distance. Degenerate polygons give a flat 0.
+ */
+export function sdfField(polygon: Pt[]): ScalarField {
+  if (polygon.length < 3) return { kind: "scalar", sample: () => 0 };
+  const n = polygon.length;
+  return {
+    kind: "scalar",
+    sample: (x, y) => {
+      let min = Infinity;
+      for (let i = 0; i < n; i++) {
+        const a = polygon[i];
+        const b = polygon[(i + 1) % n];
+        const d = pointToSegmentDist(x, y, a.x, a.y, b.x, b.y);
+        if (d < min) min = d;
+      }
+      return pointInPolygon(x, y, polygon) ? -min : min;
+    },
+  };
+}
+
+/** Combine two scalar fields into one — the field-domain mixer. */
+export function blendFields(
+  a: ScalarField,
+  b: ScalarField,
+  mode: "add" | "mul" | "max" | "min" | "mix",
+  mix = 0.5,
+): ScalarField {
+  return {
+    kind: "scalar",
+    sample: (x, y) => {
+      const va = a.sample(x, y);
+      const vb = b.sample(x, y);
+      switch (mode) {
+        case "add": return va + vb;
+        case "mul": return va * vb;
+        case "max": return Math.max(va, vb);
+        case "min": return Math.min(va, vb);
+        case "mix": return va * (1 - mix) + vb * mix;
+      }
+    },
+  };
+}
+
+/**
+ * A scalar field sampled from an image's per-pixel **luminance** in [0,1] — the
+ * "CV" for image-driven work (deflect scanlines by brightness, extract contours
+ * from a photo → the isolinePortrait motif). Pure and decoder-free: it takes a
+ * precomputed row-major brightness grid, so it stays browser-bundle-safe. The
+ * caller (a CLI-side loader, or a browser canvas) does the decoding and passes
+ * the grid in. The canvas rect [0,canvasW]×[0,canvasH] maps onto the image
+ * (stretched); samples are bilinear and edge-clamped.
+ */
+export function luminanceField(
+  brightness: ArrayLike<number>,
+  imgW: number,
+  imgH: number,
+  canvasW: number,
+  canvasH: number,
+  opts: { invert?: boolean } = {},
+): ScalarField {
+  const invert = opts.invert ?? false;
+  const at = (cx: number, cy: number): number => {
+    const bx = Math.max(0, Math.min(imgW - 1, cx));
+    const by = Math.max(0, Math.min(imgH - 1, cy));
+    return brightness[by * imgW + bx] ?? 0;
+  };
+  if (imgW < 1 || imgH < 1 || brightness.length < imgW * imgH) {
+    return { kind: "scalar", sample: () => 0 };
+  }
+  return {
+    kind: "scalar",
+    sample: (x, y) => {
+      // Canvas → image pixel space (stretch fit).
+      const ix = (x / Math.max(1e-6, canvasW)) * (imgW - 1);
+      const iy = (y / Math.max(1e-6, canvasH)) * (imgH - 1);
+      const x0 = Math.floor(ix);
+      const y0 = Math.floor(iy);
+      const fx = ix - x0;
+      const fy = iy - y0;
+      const v00 = at(x0, y0);
+      const v10 = at(x0 + 1, y0);
+      const v01 = at(x0, y0 + 1);
+      const v11 = at(x0 + 1, y0 + 1);
+      const top = v00 * (1 - fx) + v10 * fx;
+      const bot = v01 * (1 - fx) + v11 * fx;
+      const v = top * (1 - fy) + bot * fy;
+      return invert ? 1 - v : v;
+    },
+  };
+}
+
+/**
+ * Turn a scalar field into a **directional displacement** vector field: the
+ * scalar scales a fixed direction. Lets any scalar CV (luminance, density, sdf)
+ * push geometry along an axis — e.g. displace horizontal scanlines vertically
+ * by image brightness (the isolinePortrait move).
+ */
+export function directionalField(field: ScalarField, dir: [number, number]): VectorField {
+  return {
+    kind: "vector",
+    sample: (x, y) => {
+      const s = field.sample(x, y);
+      return [s * dir[0], s * dir[1]];
+    },
+  };
 }

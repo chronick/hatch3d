@@ -21,7 +21,10 @@ import type { CompositionDefinition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
 import type { RenderRequest } from "../src/workers/render-worker.types.js";
 import { buildSVGContent, buildLayeredSVGContent, computeExportLayout } from "./svg-export.js";
-import { compileScene } from "../src/scene/compile.js";
+import { parseSceneDoc } from "../src/scene/schema.js";
+import { sceneToPatch } from "../src/scene/to-patch.js";
+import { evalPatch, patchLayersToGroups } from "../src/patch/graph.js";
+import { pngImageResolver } from "./load-image.js";
 
 // ── Parse CLI arguments ──
 
@@ -355,42 +358,32 @@ function renderOne(config: RenderConfig): { svgContent: string; stats: { lines: 
 }
 
 /**
- * Render a Scene IR document. The scene compiles to a layered composition
- * (registered under a synthetic `scene:<id>` key) and renders through the exact
- * layered pipeline a hand-written LayeredComposition uses — so a scene ported
- * from a layered composition renders byte-identically.
+ * Render a Scene IR document. The scene lowers to a patch graph (sceneToPatch)
+ * and evaluates through the single patch engine — the same path cli/patch.ts
+ * uses. Because the patch generator matches the layered per-layer semantics, a
+ * layered scene renders byte-identically to the old compileScene path.
  */
-function renderScene(scenePath: string, cliFormat?: string, cliScale?: number): {
+function renderScene(scenePath: string): {
   svgContent: string;
   stats: { lines: number; verts: number; paths: number };
   durationMs: number;
   id: string;
 } {
+  const t0 = performance.now();
   const raw = JSON.parse(readFileSync(resolve(scenePath), "utf-8"));
-  const compiled = compileScene(raw);
-  compositionRegistry.register(compiled.composition);
+  const doc = parseSceneDoc(raw);
+  const patch = sceneToPatch(doc);
+  const { layers, page } = evalPatch(patch, { resolveImage: pngImageResolver });
 
-  const config: RenderConfig = {
-    composition: compiled.composition.id,
-    values: {},
-    format: (cliFormat as "svg" | "png") ?? "svg",
-    scale: cliScale ?? 4,
-    width: compiled.page.widthPx,
-    height: compiled.page.heightPx,
-    pageSize: compiled.page.size,
-    orientation: compiled.page.orientation,
-    margin: compiled.page.marginMm,
-    strokeWidth: compiled.page.strokeWidthMm,
-    surface: "hyperboloid",
-    hatchFamily: "u",
-    hatchCount: 30,
-    camTheta: compiled.camera.theta,
-    camPhi: compiled.camera.phi,
-    camDist: compiled.camera.dist,
-    camOrtho: compiled.camera.ortho,
-  };
-  const { svgContent, stats, durationMs } = renderOne(config);
-  return { svgContent, stats, durationMs, id: compiled.composition.id };
+  const layout = computeExportLayout(page.size, page.orientation, page.marginMm, page.widthPx, page.heightPx);
+  // Pen widths (mm) become per-group widthScale here — buildLayeredSVGContent
+  // emits the per-layer stroke-width from it.
+  const groups = patchLayersToGroups(layers, page);
+  const svgContent = buildLayeredSVGContent(groups, layout, page.marginMm, page.strokeWidthMm);
+  const lines = layers.reduce((s, l) => s + l.geometry.length, 0);
+  const verts = layers.reduce((s, l) => s + l.geometry.reduce((n, p) => n + p.length, 0), 0);
+  const paths = groups.reduce((s, g) => s + g.svgPaths.length, 0);
+  return { svgContent, stats: { lines, verts, paths }, durationMs: performance.now() - t0, id: `scene:${doc.id}` };
 }
 
 async function renderToPng(svgContent: string, scale: number): Promise<Buffer> {
@@ -490,11 +483,7 @@ async function main(): Promise<void> {
   // ── Scene IR path ──
   if (args.scene) {
     const scenePath = typeof args.scene === "string" ? args.scene : String(args.scene);
-    const { svgContent, stats, durationMs, id } = renderScene(
-      scenePath,
-      args.format,
-      args.scale ? Number(args.scale) : undefined,
-    );
+    const { svgContent, stats, durationMs, id } = renderScene(scenePath);
     const output = args.output;
     if (args.format === "png") {
       if (!output) {

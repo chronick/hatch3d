@@ -7,6 +7,42 @@
  */
 
 import type { Geometry, ScalarField, VectorField } from "./signals.js";
+import { convexHull, clipPolylineToConvexPolygon } from "../utils/clip.js";
+
+/**
+ * Affine transform: scale (around origin) → rotate → translate. The order fixes
+ * a predictable composition; a scene op:transform lowers to this.
+ */
+export function transformGeometry(
+  geometry: Geometry,
+  opts: { translate?: [number, number]; rotateDeg?: number; scale?: number | [number, number] },
+): Geometry {
+  const [sx, sy] = typeof opts.scale === "number" ? [opts.scale, opts.scale] : (opts.scale ?? [1, 1]);
+  const a = ((opts.rotateDeg ?? 0) * Math.PI) / 180;
+  const ca = Math.cos(a);
+  const sa = Math.sin(a);
+  const [tx, ty] = opts.translate ?? [0, 0];
+  return geometry.map((pl) =>
+    pl.map((p) => {
+      const x = p.x * sx;
+      const y = p.y * sy;
+      return { x: x * ca - y * sa + tx, y: x * sa + y * ca + ty };
+    }),
+  );
+}
+
+/**
+ * Clip geometry to the convex hull of a region (a polygon, or another node's
+ * geometry). Fails open (returns input unchanged) when the region is degenerate
+ * — matching the layered pipeline's masking behavior. Convex-only for v1.
+ */
+export function clipGeometry(geometry: Geometry, region: { x: number; y: number }[]): Geometry {
+  const hull = convexHull(region);
+  if (hull.length < 3) return geometry;
+  const out: Geometry = [];
+  for (const pl of geometry) out.push(...clipPolylineToConvexPolygon(pl, hull));
+  return out;
+}
 
 /**
  * Displace every vertex by a vector field, scaled by amplitude. The eurorack
@@ -74,5 +110,29 @@ export function fieldThin(
     const keepNoise = ((Math.imul(i + 1, 2654435761) >>> 0) % 1000) / 1000;
     const keepProb = 1 - strength * (1 - Math.max(0, Math.min(1, v)));
     return keepNoise < keepProb;
+  });
+}
+
+/**
+ * Subdivide polylines so every segment is at most `step` long — inserting
+ * interior vertices. Needed before distort/directional bends a coarse line
+ * (e.g. a 2-point scanline) by a field: without interior points there is
+ * nothing to displace mid-line.
+ */
+export function resampleGeometry(geometry: Geometry, step: number): Geometry {
+  if (step <= 0) return geometry;
+  return geometry.map((pl) => {
+    if (pl.length < 2) return pl;
+    const out = [pl[0]];
+    for (let i = 1; i < pl.length; i++) {
+      const a = pl[i - 1];
+      const b = pl[i];
+      const n = Math.max(1, Math.floor(Math.hypot(b.x - a.x, b.y - a.y) / step));
+      for (let k = 1; k <= n; k++) {
+        const t = k / n;
+        out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      }
+    }
+    return out;
   });
 }

@@ -61,23 +61,50 @@ same functions the CLI does.
 | `type` | Role | v1 |
 | ------ | ---- | -- |
 | `group` | Nesting; holds layers (and, later, a transform cascade) | ✅ |
-| `layer` | Binds a pen (`color`/`name`/`widthMm`); holds one generator | ✅ |
+| `layer` | Binds a pen (`color`/`name`/`width`); holds one generator | ✅ |
 | `generator` | A registered composition by id + `params`/`macros`/`hatchGroups`/`seed` | ✅ |
-| `op:transform` | Translate/rotate/scale a subtree | declared, deferred → vault-23w2 |
-| `op:clip` | Clip a subtree to a polygon / another node's hull | declared, deferred |
-| `op:mask` | Mask a subtree by another node's convex hull | declared, deferred |
-| `op:region-hatch` | Hatch-fill a region at angle/pitch | declared, deferred |
-| `op:field-distort` | Displace a subtree by a noise/flow field | declared, deferred |
+| `op:transform` | Translate/rotate/scale a subtree | ✅ |
+| `op:clip` | Clip a subtree to a polygon / another node's hull | ✅ |
+| `op:mask` | Mask a subtree by another node's convex hull | ✅ |
+| `op:region-hatch` | Hatch-fill a region at angle/pitch | ✅ |
+| `op:field-distort` | Displace a subtree by a noise/flow field | ✅ |
+| `op:image-luminance` | Deflect a subtree's scanlines by an image's brightness (isolinePortrait) | ✅ |
 
 A `layer` may set `blend: "masked"` with `maskBy: "<sibling layer id>"` — this
 maps to the layered pipeline's convex-hull masking. Default blend is `over`
 (additive stacking).
 
+A layer's `pen` may set `width` (mm, positive) in addition to `color`/`name`.
+It becomes a per-layer `stroke-width` on that pen's `<g>` in the exported SVG
+(as a scale relative to `page.strokeWidthMm` — e.g. `width: 0.8` on a 0.5mm
+page renders that group at 1.6× the global width). Layers without a `width`
+inherit the global `page.strokeWidthMm`, and a doc with no pen widths renders
+byte-identically to before the field existed.
+
 The schema is **strict**: unknown keys are rejected, so a malformed doc fails
 loudly at parse time rather than silently mis-rendering (`parseSceneDoc` throws a
-path-prefixed error). Operator nodes parse but the compiler rejects them with a
-pointer to vault-23w2, so the format is forward-compatible without pretending
-the operators exist yet.
+path-prefixed error). Operator nodes lower to the patch engine's operators (see
+"Compiler internals" below) — the `--scene` render path evaluates them exactly
+like a hand-authored patch.
+
+### `op:image-luminance` — the isolinePortrait motif
+
+Deflects a child subtree's scanlines by an image's brightness — the corpus's
+most-recurring motif (`corpus/art/motifs/isoline.md`): horizontal lines pushed by
+a portrait's tone. Fields:
+
+| Field | Meaning | Default |
+| ----- | ------- | ------- |
+| `image` | Path to the image; the CLI decodes a PNG, the browser passes an uploaded grid | (required) |
+| `amplitude` | Peak displacement (canvas px) at full brightness | (required) |
+| `dir` | Displacement axis | `[0, 1]` (down) |
+| `resampleStep` | Subdivide the child to this max step so coarse scanlines can bend | `5` |
+| `invert` | Invert brightness | `false` |
+| `child` | Geometry to deflect — usually an `op:region-hatch` scanline fill | (required) |
+
+It lowers to `luminance → directional → resample(child) → distort`, byte-identical
+to the hand-authored `examples/patches/isoline-portrait.json`. Full example:
+`examples/scenes/isoline-portrait.scene.json`.
 
 ## Example 1 — two-pen layered (byte-identical to `phyllotaxisIsoblocks`)
 
@@ -129,19 +156,38 @@ i.e. this parameter set over-inks the page for a 0.3mm pen. That is exactly the
 deterministic signal an agent loop uses to reject a candidate before spending a
 vision critique on it.
 
-## Compiler internals (v1)
+## Compiler internals — unified with the patch engine
 
-`compileScene(doc)` flattens the tree to a `LayeredCompositionDefinition`
-(registered under a synthetic `scene:<id>` key) and renders it through
-`runLayeredPipeline`. Reusing the layered definition shape is what guarantees
-the byte-identical equivalence. `layeredToScene` / `sceneToLayers`
-(`src/scene/convert.ts`) provide the round trip, so every existing layered
-composition can migrate to a scene doc and back.
+`render --scene` lowers the scene document to a **patch graph** (`sceneToPatch`,
+`src/scene/to-patch.ts`) and evaluates it through the single patch engine
+(`src/patch/graph.ts`) — the same path `cli/patch.ts` uses. This is the
+convergence: one evaluator for both scene docs and patches (see
+`active/plotter-art-workflow/design/patch-model.md`).
+
+Byte-identical is preserved because the patch `generator` node applies the same
+per-layer semantics as `runLayeredPipeline` (`resolveLayerInnerValues` + macros +
+hatchGroups + camera). A layered scene lowers to generator + pen nodes and
+renders the same SVG it always did (verified in tests + the examples).
+
+Operator lowering (`sceneToPatch`):
+- `op:field-distort` → a `simplexVector` field + a `distort` node
+- `op:region-hatch` → a `regionHatch` node
+- `op:transform` → a `transform` node
+- `op:clip` / `op:mask` → a `clip` node (hull of the region / mask sibling)
+- `op:image-luminance` → a `luminance` field + `directional` + `resample`(child) + `distort`
+
+`compileScene` (`src/scene/compile.ts`) remains as the alternate scene →
+`LayeredCompositionDefinition` converter (no operators — the layered shape can't
+hold them); `layeredToScene` / `sceneToLayers` (`src/scene/convert.ts`) provide
+the round trip.
 
 ## Not yet (follow-ups)
 
-- **Operators** — region-hatch, field-distort, transform, clip: vault-23w2.
 - **Browser UI authoring** — the compiler is headless-first; wiring scene docs
-  into `App.tsx`'s live editor is a separate UI task (vault-see5 follow-up).
-- **Multiple generators per layer** — v1 is one generator per pen; merging
-  several into one pen needs the operator layer first.
+  into `App.tsx`'s live editor is a separate UI task (vault-2v4c).
+- **Multiple generators per layer** — a layer holds one child subtree; merging
+  several generators into one pen would need a `merge` node.
+- **`op:field-distort` `field: "flow"`** — currently always lowers to simplex;
+  a flow-field source is a follow-up.
+- **Non-convex clip** — `clip` uses the convex hull of the region; true concave
+  clipping is a follow-up.
