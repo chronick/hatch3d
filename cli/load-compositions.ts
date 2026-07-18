@@ -35,6 +35,7 @@ import kmeansHullCity from "../src/compositions/2d/generative/kmeans-hull-city.j
 import inkVortex from "../src/compositions/2d/generative/ink-vortex.js";
 import isoWoodBlocks from "../src/compositions/2d/generative/iso-wood-blocks.js";
 import meshLineart from "../src/compositions/2d/generative/mesh-lineart.js";
+import noiseGridCircles from "../src/compositions/2d/generative/noise-grid-circles.js";
 import perlinWorms from "../src/compositions/2d/generative/perlin-worms.js";
 import photoHalftone from "../src/compositions/2d/generative/photo-halftone.js";
 import reactionDiffusion from "../src/compositions/2d/generative/reaction-diffusion.js";
@@ -64,7 +65,7 @@ const allCompositions: CompositionDefinition[] = [
   dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique, tonalShading,
   // 2D
   contourMap, differentialGrowth, flowField, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
-  meshLineart, perlinWorms, photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor,
+  meshLineart, noiseGridCircles, perlinWorms, photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor,
   tspArt, voronoiTexture, waterArcos, weightedStippling,
   opArtSphere, guillocheRosette, hilbertFill, moireCircles, penroseTiling, recursiveSubdivision,
   spirograph, truchetMaze, waveInterference,
