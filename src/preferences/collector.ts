@@ -101,6 +101,7 @@ function buildObservation(
   outcome: Outcome,
   timestamp: string,
   seedRef?: string | null,
+  parentId?: string | null,
 ): Observation | null {
   const comp = compositionRegistry.get(composition);
   if (!comp) return null;
@@ -119,6 +120,7 @@ function buildObservation(
     outcome,
     features,
     seedRef: seedRef ?? undefined,
+    parentId: parentId ?? undefined,
   };
 }
 
@@ -179,6 +181,7 @@ export async function collectFromFeedAPI(config: { url: string; token: string })
       mapActionToOutcome(action.action),
       action.acted_at,
       (metadata.seedRef as string) ?? null,
+      (metadata.parentId as string) ?? null,
     );
 
     if (obs) {
@@ -278,10 +281,10 @@ export function logGeneration(
     "unseen",
     new Date().toISOString(),
     seedRef,
+    parentId,
   );
 
   if (obs) {
-    if (parentId) obs.parentId = parentId;
     appendObservation(obs);
   }
 }
