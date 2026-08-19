@@ -234,6 +234,7 @@ function runLayeredPipeline(
       id: layer.composition,
       name: layer.name,
       color: layer.color,
+      passes: layer.passes,
       svgPaths: paths,
     });
   }

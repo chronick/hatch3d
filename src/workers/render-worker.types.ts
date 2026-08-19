@@ -57,6 +57,8 @@ export interface LayerGroupResult {
   name?: string;
   /** Stroke color for this pen layer (CSS color string). */
   color?: string;
+  /** Plotter passes for this pen layer (exported as `data-passes`). */
+  passes?: number;
   /** SVG path `d` strings for this layer only. */
   svgPaths: string[];
 }

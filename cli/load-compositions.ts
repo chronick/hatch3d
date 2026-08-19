@@ -48,6 +48,7 @@ import truchetMaze from "../src/compositions/2d/patterns/truchet-maze.js";
 
 // Layered compositions (multi-composition umbrella)
 import phyllotaxisIsoblocks from "../src/compositions/layered/demos/phyllotaxis-isoblocks.js";
+import twoPenOffset from "../src/compositions/layered/demos/two-pen-offset.js";
 
 const allCompositions: CompositionDefinition[] = [
   // 3D
@@ -59,7 +60,7 @@ const allCompositions: CompositionDefinition[] = [
   photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor, tspArt, voronoiTexture, waterArcos,
   opArtSphere, guillocheRosette, hilbertFill, moireCircles, spirograph, truchetMaze,
   // Layered
-  phyllotaxisIsoblocks,
+  phyllotaxisIsoblocks, twoPenOffset,
 ];
 
 export function loadCompositions(): void {

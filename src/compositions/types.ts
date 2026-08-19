@@ -214,6 +214,13 @@ export interface LayeredLayer {
   color?: string;
   /** Optional human-readable name → becomes <g id="..."> in exported SVG. */
   name?: string;
+  /**
+   * Number of plotter passes for this pen layer (ink build-up on water-based
+   * pens). Exported as `data-passes` on the layer group; the artifact still
+   * holds one copy of each path — pass expansion happens at plot time.
+   * Undefined / 1 = a single pass.
+   */
+  passes?: number;
   /** UI-controlled visibility flag — when false, layer is skipped. Default true. */
   visible?: boolean;
   /** Per-layer 2D pan/zoom/rotation in canvas pixel space. */
