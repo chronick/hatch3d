@@ -2,6 +2,32 @@ import * as THREE from "three";
 import { createNoise2D } from "simplex-noise";
 import type { SurfaceFn } from "./surfaces";
 
+/**
+ * Stipple (dot-shading) mode parameters.
+ *
+ * When `HatchParams.stipple` is present, `generateUVHatchLines` abandons
+ * line sweeping entirely and emits one tiny polyline per dot. Because a dot
+ * is just a 2-point (or 4-point) polyline on the surface, it flows through
+ * the existing projection + occlusion pipeline with no changes there.
+ */
+export interface StippleParams {
+  /**
+   * Candidate dots per unit of UV length, per axis. The UV domain is
+   * divided into a `dotsPerUnit * uSpan` x `dotsPerUnit * vSpan` stratified
+   * grid; each cell contributes one jittered candidate.
+   */
+  dotsPerUnit?: number;
+  /**
+   * Dot mark size, in world units along the surface tangent (not UV units),
+   * so dots stay visually consistent across surfaces with different UV scales.
+   */
+  dotSize?: number;
+  /** "point" = one tiny tangent segment; "cross" = two crossing segments. */
+  shape?: "point" | "cross";
+  /** Seed for the deterministic PRNG driving jitter + density rejection. */
+  seed?: number;
+}
+
 export interface HatchParams {
   family?: "u" | "v" | "diagonal" | "rings" | "hex" | "crosshatch" | "spiral" | "wave";
   count?: number;
@@ -23,6 +49,118 @@ export interface HatchParams {
   // Lines are oversampled by densityOversample and probabilistically filtered.
   densityFn?: (u: number, v: number) => number;
   densityOversample?: number;
+  /**
+   * Stipple mode. When set, dots replace line families entirely (see
+   * `generateStippleDots`). Leave undefined for the classic sweep behavior.
+   */
+  stipple?: StippleParams;
+}
+
+/** Deterministic 32-bit PRNG (mulberry32). Returns a () => [0,1) generator. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Generate stipple dots across the UV domain as tiny polylines on the surface.
+ *
+ * Sampling is a stratified jittered grid (more even than pure random, still
+ * free of visible grid banding), driven by a seeded PRNG so a given seed
+ * always yields the same dot field. Each candidate is kept with probability
+ * `densityFn(u, v)` — with no densityFn every candidate is kept.
+ *
+ * Each kept dot is emitted as a tiny mark oriented along the surface tangents
+ * at that point, so it sits on the surface and is occluded like any other
+ * polyline.
+ */
+export function generateStippleDots(
+  surfaceFn: SurfaceFn,
+  surfaceParams: Record<string, number>,
+  stipple: StippleParams,
+  uRange: [number, number],
+  vRange: [number, number],
+  densityFn?: (u: number, v: number) => number,
+): THREE.Vector3[][] {
+  const {
+    dotsPerUnit = 80,
+    dotSize = 0.01,
+    shape = "point",
+    seed = 1,
+  } = stipple;
+
+  const uSpan = uRange[1] - uRange[0];
+  const vSpan = vRange[1] - vRange[0];
+  if (uSpan <= 0 || vSpan <= 0 || dotsPerUnit <= 0) return [];
+
+  const gridU = Math.max(1, Math.round(dotsPerUnit * uSpan));
+  const gridV = Math.max(1, Math.round(dotsPerUnit * vSpan));
+  const cellU = uSpan / gridU;
+  const cellV = vSpan / gridV;
+
+  const rand = mulberry32(seed);
+  const half = dotSize / 2;
+  // Finite-difference step for tangents, scaled to the cell so it stays
+  // meaningful on both tiny and huge UV domains.
+  const eps = Math.min(cellU, cellV) * 0.25 || 1e-4;
+
+  const dots: THREE.Vector3[][] = [];
+
+  for (let i = 0; i < gridU; i++) {
+    for (let j = 0; j < gridV; j++) {
+      // Jittered stratified sample inside cell (i, j)
+      const u = uRange[0] + (i + rand()) * cellU;
+      const v = vRange[0] + (j + rand()) * cellV;
+      // Draw the rejection value unconditionally so the PRNG stream stays
+      // aligned regardless of whether densityFn is present.
+      const keepRoll = rand();
+      if (densityFn) {
+        const d = densityFn(u, v);
+        const p = d > 1 ? 1 : d < 0 ? 0 : d;
+        if (keepRoll >= p) continue;
+      }
+
+      const p0 = surfaceFn(u, v, surfaceParams);
+      const pu = surfaceFn(Math.min(uRange[1], u + eps), v, surfaceParams);
+      const pv = surfaceFn(u, Math.min(vRange[1], v + eps), surfaceParams);
+
+      // Tangent along u (normalized to world units), with a stable fallback
+      let tux = pu.x - p0.x, tuy = pu.y - p0.y, tuz = pu.z - p0.z;
+      let tLen = Math.sqrt(tux * tux + tuy * tuy + tuz * tuz);
+      if (tLen < 1e-9) {
+        tux = 1; tuy = 0; tuz = 0;
+      } else {
+        tux /= tLen; tuy /= tLen; tuz /= tLen;
+      }
+
+      dots.push([
+        new THREE.Vector3(p0.x - tux * half, p0.y - tuy * half, p0.z - tuz * half),
+        new THREE.Vector3(p0.x + tux * half, p0.y + tuy * half, p0.z + tuz * half),
+      ]);
+
+      if (shape === "cross") {
+        let tvx = pv.x - p0.x, tvy = pv.y - p0.y, tvz = pv.z - p0.z;
+        tLen = Math.sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
+        if (tLen < 1e-9) {
+          tvx = 0; tvy = 1; tvz = 0;
+        } else {
+          tvx /= tLen; tvy /= tLen; tvz /= tLen;
+        }
+        dots.push([
+          new THREE.Vector3(p0.x - tvx * half, p0.y - tvy * half, p0.z - tvz * half),
+          new THREE.Vector3(p0.x + tvx * half, p0.y + tvy * half, p0.z + tvz * half),
+        ]);
+      }
+    }
+  }
+
+  return dots;
 }
 
 /**
@@ -229,7 +367,15 @@ export function generateUVHatchLines(
     dashRandom = 0,
     densityFn,
     densityOversample = 3,
+    stipple,
   } = hatchParams;
+
+  // Stipple mode: dots instead of swept line families. Purely additive —
+  // when `stipple` is undefined this branch is skipped and every code path
+  // below is untouched.
+  if (stipple) {
+    return generateStippleDots(surfaceFn, surfaceParams, stipple, uRange, vRange, densityFn);
+  }
 
   // If densityFn is provided, oversample the line count and filter afterward
   const effectiveCount = densityFn ? count * densityOversample : count;
