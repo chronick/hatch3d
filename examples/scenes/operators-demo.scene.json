@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "operators-demo",
+  "page": { "size": "a4", "orientation": "landscape", "marginMm": 15 },
+  "root": {
+    "type": "group", "id": "root",
+    "children": [
+      {
+        "type": "layer", "id": "base", "pen": { "color": "#1d4ed8", "name": "base" },
+        "children": [
+          {
+            "type": "op:field-distort", "id": "fd", "field": "simplex", "scale": 0.01, "amplitude": 8,
+            "child": { "type": "generator", "id": "g", "composition": "contourMap", "params": { "contourLevels": 18 } }
+          }
+        ]
+      }
+    ]
+  }
+}

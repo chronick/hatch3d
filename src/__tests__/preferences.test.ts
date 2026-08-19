@@ -101,6 +101,18 @@ describe("extractFeatures", () => {
     expect(features.vertexDensity).toBe(0);
   });
 
+  it("defaults isSeedDerived to false when no seedRef is given", () => {
+    const features = extractFeatures(comp, {}, { lines: 0, verts: 0, paths: 0 });
+    expect(features.isSeedDerived).toBe(false);
+    expect(features.seedRef).toBeUndefined();
+  });
+
+  it("sets isSeedDerived and seedRef when a vault seed id is passed", () => {
+    const features = extractFeatures(comp, {}, { lines: 0, verts: 0, paths: 0 }, "plotterart/1sf8duc");
+    expect(features.isSeedDerived).toBe(true);
+    expect(features.seedRef).toBe("plotterart/1sf8duc");
+  });
+
   it("reverse-computes macro values", () => {
     // At default macro values (0.5), seedSpacing=10, maxSteps=400
     // Increase density → seedSpacing goes down, maxSteps goes up
@@ -200,6 +212,46 @@ describe("computeModel", () => {
     const model = computeModel([accepted, rejected]);
     expect(model.statPreferences.pathDensity.preferredMean).toBeCloseTo(0.5, 2);
     expect(model.statPreferences.pathDensity.rejectedMean).toBeCloseTo(2.0, 2);
+  });
+
+  it("computes seedCompositionScores from seed-derived observations only", () => {
+    const comp = makeComp2D();
+    const values = { seedSpacing: 8, maxSteps: 600, noiseScale: 0.008, arrangement: "random" };
+    const stats = { lines: 200, verts: 50000, paths: 200 };
+
+    const seedAccepted = makeObservation({
+      outcome: "accepted",
+      seedRef: "plotterart/1sf8duc",
+      features: extractFeatures(comp, values, stats, "plotterart/1sf8duc"),
+    });
+    const seedRejected = makeObservation({
+      outcome: "rejected",
+      seedRef: "plotterart/1sf8duc",
+      features: extractFeatures(comp, values, stats, "plotterart/1sf8duc"),
+    });
+    // Non-seed-derived observation should not count toward seedCompositionScores.
+    const plainAccepted = makeObservation({ outcome: "accepted" });
+
+    const model = computeModel([seedAccepted, seedRejected, plainAccepted]);
+
+    expect(model.seedCompositionScores.testFlow.accepted).toBe(1);
+    expect(model.seedCompositionScores.testFlow.rejected).toBe(1);
+    // Bayesian: (1 + 1) / (2 + 2) = 0.5
+    expect(model.seedCompositionScores.testFlow.score).toBeCloseTo(0.5, 2);
+    // Base composition score reflects all 3 observations: (2 + 1) / (3 + 2) = 0.6
+    expect(model.compositionScores.testFlow.score).toBeCloseTo(0.6, 2);
+  });
+
+  it("existing observations without seedRef still load and score (backward compatible)", () => {
+    // Simulates an observation parsed from a pre-existing observations.jsonl
+    // line that predates the seedRef/isSeedDerived fields.
+    const legacy = makeObservation({ outcome: "accepted" });
+    delete (legacy as { seedRef?: string }).seedRef;
+    delete (legacy.features as { isSeedDerived?: boolean }).isSeedDerived;
+
+    const model = computeModel([legacy]);
+    expect(model.compositionScores.testFlow.accepted).toBe(1);
+    expect(Object.keys(model.seedCompositionScores)).toHaveLength(0);
   });
 
   it("summarizeModel produces readable output", () => {
@@ -342,6 +394,23 @@ describe("mutatePreset", () => {
     expect(mutant.source).toBe("mutation");
     expect(mutant.parentId).toBe(parent.id);
     expect(mutant.tags).toContain("mutation");
+  });
+
+  it("propagates seedRef from a seed-derived parent (lineage survives mutation)", () => {
+    const comp = makeComp2D();
+    const parent = makeObservation({ composition: "testFlow", seedRef: "plotterart/1sf8duc" });
+
+    const mutant = mutatePreset(comp, parent);
+    expect(mutant.seedRef).toBe("plotterart/1sf8duc");
+  });
+
+  it("leaves seedRef undefined when the parent has no seed lineage", () => {
+    const comp = makeComp2D();
+    const parent = makeObservation({ composition: "testFlow" });
+    delete (parent as { seedRef?: string }).seedRef;
+
+    const mutant = mutatePreset(comp, parent);
+    expect(mutant.seedRef).toBeUndefined();
   });
 
   it("keeps slider values within control ranges", () => {

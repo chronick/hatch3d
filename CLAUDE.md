@@ -25,11 +25,11 @@ surfaces.ts → hatch.ts → projection.ts → occlusion.ts → App.tsx (SVG out
 
 **`surfaces.ts`** — Parametric surface functions `(u, v, params) → Vector3`. Each surface has a name, function, and default params. The `SURFACES` registry is the single source of truth for available surfaces.
 
-**`hatch.ts`** — Generates families of polylines by sweeping across a surface in UV space. Supports u-constant, v-constant, and diagonal iso-line families.
+**`hatch.ts`** — Generates families of polylines by sweeping across a surface in UV space. Supports u-constant, v-constant, and diagonal iso-line families. Stochastic post-processing (noise displacement, dashing, density filtering) is seeded via `HatchParams.seed` — same params + seed → identical output. `HatchParams.clipFn(u, v)` clips point-by-point, splitting polylines (used for light-driven tonal layering; see `docs/research/krbn-integration.md`).
 
 **`projection.ts`** — Projects 3D polylines to 2D screen coordinates via a Three.js camera. Also contains `buildSurfaceMesh` (generates BufferGeometry for the depth pass) and `polylinesToSVGPaths` (converts 2D points to SVG path `d` strings).
 
-**`occlusion.ts`** — Optional hidden-line removal. Renders surface meshes to a WebGL depth buffer using a custom shader, then clips 2D polylines by sampling the depth buffer per-point.
+**`occlusion.ts`** — Optional hidden-line removal. Renders surface meshes to a WebGL depth buffer using a custom shader, then splits 2D polylines into visible/hidden runs by sampling the depth buffer per-point. Hidden runs can be ghosted (faint dashed pen layer) instead of dropped via `RenderRequest.hiddenMode: "ghost"`. The pipeline can also emit depth-emphasis stroke-width bands (`depthWidthEnabled`) — nearer strokes bolder, farther finer, quantized into per-pen `<g>` groups.
 
 **`compositions.ts`** — Multi-layer presets that combine several surfaces with different hatch configs and transforms. The `COMPOSITIONS` registry parallels `SURFACES`.
 

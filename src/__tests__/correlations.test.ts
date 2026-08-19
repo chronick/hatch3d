@@ -180,6 +180,7 @@ describe("enumerateFeaturePairs", () => {
     vertexDensity: 100,
     lineCount: 200,
     tags: [],
+    isSeedDerived: false,
   };
 
   it("enumerates all unordered macro pairs", () => {

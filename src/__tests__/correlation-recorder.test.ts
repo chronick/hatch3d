@@ -31,6 +31,7 @@ function makeObservation(overrides: Partial<Observation> = {}): Observation {
       vertexDensity: 100,
       lineCount: 200,
       tags: [],
+      isSeedDerived: false,
     },
     ...overrides,
   };
@@ -124,6 +125,7 @@ describe("recordObservationCorrelations", () => {
         vertexDensity: 0,
         lineCount: 0,
         tags: [],
+        isSeedDerived: false,
       },
     });
     const store = recordObservationCorrelations(makeEmptyStore(), obs, FIXED_TS);

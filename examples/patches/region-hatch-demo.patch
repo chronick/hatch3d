@@ -1,0 +1,9 @@
+# Op-art-ish: hatch the AREA of a stipple cloud at an angle, then drift it.
+# Demonstrates region-hatch (fill a region) + field-distort (modulate) together.
+
+cloud   = weightedStippling(count: 1200, seed: 4)
+fill    = regionHatch(cloud, angle: 35, pitch: 6)
+flow    = simplexVector(scale: 0.004, seed: 2)
+warped  = distort(fill, by: flow, amp: 6)
+
+out(cloud @ "#dc2626", warped @ "#1d4ed8")

@@ -1,6 +1,6 @@
 import { memo, useMemo, useRef, useEffect } from "react";
 import type { ControlDef, MacroDef } from "../compositions/types";
-import { getControlGroups } from "../compositions/helpers";
+import { getControlGroups, isControlVisible } from "../compositions/helpers";
 import { Section } from "./Section";
 import { MacroSlider } from "./MacroSlider";
 import { ControlRenderer } from "./ControlRenderer";
@@ -97,7 +97,10 @@ export const CompositionControls = memo(function CompositionControls({
         </Section>
       )}
       {groups.map((group) => {
-        const groupControls = groupedControls.get(group) ?? [];
+        const groupControls = (groupedControls.get(group) ?? []).filter(([, c]) =>
+          controls ? isControlVisible(c, currentValues, controls) : true,
+        );
+        if (groupControls.length === 0) return null;
         const previewParts = groupControls
           .slice(0, 2)
           .map(([k, c]) => {

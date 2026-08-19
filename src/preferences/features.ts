@@ -20,6 +20,7 @@ export function extractFeatures(
   comp: CompositionDefinition,
   values: Record<string, unknown>,
   stats: { lines: number; verts: number; paths: number },
+  seedRef?: string | null,
 ): NormalizedFeatures {
   const category = is2DComposition(comp) ? "2d" : "3d";
   const controlPositions: Record<string, number> = {};
@@ -60,6 +61,8 @@ export function extractFeatures(
     vertexDensity,
     lineCount: stats.lines,
     tags: comp.tags ?? [],
+    isSeedDerived: !!seedRef,
+    seedRef: seedRef ?? undefined,
   };
 }
 

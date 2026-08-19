@@ -17,6 +17,12 @@ export interface MacroDef {
   targets: MacroTarget[];
 }
 
+/** Optional UI gate. Hides the control when `currentValues[control] !== equals`. UI-only — value still flows through. */
+export interface ShowWhen {
+  control: string;
+  equals: unknown;
+}
+
 export interface SliderControl {
   type: "slider";
   label: string;
@@ -25,6 +31,7 @@ export interface SliderControl {
   max: number;
   step?: number;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface ToggleControl {
@@ -32,6 +39,7 @@ export interface ToggleControl {
   label: string;
   default: boolean;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface SelectControl {
@@ -40,6 +48,7 @@ export interface SelectControl {
   default: string;
   options: { label: string; value: string }[];
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface XYControl {
@@ -49,6 +58,7 @@ export interface XYControl {
   min: number;
   max: number;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export interface ImageSource {
@@ -66,9 +76,35 @@ export interface ImageControl {
   /** Target grid width in samples (height derived from aspect ratio). */
   sampleSize?: number;
   group: string;
+  showWhen?: ShowWhen;
 }
 
 export type ControlDef = SliderControl | ToggleControl | SelectControl | XYControl | ImageControl;
+
+// ── Hatch group types ──
+
+export type HatchFamily =
+  | "u"
+  | "v"
+  | "diagonal"
+  | "rings"
+  | "hex"
+  | "crosshatch"
+  | "spiral";
+
+export interface HatchGroupConfig {
+  family: "inherit" | HatchFamily;
+  count: number;
+  samples: number;
+  angle: number;
+}
+
+export const HATCH_GROUP_DEFAULT: HatchGroupConfig = {
+  family: "inherit",
+  count: 30,
+  samples: 50,
+  angle: 0.7,
+};
 
 // ── Layer / Composition types ──
 
@@ -104,6 +140,8 @@ export interface CompositionPreset {
     controls?: Record<string, unknown>;
     macros?: Record<string, number>;
     hatchGroups?: Record<string, unknown>;
+    /** Layer stack payload — only populated for layered compositions. */
+    layers?: LayeredLayer[];
   };
 }
 
@@ -134,6 +172,21 @@ export interface CompositionMetadata {
 export interface Composition3DDefinition extends CompositionMetadata {
   type?: "3d";
   hatchGroups?: string[];
+  /**
+   * Marks compositions whose appearance materially diverges between
+   * occluded (in-browser) and unoccluded headless rendering (HLR).
+   *
+   * Headless rendering paths (`cli/render.ts`, `cli/feed-push.ts`) run
+   * with `useOcclusion: false` for performance, so back-facing hatches
+   * stay visible in the output SVG. For most compositions the result
+   * is visually identical to the occluded view; for compositions
+   * marked here it is not. Downstream tools (improve-mode routine,
+   * future PR commenters) can read this flag to warn reviewers that
+   * a headless render may not match the in-browser preview.
+   *
+   * Absent === false. Only meaningful for 3D compositions.
+   */
+  occlusionSensitive?: boolean;
   layers: (input: CompositionInput) => LayerConfig[];
   /**
    * Optional unified-mesh override for the HLR depth buffer.
@@ -198,10 +251,19 @@ export interface LayerCamera {
 }
 
 export interface LayeredLayer {
+  /**
+   * Stable per-instance id, assigned on add or on first read of legacy
+   * data; survives reorder + serialization.
+   */
+  __id?: string;
   /** id of an inner composition to render. Resolved at render time via the registry. */
   composition: string;
   /** Override values for the inner composition's controls/macros. */
   paramOverrides?: Record<string, unknown>;
+  /** Override values for the inner composition's macros (raw 0..1 macro slider values). */
+  macroOverrides?: Record<string, number>;
+  /** Override hatch-group configs for the inner composition (replace, not merge — outer layered comp has no hatch groups of its own). */
+  hatchGroupOverrides?: Record<string, HatchGroupConfig>;
   /**
    * 'over' = additive stacking (default).
    * 'masked' = clip this layer to the bounding box of `maskBy` layer.

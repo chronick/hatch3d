@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "id": "guilloche-single",
+  "page": { "size": "a4", "orientation": "portrait", "marginMm": 20, "strokeWidthMm": 0.3 },
+  "seedRefs": ["plotterart/1sf8duc"],
+  "root": {
+    "type": "layer",
+    "id": "rosette",
+    "pen": { "color": "#111111", "name": "black" },
+    "children": [
+      {
+        "type": "generator",
+        "id": "rosette-gen",
+        "composition": "guillocheRosette",
+        "params": {
+          "rings": 7,
+          "layersPerRing": 8,
+          "lobes": 32,
+          "amplitude": 128,
+          "phaseStep": 0.13,
+          "innerRadius": 70,
+          "ringSpacing": 35
+        }
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-import type { CompositionPreset } from "./types";
+import type { CompositionPreset, LayeredLayer } from "./types";
 
 const USER_PRESETS_KEY = "hatch3d-user-presets";
 
@@ -32,6 +32,14 @@ export function deleteUserPreset(compositionId: string, presetKey: string): void
     if (Object.keys(all[compositionId]).length === 0) delete all[compositionId];
   }
   localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(all));
+}
+
+/**
+ * Strip per-instance `__id` from each layer for preset serialization.
+ * Pure: returns a new array of shallow copies; does not mutate input.
+ */
+export function buildLayeredPresetValues(layers: LayeredLayer[]): LayeredLayer[] {
+  return layers.map(({ __id, ...rest }) => rest);
 }
 
 /** Get all presets for a composition (author suggested + user saved) */

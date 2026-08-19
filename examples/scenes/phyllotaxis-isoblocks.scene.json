@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "id": "phyllotaxis-isoblocks",
+  "page": { "size": "a3", "orientation": "landscape", "marginMm": 15 },
+  "root": {
+    "type": "group",
+    "id": "root",
+    "children": [
+      {
+        "type": "layer",
+        "id": "ground",
+        "pen": { "color": "#2563eb", "name": "ground" },
+        "blend": "over",
+        "children": [
+          { "type": "generator", "id": "ground-gen", "composition": "isoWoodBlocks" }
+        ]
+      },
+      {
+        "type": "layer",
+        "id": "accent",
+        "pen": { "color": "#dc2626", "name": "accent" },
+        "blend": "over",
+        "children": [
+          { "type": "generator", "id": "accent-gen", "composition": "phyllotaxisGarden" }
+        ]
+      }
+    ]
+  }
+}

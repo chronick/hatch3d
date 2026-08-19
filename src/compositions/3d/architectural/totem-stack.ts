@@ -7,6 +7,7 @@ const totemStack: Composition3DDefinition = {
   tags: ["architectural", "stacked"],
   category: "3d",
   hatchGroups: ["Tiers", "Caps"],
+  occlusionSensitive: true,
   macros: {
     density: {
       label: "Density",

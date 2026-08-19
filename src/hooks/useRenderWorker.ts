@@ -32,6 +32,14 @@ export interface UseRenderWorkerInput {
   densityFilterEnabled: boolean;
   densityMax: number;
   densityCellSize: number;
+  /** Seed for stochastic hatch post-processing (noise, dashes, density). */
+  seed: number;
+  /** Depth-emphasis stroke width bands (3D only). */
+  depthWidthEnabled: boolean;
+  /** Emit occluded runs as faint dashed ghost strokes instead of dropping them. */
+  hiddenGhost: boolean;
+  /** Analytic silhouette outline layer group (3D only). */
+  silhouetteEnabled: boolean;
   /** Controls render timing: "immediate" (no debounce), "debounced" (300ms), "manual" (click only). */
   renderMode: "immediate" | "debounced" | "manual";
   /** Override the composition's layers list (layered compositions only). */
@@ -104,6 +112,10 @@ export function useRenderWorker(
     input.densityFilterEnabled,
     input.densityMax,
     input.densityCellSize,
+    input.seed,
+    input.depthWidthEnabled,
+    input.hiddenGhost,
+    input.silhouetteEnabled,
     input.renderMode,
     input.layeredLayersOverride,
   ]);
@@ -202,6 +214,10 @@ export function useRenderWorker(
       densityFilterEnabled: currentInput.densityFilterEnabled,
       densityMax: currentInput.densityMax,
       densityCellSize: currentInput.densityCellSize,
+      seed: currentInput.seed,
+      depthWidthEnabled: currentInput.depthWidthEnabled,
+      hiddenMode: currentInput.hiddenGhost ? "ghost" : "drop",
+      silhouetteEnabled: currentInput.silhouetteEnabled,
       layeredLayersOverride: currentInput.layeredLayersOverride,
     };
 

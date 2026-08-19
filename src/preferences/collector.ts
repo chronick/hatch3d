@@ -100,11 +100,12 @@ function buildObservation(
   stats: { lines: number; verts: number; paths: number },
   outcome: Outcome,
   timestamp: string,
+  seedRef?: string | null,
 ): Observation | null {
   const comp = compositionRegistry.get(composition);
   if (!comp) return null;
 
-  const features = extractFeatures(comp, values, stats);
+  const features = extractFeatures(comp, values, stats, seedRef);
 
   return {
     id,
@@ -117,6 +118,7 @@ function buildObservation(
     stats,
     outcome,
     features,
+    seedRef: seedRef ?? undefined,
   };
 }
 
@@ -176,6 +178,7 @@ export async function collectFromFeedAPI(config: { url: string; token: string })
       (metadata.stats as { lines: number; verts: number; paths: number }) ?? { lines: 0, verts: 0, paths: 0 },
       mapActionToOutcome(action.action),
       action.acted_at,
+      (metadata.seedRef as string) ?? null,
     );
 
     if (obs) {
@@ -230,6 +233,7 @@ export function collectFromPrintQueue(vaultDir: string): number {
         config.stats ?? { lines: 0, verts: 0, paths: 0 },
         "accepted", // In print queue = definitively accepted
         new Date().toISOString(),
+        config.seedRef ?? null,
       );
 
       if (obs) {
@@ -258,6 +262,7 @@ export function logGeneration(
   stats: { lines: number; verts: number; paths: number },
   source?: string,
   parentId?: string,
+  seedRef?: string,
 ): void {
   const existingIds = loadExistingIds();
   if (existingIds.has(id)) return;
@@ -272,6 +277,7 @@ export function logGeneration(
     stats,
     "unseen",
     new Date().toISOString(),
+    seedRef,
   );
 
   if (obs) {

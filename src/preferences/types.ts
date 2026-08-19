@@ -22,6 +22,8 @@ export interface Observation {
   features: NormalizedFeatures;
   /** Optional: ID of the observation this was derived from (for lineage tracking) */
   parentId?: string;
+  /** Optional: vault seed ID this generation was inspired by (e.g. "plotterart/1sf8duc") */
+  seedRef?: string;
 }
 
 // ── Normalized features (composition-independent) ──
@@ -39,6 +41,10 @@ export interface NormalizedFeatures {
   lineCount: number;
   /** Tag membership */
   tags: string[];
+  /** Whether this generation traces back to an external vault seed */
+  isSeedDerived: boolean;
+  /** Vault seed ID, when isSeedDerived is true (e.g. "plotterart/1sf8duc") */
+  seedRef?: string;
 }
 
 // ── Preference model ──
@@ -64,6 +70,8 @@ export interface PreferenceModel {
   observationCount: number;
 
   compositionScores: Record<string, ScoreEntry>;
+  /** Composition scores restricted to seed-derived observations */
+  seedCompositionScores: Record<string, ScoreEntry>;
   categoryScores: Record<string, ScoreEntry>;
   tagScores: Record<string, ScoreEntry>;
 
@@ -114,6 +122,8 @@ export interface GeneratedPreset {
   confidence: number;
   /** Parent preset/observation for lineage */
   parentId?: string;
+  /** Vault seed ID this generation traces back to, if any (propagated through mutation) */
+  seedRef?: string;
   /** Creative brief that guided generation, if any */
   brief?: string;
 }

@@ -5,9 +5,16 @@ import type {
   LayerTransform,
   LayerCamera,
   CompositionDefinition,
+  Composition3DDefinition,
   ControlDef,
+  HatchGroupConfig,
 } from "../compositions/types";
-import { isLayeredComposition, is2DComposition } from "../compositions/types";
+import {
+  isLayeredComposition,
+  is2DComposition,
+  HATCH_GROUP_DEFAULT,
+} from "../compositions/types";
+import { getMacroDefaults } from "../compositions/helpers";
 import { selectStyle } from "./styles";
 import { CompositionControls } from "./CompositionControls";
 import { Slider } from "./Slider";
@@ -24,6 +31,48 @@ const PEN_PALETTE = [
   "#0891b2",
   "#ca8a04",
 ];
+
+/**
+ * Move the layer with id `fromId` to the slot currently occupied by
+ * `toId` (or to the end if `toId` is undefined / not found). Returns a
+ * new array; rewrites every `maskBy` index that referenced a layer
+ * which moved so the on-disk numeric format keeps pointing at the same
+ * logical layer post-reorder.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function reorderLayers(
+  layers: LayeredLayer[],
+  fromId: string,
+  toId: string | undefined,
+): LayeredLayer[] {
+  const fromIdx = layers.findIndex((l) => l.__id === fromId);
+  if (fromIdx === -1) return layers;
+  const toIdx = toId === undefined ? layers.length - 1 : layers.findIndex((l) => l.__id === toId);
+  if (toIdx === -1 || toIdx === fromIdx) return layers;
+  const next = [...layers];
+  const [moved] = next.splice(fromIdx, 1);
+  next.splice(toIdx, 0, moved);
+  return reindexMaskBy(layers, next);
+}
+
+/**
+ * Walk `next.maskBy` entries and rewrite each numeric index so it
+ * still points at the same layer it pointed at in `prev`. Used by
+ * every reorder/remove path so masked blends survive list mutation.
+ */
+function reindexMaskBy(
+  prev: LayeredLayer[],
+  next: LayeredLayer[],
+): LayeredLayer[] {
+  return next.map((l) => {
+    if (l.maskBy === undefined) return l;
+    const target = prev[l.maskBy];
+    if (!target) return { ...l, maskBy: undefined };
+    const newIdx = next.indexOf(target);
+    if (newIdx === -1) return { ...l, maskBy: undefined };
+    return { ...l, maskBy: newIdx };
+  });
+}
 
 interface LayerPanelProps {
   layers: LayeredLayer[];
@@ -86,19 +135,76 @@ export function LayerPanel({
       ),
     );
   };
-  const remove = (idx: number) => onChange(layers.filter((_, i) => i !== idx));
+  const updateMacroOverrides = (
+    idx: number,
+    mutator: (
+      prev: Record<string, number>,
+    ) => Record<string, number> | undefined,
+  ) => {
+    const layer = layers[idx];
+    const prev = layer.macroOverrides ?? {};
+    const next = mutator(prev);
+    onChange(
+      layers.map((l, i) =>
+        i === idx ? { ...l, macroOverrides: next } : l,
+      ),
+    );
+  };
+  const updateHatchGroupOverrides = (
+    idx: number,
+    mutator: (
+      prev: Record<string, HatchGroupConfig>,
+    ) => Record<string, HatchGroupConfig> | undefined,
+  ) => {
+    const layer = layers[idx];
+    const prev = layer.hatchGroupOverrides ?? {};
+    const next = mutator(prev);
+    onChange(
+      layers.map((l, i) =>
+        i === idx ? { ...l, hatchGroupOverrides: next } : l,
+      ),
+    );
+  };
+  /**
+   * Clear every per-layer override kind at once: control params, macros,
+   * hatch groups, plus the 2D transform and 3D camera overrides. Keeps
+   * "reset all" honest — after it runs the layer renders exactly as the
+   * inner composition's own defaults do.
+   */
+  const resetAllLayerOverrides = (idx: number) => {
+    onChange(
+      layers.map((l, i) =>
+        i === idx
+          ? {
+              ...l,
+              paramOverrides: undefined,
+              macroOverrides: undefined,
+              hatchGroupOverrides: undefined,
+              transform: undefined,
+              camera: undefined,
+            }
+          : l,
+      ),
+    );
+  };
+  const remove = (idx: number) => {
+    const next = layers.filter((_, i) => i !== idx);
+    onChange(reindexMaskBy(layers, next));
+  };
   const move = (idx: number, dir: -1 | 1) => {
     const j = idx + dir;
     if (j < 0 || j >= layers.length) return;
-    const next = [...layers];
-    [next[idx], next[j]] = [next[j], next[idx]];
-    onChange(next);
+    const fromId = layers[idx].__id;
+    const toId = layers[j].__id;
+    if (!fromId || !toId) return;
+    onChange(reorderLayers(layers, fromId, toId));
   };
   const add = (compositionId: string) => {
     const nextColor = PEN_PALETTE[layers.length % PEN_PALETTE.length];
     onChange([
       ...layers,
       {
+        __id: crypto.randomUUID(),
         composition: compositionId,
         name: compositionId,
         color: nextColor,
@@ -108,6 +214,9 @@ export function LayerPanel({
     ]);
     setPicking(false);
   };
+
+  const [dragSourceId, setDragSourceId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   // Only non-layered compositions can be added as inner layers.
   const innerCandidates = availableCompositions
@@ -160,21 +269,69 @@ export function LayerPanel({
         const inner = compById.get(layer.composition);
         const innerControls = inner?.controls;
         const expanded = expandedIdx === i;
-        const overrideCount = Object.keys(layer.paramOverrides ?? {}).length;
+        const overrideCount =
+          Object.keys(layer.paramOverrides ?? {}).length +
+          Object.keys(layer.macroOverrides ?? {}).length +
+          Object.keys(layer.hatchGroupOverrides ?? {}).length;
+        const isDropTarget = dropTargetId === layer.__id && dragSourceId !== layer.__id;
         return (
           <div
-            key={i}
+            key={layer.__id}
+            data-testid={`layer-row-${layer.__id}`}
+            draggable
+            onDragStart={(e) => {
+              if (!layer.__id) return;
+              setDragSourceId(layer.__id);
+              e.dataTransfer.effectAllowed = "move";
+            }}
+            onDragOver={(e) => {
+              if (!dragSourceId || !layer.__id) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (dropTargetId !== layer.__id) setDropTargetId(layer.__id);
+            }}
+            onDragLeave={() => {
+              if (dropTargetId === layer.__id) setDropTargetId(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragSourceId && layer.__id && dragSourceId !== layer.__id) {
+                onChange(reorderLayers(layers, dragSourceId, layer.__id));
+              }
+              setDragSourceId(null);
+              setDropTargetId(null);
+            }}
+            onDragEnd={() => {
+              setDragSourceId(null);
+              setDropTargetId(null);
+            }}
             style={{
               display: "flex",
               flexDirection: "column",
               gap: 4,
               padding: 6,
-              border: "1px solid var(--border-light)",
+              border: isDropTarget
+                ? "1px solid var(--fg)"
+                : "1px solid var(--border-light)",
               opacity: visible ? 1 : 0.5,
               background: "var(--panel-bg, transparent)",
             }}
           >
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <span
+                title="Drag to reorder"
+                aria-label="Drag handle"
+                style={{
+                  cursor: "grab",
+                  fontSize: 11,
+                  color: "var(--fg-hint)",
+                  padding: "0 2px",
+                  userSelect: "none",
+                  lineHeight: 1,
+                }}
+              >
+                ⋮⋮
+              </span>
               <button
                 title={visible ? "Hide layer" : "Show layer"}
                 onClick={() => update(i, { visible: !visible })}
@@ -301,10 +458,43 @@ export function LayerPanel({
               <LayerOverrideEditor
                 inner={inner}
                 overrides={layer.paramOverrides ?? {}}
+                macroOverrides={layer.macroOverrides ?? {}}
+                hatchGroupOverrides={layer.hatchGroupOverrides ?? {}}
                 transform={layer.transform}
                 camera={layer.camera}
                 onControlChange={(key, val) =>
                   updateOverrides(i, (prev) => ({ ...prev, [key]: val }))
+                }
+                onMacroChange={(key, val) =>
+                  updateMacroOverrides(i, (prev) => ({
+                    ...prev,
+                    [key]: val,
+                  }))
+                }
+                onHatchGroupChange={(groupName, config) => {
+                  // Detect "this is a reset" — incoming config matches the
+                  // default. Route to a clear so the override slice doesn't
+                  // accumulate default-valued entries.
+                  if (
+                    config.family === HATCH_GROUP_DEFAULT.family &&
+                    config.count === HATCH_GROUP_DEFAULT.count &&
+                    config.samples === HATCH_GROUP_DEFAULT.samples &&
+                    config.angle === HATCH_GROUP_DEFAULT.angle
+                  ) {
+                    updateHatchGroupOverrides(i, (prev) => {
+                      const next = { ...prev };
+                      delete next[groupName];
+                      return Object.keys(next).length ? next : undefined;
+                    });
+                    return;
+                  }
+                  updateHatchGroupOverrides(i, (prev) => ({
+                    ...prev,
+                    [groupName]: config,
+                  }));
+                }}
+                onResetMacros={() =>
+                  updateMacroOverrides(i, () => undefined)
                 }
                 onResetGroup={(group) =>
                   innerControls
@@ -317,7 +507,7 @@ export function LayerPanel({
                       })
                     : undefined
                 }
-                onResetAll={() => updateOverrides(i, () => undefined)}
+                onResetAll={() => resetAllLayerOverrides(i)}
                 onTransformChange={(t) => update(i, { transform: t })}
                 onCameraChange={(c) => update(i, { camera: c })}
               />
@@ -370,16 +560,26 @@ export function LayerPanel({
 
 /**
  * Renders a layer's inner-composition controls bound to its
- * `paramOverrides`, plus 2D transform and (for 3D inners) camera
- * sections. Macros and hatch groups are intentionally suppressed in
- * v1 — only direct control values are editable per layer.
+ * paramOverrides / macroOverrides / hatchGroupOverrides via the shared
+ * <CompositionControls>, plus per-layer 2D transform and (for 3D
+ * inners) camera sections bound to `layer.transform` / `layer.camera`.
+ *
+ * Macros and hatch groups flow through the layered render pipeline
+ * (`resolveLayerInnerValues`), and transform/camera are consumed by
+ * `applyLayerTransform` / the per-layer camera merge, so everything
+ * edited here reaches the renderer.
  */
 function LayerOverrideEditor({
   inner,
   overrides,
+  macroOverrides,
+  hatchGroupOverrides,
   transform,
   camera,
   onControlChange,
+  onMacroChange,
+  onHatchGroupChange,
+  onResetMacros,
   onResetGroup,
   onResetAll,
   onTransformChange,
@@ -387,20 +587,26 @@ function LayerOverrideEditor({
 }: {
   inner: CompositionDefinition;
   overrides: Record<string, unknown>;
+  macroOverrides: Record<string, number>;
+  hatchGroupOverrides: Record<string, HatchGroupConfig>;
   transform?: LayerTransform;
   camera?: LayerCamera;
   onControlChange: (key: string, val: unknown) => void;
-  onResetGroup: ((group: string) => void) | undefined;
+  onMacroChange: (key: string, val: number) => void;
+  onHatchGroupChange: (groupName: string, config: HatchGroupConfig) => void;
+  onResetMacros: () => void;
+  onResetGroup: (group: string) => void;
   onResetAll: () => void;
   onTransformChange: (t: LayerTransform | undefined) => void;
   onCameraChange: (c: LayerCamera | undefined) => void;
 }) {
   const controls = inner.controls;
+  const macros = inner.macros;
+  const hatchGroups = (inner as Composition3DDefinition).hatchGroups;
   const innerIs3D = !is2DComposition(inner) && !isLayeredComposition(inner);
 
-  // Resolve "current values" the same way App.tsx does for the main panel:
-  // defaults + overrides. Used for slider/toggle current values + previews.
-  const resolved = useMemo(() => {
+  // currentValues = control defaults + paramOverrides (used for sliders/toggles).
+  const currentValues = useMemo(() => {
     const out: Record<string, unknown> = {};
     if (controls) {
       for (const [key, ctrl] of Object.entries(controls)) {
@@ -412,6 +618,12 @@ function LayerOverrideEditor({
     Object.assign(out, overrides);
     return out;
   }, [controls, overrides]);
+
+  // currentMacros = macro defaults + macroOverrides — the slider positions to display.
+  const currentMacros = useMemo(
+    () => ({ ...getMacroDefaults(macros), ...macroOverrides }),
+    [macros, macroOverrides],
+  );
 
   const tx = transform?.tx ?? 0;
   const ty = transform?.ty ?? 0;
@@ -554,23 +766,21 @@ function LayerOverrideEditor({
         </Section>
       )}
 
-      {controls && Object.keys(controls).length > 0 && onResetGroup && (
-        <CompositionControls
-          controls={controls}
-          macros={undefined}
-          hatchGroups={undefined}
-          currentValues={resolved}
-          currentMacros={{}}
-          resolvedValues={resolved}
-          currentHatchGroups={{}}
-          onControlChange={onControlChange}
-          onMacroChange={() => {}}
-          onHatchGroupChange={() => {}}
-          onResetMacros={() => {}}
-          onResetGroup={onResetGroup}
-          onResetAll={onResetAll}
-        />
-      )}
+      <CompositionControls
+        controls={controls}
+        macros={macros}
+        hatchGroups={hatchGroups}
+        currentValues={currentValues}
+        currentMacros={currentMacros}
+        resolvedValues={currentValues}
+        currentHatchGroups={hatchGroupOverrides}
+        onControlChange={onControlChange}
+        onMacroChange={onMacroChange}
+        onHatchGroupChange={onHatchGroupChange}
+        onResetMacros={onResetMacros}
+        onResetGroup={onResetGroup}
+        onResetAll={onResetAll}
+      />
     </div>
   );
 }

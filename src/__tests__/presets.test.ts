@@ -4,7 +4,9 @@ import {
   saveUserPreset,
   deleteUserPreset,
   getPresetsForComposition,
+  buildLayeredPresetValues,
 } from "../compositions/presets";
+import type { LayeredLayer } from "../compositions/types";
 
 // Mock localStorage
 const store: Record<string, string> = {};
@@ -81,5 +83,66 @@ describe("Preset storage", () => {
   it("handles corrupted localStorage gracefully", () => {
     store["hatch3d-user-presets"] = "not valid json!!!";
     expect(loadUserPresets()).toEqual({});
+  });
+});
+
+describe("buildLayeredPresetValues", () => {
+  it("strips __id from each entry and does not mutate input", () => {
+    const layers: LayeredLayer[] = [
+      { __id: "a", composition: "x", color: "red" },
+      { composition: "y" },
+    ];
+    const out = buildLayeredPresetValues(layers);
+
+    expect(out).toHaveLength(2);
+    expect(out[0]).not.toHaveProperty("__id");
+    expect(out[1]).not.toHaveProperty("__id");
+    expect(out[0]).toEqual({ composition: "x", color: "red" });
+    expect(out[1]).toEqual({ composition: "y" });
+
+    // Mutation safety: input untouched.
+    expect(layers[0].__id).toBe("a");
+  });
+});
+
+describe("Layered preset round-trip", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(store)) delete store[key];
+    vi.clearAllMocks();
+  });
+
+  it("preserves layer payload through localStorage round-trip", () => {
+    const layers: LayeredLayer[] = [
+      {
+        __id: "id-1",
+        composition: "phyllotaxisIsoblocks",
+        color: "red",
+        paramOverrides: { count: 200, spacing: 1.5 },
+        name: "front",
+        visible: true,
+      },
+      {
+        __id: "id-2",
+        composition: "phyllotaxisIsoblocks",
+        color: "blue",
+        blendMode: "over",
+        visible: false,
+      },
+    ];
+
+    const stripped = buildLayeredPresetValues(layers);
+    saveUserPreset("phyllotaxisIsoblocks", "test-rt", {
+      name: "test-rt",
+      values: { layers: stripped },
+    });
+
+    const result = getPresetsForComposition("phyllotaxisIsoblocks");
+    const reloaded = result.user["test-rt"];
+    expect(reloaded).toBeDefined();
+    expect(reloaded.values.layers).toEqual(stripped);
+
+    for (const entry of reloaded.values.layers ?? []) {
+      expect(entry).not.toHaveProperty("__id");
+    }
   });
 });

@@ -1,0 +1,7 @@
+# A stipple cloud, its hull hatched, that hatch clipped back to the cloud hull
+# and nudged — exercises transform + clip in the DSL.
+cloud   = weightedStippling(count: 900, seed: 5)
+fill    = regionHatch(cloud, angle: 20, pitch: 7)
+clipped = clip(fill, by: cloud)
+shifted = transform(clipped, translate: [8, -4], rotate: 3)
+out(cloud @ "#dc2626", shifted @ "#1d4ed8")

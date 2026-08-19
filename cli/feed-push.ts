@@ -38,6 +38,8 @@ interface FeedPreset {
   values: Record<string, unknown>;
   camera?: { theta?: number; phi?: number; dist?: number };
   tags: string[];
+  /** Vault seed ID this preset traces back to, if any (e.g. "plotterart/1sf8duc") */
+  seedRef?: string;
 }
 
 const FEED_PRESETS: FeedPreset[] = [
@@ -700,6 +702,7 @@ async function main(): Promise<void> {
       values: gp.values,
       camera: gp.camera ?? undefined,
       tags: gp.tags,
+      seedRef: gp.seedRef,
     }));
 
     const sourceCounts = { mutation: 0, directed: 0, preference: 0, exploration: 0, preset: 0 };
@@ -744,6 +747,7 @@ async function main(): Promise<void> {
         stats as { lines: number; verts: number; paths: number },
         generatedPresets?.[i]?.source,
         generatedPresets?.[i]?.parentId,
+        preset.seedRef,
       );
     } catch { /* non-critical */ }
 
@@ -779,6 +783,7 @@ async function main(): Promise<void> {
           tags: preset.tags,
           ...(generatedPresets?.[i]?.brief ? { brief: generatedPresets[i].brief } : {}),
           ...(generatedPresets?.[i]?.source ? { source: generatedPresets[i].source } : {}),
+          ...(preset.seedRef ? { seedRef: preset.seedRef } : {}),
         },
         available_actions: ["accept", "reject", "evolve", "defer"],
       });
@@ -805,6 +810,7 @@ async function main(): Promise<void> {
               camera: preset.camera ?? null,
               svg_key: svgKey,
               tags: preset.tags,
+              ...(preset.seedRef ? { seedRef: preset.seedRef } : {}),
             }),
             source: "hatch3d",
             feed_item_id: itemId,

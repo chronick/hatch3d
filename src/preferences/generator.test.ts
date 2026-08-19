@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { detectStaleness } from "./generator.js";
-import type { Observation } from "./types.js";
+import { detectStaleness, blendSeedScore } from "./generator.js";
+import type { Observation, ScoreEntry } from "./types.js";
 
 /** Build a minimal observation for testing */
 function makeObs(overrides: Partial<Observation> & { composition: string; outcome: Observation["outcome"] }): Observation {
@@ -21,6 +21,7 @@ function makeObs(overrides: Partial<Observation> & { composition: string; outcom
       vertexDensity: 0.5,
       lineCount: 100,
       tags: [],
+      isSeedDerived: false,
     },
     ...overrides,
   };
@@ -76,6 +77,7 @@ describe("detectStaleness", () => {
           vertexDensity: 0.5,
           lineCount: 100,
           tags: [],
+          isSeedDerived: false,
         },
       }));
     }
@@ -100,6 +102,7 @@ describe("detectStaleness", () => {
           vertexDensity: Math.random(),
           lineCount: Math.floor(Math.random() * 500),
           tags: [],
+          isSeedDerived: false,
         },
       }));
     }
@@ -123,10 +126,49 @@ describe("detectStaleness", () => {
           vertexDensity: 0.5,
           lineCount: 100,
           tags: [],
+          isSeedDerived: false,
         },
       }));
     }
     const boost = detectStaleness(obs);
     expect(boost).toBeLessThanOrEqual(0.3);
+  });
+});
+
+describe("blendSeedScore", () => {
+  function makeScoreEntry(accepted: number, rejected: number): ScoreEntry {
+    const total = accepted + rejected;
+    return { accepted, rejected, total, score: (accepted + 1) / (total + 2) };
+  }
+
+  it("returns the base score unchanged when there's no seed-derived signal", () => {
+    expect(blendSeedScore(0.5, undefined)).toBe(0.5);
+    expect(blendSeedScore(0.5, makeScoreEntry(0, 0))).toBe(0.5);
+  });
+
+  it("a single seed-derived observation only nudges the score, never dominates", () => {
+    const base = 0.5;
+    // One strongly-positive seed-derived observation (score → 1.0).
+    const seedEntry: ScoreEntry = { accepted: 1, rejected: 0, total: 1, score: 1.0 };
+    const blended = blendSeedScore(base, seedEntry);
+    expect(blended).toBeGreaterThan(base);
+    // Must stay well short of the seed score itself — no single-observation dominance.
+    expect(blended).toBeLessThan(0.7);
+  });
+
+  it("blend weight grows toward the seed score as n accumulates", () => {
+    const base = 0.5;
+    const small = blendSeedScore(base, { accepted: 1, rejected: 0, total: 1, score: 1.0 });
+    const large = blendSeedScore(base, { accepted: 18, rejected: 2, total: 20, score: 0.95 });
+    expect(large).toBeGreaterThan(small);
+    // With n=20 (well above the halflife), the blend should sit close to the seed score.
+    expect(large).toBeGreaterThan(0.85);
+  });
+
+  it("is symmetric — a strongly negative seed-derived score pulls the blend down", () => {
+    const base = 0.5;
+    const seedEntry: ScoreEntry = { accepted: 0, rejected: 10, total: 10, score: 0.08 };
+    const blended = blendSeedScore(base, seedEntry);
+    expect(blended).toBeLessThan(base);
   });
 });

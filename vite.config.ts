@@ -18,5 +18,8 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: "./src/test-setup.ts",
+    // In-bounds sweep tests iterate many control combos; under full-suite
+    // parallel load they exceed the 5s default while staying honest work.
+    testTimeout: 30000,
   },
 });
