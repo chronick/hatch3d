@@ -8,6 +8,7 @@
 
 import type { Geometry, ScalarField, VectorField } from "./signals.js";
 import { convexHull, clipPolylineToConvexPolygon } from "../utils/clip.js";
+import { clipPolylinesToSilhouette, type Polyline } from "../operators/silhouette-knockout.js";
 
 /**
  * Affine transform: scale (around origin) → rotate → translate. The order fixes
@@ -111,6 +112,58 @@ export function fieldThin(
     const keepProb = 1 - strength * (1 - Math.max(0, Math.min(1, v)));
     return keepNoise < keepProb;
   });
+}
+
+/**
+ * Clip geometry to a set of even-odd rings — the non-convex counterpart of
+ * `clipGeometry`, and the only clip that can express `mode: "outside"`.
+ *
+ * A derived region (`regionOf`) may be a rounded rectangle, an offset
+ * silhouette, or several disjoint blobs with holes, none of which a convex
+ * half-plane clip can represent. Fails open the same way the rest of the
+ * masking does: no usable ring means "inside" keeps nothing and "outside"
+ * keeps everything (that is `clipPolylinesToSilhouette`'s own contract).
+ */
+export function clipGeometryToRings(
+  geometry: Geometry,
+  rings: Polyline[],
+  mode: "inside" | "outside",
+): Geometry {
+  return clipPolylinesToSilhouette(geometry, rings, mode);
+}
+
+/**
+ * Weighted emphasis: keep only a `weight` fraction of the ink inside the
+ * masked zone, leaving everything outside it untouched.
+ *
+ * Masking as a dial rather than a switch (design doc § "Emphasis is weighted,
+ * not boolean"): a focal component can suppress background texture to 0.3 in
+ * its halo instead of punching a hard hole. `weight` is the *keep* fraction —
+ * 1 is a no-op, 0 is a full clip of the zone, and anything between thins it.
+ *
+ * Geometry is first split at the region boundary so membership is exact per
+ * span (a line crossing the halo is thinned only where it is inside), then the
+ * in-zone spans go through `fieldThin` with a constant `weight` membership
+ * signal. That reuses the existing thinning machinery — including its
+ * deterministic index hash — so the same patch thins identically on every
+ * render. No RNG anywhere.
+ */
+export function emphasisMask(
+  geometry: Geometry,
+  rings: Polyline[],
+  weight: number,
+  mode: "inside" | "outside",
+): Geometry {
+  const w = Math.max(0, Math.min(1, weight));
+  if (w >= 1) return geometry;
+
+  const inverse = mode === "inside" ? "outside" : "inside";
+  const outZone = clipPolylinesToSilhouette(geometry, rings, inverse);
+  if (w <= 0) return outZone;
+
+  const inZone = clipPolylinesToSilhouette(geometry, rings, mode);
+  const membership: ScalarField = { kind: "scalar", sample: () => w };
+  return [...outZone, ...fieldThin(inZone, membership, 1)];
 }
 
 /**

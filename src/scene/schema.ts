@@ -57,15 +57,57 @@ export const TransformNodeSchema = z
   })
   .strict();
 
+/**
+ * A region reference — an explicit polygon, another node's convex hull, or a
+ * *derived* region of another node (`regionOf`). The derived forms are what
+ * make progressive composition possible: a later layer can be clipped to the
+ * bounding box, hull, offset silhouette or inked area of an earlier one, grown
+ * or shrunk by `offsetPx` and optionally corner-rounded. `hullOf: X` is exactly
+ * `regionOf: { of: X, kind: "hull" }`.
+ */
+export const RegionRefSchema = z.union([
+  z.object({ polygon: z.array(z.tuple([z.number(), z.number()])) }).strict(),
+  z.object({ hullOf: z.string() }).strict(),
+  z
+    .object({
+      regionOf: z
+        .object({
+          of: z.string().min(1),
+          kind: z.enum(["bbox", "hull", "outline", "occupied"]),
+          offsetPx: z.number().optional(),
+          cornerRadius: z.number().nonnegative().optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+
 export const ClipNodeSchema = z
   .object({
     type: z.literal("op:clip"),
     ...OperatorBase,
-    /** Clip region: an explicit polygon or the convex hull of another node's output. */
-    region: z.union([
-      z.object({ polygon: z.array(z.tuple([z.number(), z.number()])) }).strict(),
-      z.object({ hullOf: z.string() }).strict(),
-    ]),
+    /** Clip region: an explicit polygon, another node's hull, or a derived region. */
+    region: RegionRefSchema,
+    /** Keep what is inside the region (default) or what is outside it. */
+    mode: z.enum(["inside", "outside"]).optional(),
+    child: z.lazy((): z.ZodTypeAny => NodeSchema),
+  })
+  .strict();
+
+/**
+ * Weighted emphasis — masking as a dial. `weight` is the fraction of the
+ * child's ink kept inside the masked zone: 1 leaves it untouched, 0 is a full
+ * clip, 0.3 de-emphasises a background texture in a focal component's halo
+ * without punching a hard hole. Deterministic (no RNG).
+ */
+export const EmphasisNodeSchema = z
+  .object({
+    type: z.literal("op:emphasis"),
+    ...OperatorBase,
+    region: RegionRefSchema,
+    weight: z.number().min(0).max(1),
+    /** Whether the masked zone is the region's inside (default) or its outside. */
+    mode: z.enum(["inside", "outside"]).optional(),
     child: z.lazy((): z.ZodTypeAny => NodeSchema),
   })
   .strict();
@@ -175,6 +217,7 @@ export const NodeSchema: z.ZodType = z.discriminatedUnion("type", [
   GeneratorNodeSchema,
   TransformNodeSchema,
   ClipNodeSchema,
+  EmphasisNodeSchema,
   MaskNodeSchema,
   RegionHatchNodeSchema,
   FieldDistortNodeSchema,
@@ -268,10 +311,32 @@ export interface TransformNode {
   child: SceneNode;
 }
 
+export interface RegionOfRef {
+  of: string;
+  kind: "bbox" | "hull" | "outline" | "occupied";
+  offsetPx?: number;
+  cornerRadius?: number;
+}
+
+export type RegionRef =
+  | { polygon: [number, number][] }
+  | { hullOf: string }
+  | { regionOf: RegionOfRef };
+
 export interface ClipNode {
   type: "op:clip";
   id: string;
-  region: { polygon: [number, number][] } | { hullOf: string };
+  region: RegionRef;
+  mode?: "inside" | "outside";
+  child: SceneNode;
+}
+
+export interface EmphasisNode {
+  type: "op:emphasis";
+  id: string;
+  region: RegionRef;
+  weight: number;
+  mode?: "inside" | "outside";
   child: SceneNode;
 }
 
@@ -315,6 +380,7 @@ export type SceneNode =
   | GeneratorNode
   | TransformNode
   | ClipNode
+  | EmphasisNode
   | MaskNode
   | RegionHatchNode
   | FieldDistortNode

@@ -13,7 +13,7 @@
  */
 
 import { z } from "zod";
-import type { Geometry, Field, ScalarField, VectorField } from "./signals.js";
+import type { Geometry, Field, ScalarField, VectorField, Polyline } from "./signals.js";
 import {
   simplexScalar,
   simplexVector,
@@ -25,7 +25,8 @@ import {
   luminanceField,
   directionalField,
 } from "./signals.js";
-import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry, resampleGeometry } from "./operators.js";
+import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry, clipGeometryToRings, emphasisMask, resampleGeometry } from "./operators.js";
+import { RegionOfSchema, regionFormCount, resolveRegionRings, type RegionRef } from "./regions.js";
 import { hatchPolygon } from "./region-hatch.js";
 import { compositionRegistry } from "../compositions/registry.js";
 import { is2DComposition, isLayeredComposition } from "../compositions/types.js";
@@ -79,11 +80,28 @@ const ClipNode = z.object({
   op: z.literal("clip"), ...NodeBase, from: z.string(),
   /** Clip to the hull of another node's geometry... */
   hullOf: z.string().optional(),
-  /** ...or to an explicit polygon. Exactly one of hullOf/polygon. */
+  /** ...or to an explicit polygon... */
   polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
+  /** ...or to a derived region of another node (bbox/hull/outline/occupied). */
+  regionOf: RegionOfSchema.optional(),
+  /** Keep what is inside the region (default) or what is outside it. */
+  mode: z.enum(["inside", "outside"]).optional(),
 }).strict().refine(
-  (n) => (n.hullOf == null) !== (n.polygon == null),
-  { message: "clip needs exactly one of `hullOf` or `polygon`" },
+  (n) => regionFormCount(n) === 1,
+  { message: "clip needs exactly one of `hullOf`, `polygon` or `regionOf`" },
+);
+const EmphasisNode = z.object({
+  op: z.literal("emphasis"), ...NodeBase, from: z.string(),
+  hullOf: z.string().optional(),
+  polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
+  regionOf: RegionOfSchema.optional(),
+  /** Fraction of ink kept inside the masked zone: 1 = untouched, 0 = clipped away. */
+  weight: z.number().min(0).max(1),
+  /** Whether the masked zone is the region's inside (default) or its outside. */
+  mode: z.enum(["inside", "outside"]).optional(),
+}).strict().refine(
+  (n) => regionFormCount(n) === 1,
+  { message: "emphasis needs exactly one of `hullOf`, `polygon` or `regionOf`" },
 );
 const RegionHatchNode = z.object({
   op: z.literal("regionHatch"), ...NodeBase,
@@ -120,6 +138,7 @@ export type PatchNode =
   | z.infer<typeof ResampleNode>
   | z.infer<typeof TransformNode>
   | z.infer<typeof ClipNode>
+  | z.infer<typeof EmphasisNode>
   | z.infer<typeof RegionHatchNode>
   | z.infer<typeof PenNode>
   | RepeatNode;
@@ -145,8 +164,124 @@ const RepeatNodeSchema: z.ZodType<RepeatNode> = z.lazy(() =>
 export const NodeSchema: z.ZodType<PatchNode> = z.union([
   GeneratorNode, SimplexScalarNode, SimplexVectorNode, DensityNode, GradientNode,
   SdfNode, DirectionalNode, LuminanceNode, BlendNode,
-  DistortNode, CullNode, ThinNode, ResampleNode, TransformNode, ClipNode, RegionHatchNode, PenNode, RepeatNodeSchema,
+  DistortNode, CullNode, ThinNode, ResampleNode, TransformNode, ClipNode, EmphasisNode, RegionHatchNode, PenNode, RepeatNodeSchema,
 ]);
+
+// ── Progressive evaluation order ──
+//
+// The evaluator is a single in-order fold over `nodes`: each node writes its
+// signal into `env` and later nodes read it back by id. Document order is
+// therefore already the evaluation order, and a reference can only ever
+// resolve backwards — cycles are structurally impossible and a forward
+// reference dies at eval time with "unknown node". What was missing is the
+// *contract*: the failure surfaced only when the graph ran, buried in whatever
+// the evaluator happened to touch first, and it never explained the rule.
+//
+// So the rule is now checked up front, at parse time, alongside the rest of
+// schema validation. That is what makes "layer 2 draws around layer 1"
+// well-defined: a region reference names an area that is already settled.
+
+type RefKind = "geometry" | "field" | "region";
+
+interface NodeRef {
+  /** Referenced node id. */
+  id: string;
+  kind: RefKind;
+  /** The field carrying the reference, for the error message. */
+  label: string;
+  /** Path suffix under the node, for the zod issue path. */
+  path: (string | number)[];
+}
+
+/** Every node id a node reads, in one place — the input to order validation. */
+function nodeReferences(node: PatchNode): NodeRef[] {
+  const refs: NodeRef[] = [];
+  const add = (id: string | undefined, kind: RefKind, label: string, path: (string | number)[]) => {
+    if (typeof id === "string" && id.length > 0) refs.push({ id, kind, label, path });
+  };
+  switch (node.op) {
+    case "density": case "gradient": case "sdf": case "directional":
+      add(node.from, "geometry", "from", ["from"]);
+      break;
+    case "blend":
+      add(node.a, "field", "a", ["a"]);
+      add(node.b, "field", "b", ["b"]);
+      break;
+    case "distort": case "cull": case "thin":
+      add(node.from, "geometry", "from", ["from"]);
+      add(node.by, "field", "by", ["by"]);
+      break;
+    case "resample": case "transform": case "pen":
+      add(node.from, "geometry", "from", ["from"]);
+      break;
+    case "clip": case "emphasis":
+      add(node.from, "geometry", "from", ["from"]);
+      add(node.hullOf, "region", "hullOf", ["hullOf"]);
+      add(node.regionOf?.of, "region", "regionOf.of", ["regionOf", "of"]);
+      break;
+    case "regionHatch":
+      // regionHatch's `from` *is* a region reference — it hatches that node's hull.
+      add(node.from, "region", "from", ["from"]);
+      break;
+    case "repeat":
+      add(node.thread, "geometry", "thread", ["thread"]);
+      break;
+  }
+  return refs;
+}
+
+/** All ids a node list declares, including inside repeat bodies. */
+function collectIds(nodes: PatchNode[], into: Set<string>): void {
+  for (const n of nodes) {
+    into.add(n.id);
+    if (n.op === "repeat") collectIds(n.body, into);
+  }
+}
+
+/**
+ * Walk nodes in document order, adding a zod issue for every reference that
+ * does not resolve to an already-defined node. Both node ids are always named:
+ * the referrer and the target.
+ */
+function checkReferenceOrder(
+  nodes: PatchNode[],
+  defined: Set<string>,
+  everything: Set<string>,
+  basePath: (string | number)[],
+  ctx: z.RefinementCtx,
+): void {
+  nodes.forEach((node, i) => {
+    for (const r of nodeReferences(node)) {
+      if (defined.has(r.id)) continue;
+      const path = [...basePath, i, ...r.path];
+      const what = r.kind === "region" ? "the region of" : "";
+      const subject = what ? `${what} "${r.id}"` : `"${r.id}"`;
+      if (r.id === node.id) {
+        ctx.addIssue({
+          code: "custom", path,
+          message: `node "${node.id}" references itself (\`${r.label}\` → "${node.id}") — references must be acyclic`,
+        });
+      } else if (everything.has(r.id)) {
+        ctx.addIssue({
+          code: "custom", path,
+          message:
+            `node "${node.id}" references ${subject} via \`${r.label}\`, but "${r.id}" is declared later in the document — ` +
+            `document order is evaluation order, so "${node.id}" may only reference nodes defined before it. ` +
+            `Move "${r.id}" above "${node.id}".`,
+        });
+      } else {
+        ctx.addIssue({
+          code: "custom", path,
+          message: `node "${node.id}" references unknown node "${r.id}" via \`${r.label}\` (typo, or never declared?)`,
+        });
+      }
+    }
+    defined.add(node.id);
+    if (node.op === "repeat") {
+      checkReferenceOrder(node.body, defined, everything, [...basePath, i, "body"], ctx);
+    }
+  });
+}
 
 export const PatchDocSchema = z.object({
   version: z.literal(1),
@@ -168,7 +303,16 @@ export const PatchDocSchema = z.object({
   }).prefault({}),
   nodes: z.array(NodeSchema),
   out: z.array(z.string()).min(1),
-}).strict();
+}).strict().superRefine((doc, ctx) => {
+  const everything = new Set<string>();
+  collectIds(doc.nodes, everything);
+  checkReferenceOrder(doc.nodes, new Set<string>(), everything, ["nodes"], ctx);
+  doc.out.forEach((id, i) => {
+    if (!everything.has(id)) {
+      ctx.addIssue({ code: "custom", path: ["out", i], message: `out references unknown node "${id}"` });
+    }
+  });
+});
 
 export type PatchDoc = z.infer<typeof PatchDocSchema>;
 
@@ -272,6 +416,17 @@ export interface EvalOptions {
   resolveImage?: ImageResolver;
 }
 
+/**
+ * Rings for a node's region reference, reading source geometry out of `env`.
+ * `hullOf` and `regionOf { kind: "hull" }` resolve through the same code (see
+ * `resolveRegionRings`), so the alias cannot drift.
+ */
+function regionRings(node: RegionRef, env: Env, ctx: string): Polyline[] {
+  return resolveRegionRings(node, (id) =>
+    asGeometry(ref(env, id, `${ctx} region source ${id}`), `${ctx} region source ${id}`),
+  );
+}
+
 function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: PatchDoc["camera"], resolveImage?: ImageResolver): void {
   switch (node.op) {
     case "generator":
@@ -331,10 +486,25 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
       break;
     case "clip": {
       const geom = asGeometry(ref(env, node.from, `clip(${node.from})`), `clip(${node.from})`);
-      const region = node.polygon
-        ? node.polygon.map(([x, y]) => ({ x, y }))
-        : asGeometry(ref(env, node.hullOf!, `clip by ${node.hullOf}`), `clip by ${node.hullOf}`).flat();
-      env.set(node.id, clipGeometry(geom, region));
+      const mode = node.mode ?? "inside";
+      if (node.regionOf || mode === "outside") {
+        // Derived regions are not convex in general (rounded rects, offset
+        // silhouettes, several blobs with holes), and "outside" has no convex
+        // form at all — both go through even-odd ring clipping.
+        env.set(node.id, clipGeometryToRings(geom, regionRings(node, env, `clip "${node.id}"`), mode));
+      } else {
+        // The v1 path, untouched: convex half-plane clipping against the hull.
+        const region = node.polygon
+          ? node.polygon.map(([x, y]) => ({ x, y }))
+          : asGeometry(ref(env, node.hullOf!, `clip by ${node.hullOf}`), `clip by ${node.hullOf}`).flat();
+        env.set(node.id, clipGeometry(geom, region));
+      }
+      break;
+    }
+    case "emphasis": {
+      const geom = asGeometry(ref(env, node.from, `emphasis(${node.from})`), `emphasis(${node.from})`);
+      const rings = regionRings(node, env, `emphasis "${node.id}"`);
+      env.set(node.id, emphasisMask(geom, rings, node.weight, node.mode ?? "inside"));
       break;
     }
     case "regionHatch": {

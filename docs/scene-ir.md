@@ -64,8 +64,9 @@ same functions the CLI does.
 | `layer` | Binds a pen (`color`/`name`/`width`); holds one generator | ✅ |
 | `generator` | A registered composition by id + `params`/`macros`/`hatchGroups`/`seed` | ✅ |
 | `op:transform` | Translate/rotate/scale a subtree | ✅ |
-| `op:clip` | Clip a subtree to a polygon / another node's hull | ✅ |
-| `op:mask` | Mask a subtree by another node's convex hull | ✅ |
+| `op:clip` | Clip a subtree to (or away from) a region — polygon, hull, or a derived `regionOf` | ✅ |
+| `op:emphasis` | Weighted mask: thin a subtree to `weight` inside a region | ✅ |
+| `op:mask` | Mask a subtree by another node's convex hull (shorthand for `op:clip` + `hullOf`) | ✅ |
 | `op:region-hatch` | Hatch-fill a region at angle/pitch | ✅ |
 | `op:field-distort` | Displace a subtree by a noise/flow field | ✅ |
 | `op:image-luminance` | Deflect a subtree's scanlines by an image's brightness (isolinePortrait) | ✅ |
@@ -86,6 +87,135 @@ loudly at parse time rather than silently mis-rendering (`parseSceneDoc` throws 
 path-prefixed error). Operator nodes lower to the patch engine's operators (see
 "Compiler internals" below) — the `--scene` render path evaluates them exactly
 like a hand-authored patch.
+
+## Progressive composition
+
+The strongest community work is built from small components arranged with
+masking, where later layers respond to the space earlier layers already
+occupy. Three things make that expressible: **derived regions**, **document
+order as render order**, and **weighted masks**.
+
+### Region references — `regionOf`
+
+Anywhere a region is taken (`op:clip`, `op:emphasis`) it may be written three
+ways:
+
+```jsonc
+{ "polygon": [[0, 0], [200, 0], [200, 200]] }        // explicit
+{ "hullOf": "n1" }                                    // another node's hull
+{ "regionOf": { "of": "n1", "kind": "bbox",           // a derived region
+                "offsetPx": 12, "cornerRadius": 18 } }
+```
+
+`hullOf: X` is exactly `regionOf: { of: X, kind: "hull" }` — kept as the short
+form, resolved by the same code.
+
+| `kind` | The region | Exact? |
+| ------ | ---------- | ------ |
+| `bbox` | Axis-aligned bounds of the node's geometry | exact |
+| `hull` | Convex hull | exact |
+| `outline` | Offset silhouette — the node's strokes buffered by a radius, unioned | approximate (raster) |
+| `occupied` | The same union at ≈ one stroke width: "where the ink actually is" | approximate (raster) |
+
+| Field | Meaning | Default |
+| ----- | ------- | ------- |
+| `of` | Node id the region is derived from | (required) |
+| `kind` | One of the four above | (required) |
+| `offsetPx` | Grow (+) / shrink (−) the region, in canvas px | `0` |
+| `cornerRadius` | Round the region polygon's corners | `0` |
+
+`offsetPx` is exact polygon offsetting for `bbox`/`hull` (a negative offset
+that would collapse the shape yields an empty region, and the clip fails open).
+For `outline`/`occupied` it is folded into the raster stroke radius, so
+`offsetPx: -4` on an `outline` cancels its base radius entirely and empties the
+region.
+
+`cornerRadius` applies to `bbox` and `hull`. On a `bbox` that is the
+rounded-rectangle idiom. It is a **no-op** for `outline`/`occupied`: the
+buffered union already rounds its own corners by construction, and layering a
+second approximation on top of the first would only add error.
+
+`outline`/`occupied` rasterise onto a grid at most 192 cells across
+(`RASTER_MAX_CELLS` in `src/operators/region-shapes.ts`), so they are cheap and
+resolution-bounded but not pixel-exact. They correctly return several rings for
+disjoint blobs and for holes — the even-odd rule composes them.
+
+### Document order is render order
+
+A node may reference the region of a node **defined before it**, never after —
+no forward references, no cycles. This is checked at parse time
+(`parsePatchDoc`) and at lowering time (`sceneToPatch`), and the error names
+both nodes:
+
+```text
+Invalid patch document:
+  • nodes.1.regionOf.of: node "around" references the region of "shape", but
+    "shape" is declared later in the document — document order is evaluation
+    order, so "around" may only reference nodes defined before it.
+    Move "shape" above "around".
+```
+
+The rule is what makes *"layer 2 draws around layer 1"* well-defined: the
+region names an area that is already settled. In a scene tree, "before" means
+earlier in pre-order; a node may additionally reference something inside its
+own subtree, which lowers before it regardless.
+
+This complements occlusion rather than replacing it: `occult`-style z-occlusion
+hides overlaps after the fact, while progressive regions let layers avoid or
+seek each other by construction.
+
+### `op:clip` — clip to, or away from, a region
+
+```jsonc
+{ "type": "op:clip", "id": "around",
+  "mode": "outside",
+  "region": { "regionOf": { "of": "focus", "kind": "bbox",
+                            "offsetPx": 12, "cornerRadius": 18 } },
+  "child": { "type": "generator", "id": "ground", "composition": "contourMap" } }
+```
+
+| Field | Meaning | Default |
+| ----- | ------- | ------- |
+| `region` | Any of the three region forms | (required) |
+| `mode` | `inside` keeps what the region covers; `outside` keeps the rest | `inside` |
+| `child` | Subtree to clip | (required) |
+
+`mode: "inside"` with a plain `polygon`/`hullOf` still uses the v1 convex
+half-plane clip (byte-identical to before). Anything with a `regionOf`, or any
+`mode: "outside"`, goes through even-odd ring clipping — derived regions are not
+convex in general, and "outside" has no convex form at all.
+
+Full example: `examples/scenes/draw-around.scene.json`.
+
+### `op:emphasis` — masking as a dial
+
+```jsonc
+{ "type": "op:emphasis", "id": "halo",
+  "region": { "regionOf": { "of": "focus", "kind": "hull", "offsetPx": 70 } },
+  "weight": 0.3, "mode": "inside",
+  "child": { "type": "generator", "id": "ground", "composition": "contourMap" } }
+```
+
+| Field | Meaning | Default |
+| ----- | ------- | ------- |
+| `region` | Any of the three region forms | (required) |
+| `weight` | Fraction of ink **kept** inside the masked zone, 0–1 | (required) |
+| `mode` | Whether the masked zone is the region's `inside` or its `outside` | `inside` |
+| `child` | Subtree to de-emphasise | (required) |
+
+`weight: 1` is a no-op, `weight: 0` is a full clip of the zone, and anything
+between de-emphasises: a focal component can suppress a background texture to
+0.3 in its halo instead of punching a hard hole. The child is first split at the
+region boundary so membership is exact per span, then in-zone spans are thinned
+by `fieldThin` with a constant `weight` signal — a deterministic index hash, no
+RNG, so the same document thins identically on every render.
+
+Full example: `examples/scenes/emphasis-halo.scene.json`.
+
+```bash
+npm run render -- --scene examples/scenes/draw-around.scene.json   -o draw-around.svg
+npm run render -- --scene examples/scenes/emphasis-halo.scene.json -o halo.svg
+```
 
 ### `op:image-luminance` — the isolinePortrait motif
 
@@ -173,8 +303,16 @@ Operator lowering (`sceneToPatch`):
 - `op:field-distort` → a `simplexVector` field + a `distort` node
 - `op:region-hatch` → a `regionHatch` node
 - `op:transform` → a `transform` node
-- `op:clip` / `op:mask` → a `clip` node (hull of the region / mask sibling)
+- `op:clip` / `op:mask` → a `clip` node (region / hull of the mask sibling)
+- `op:emphasis` → an `emphasis` node
 - `op:image-luminance` → a `luminance` field + `directional` + `resample`(child) + `distort`
+
+The patch evaluator is a single in-order fold over `nodes`, writing each
+signal into an environment keyed by id, so document order has always been
+evaluation order and references could only ever resolve backwards. What
+changed is that the contract is now *stated*: `parsePatchDoc` validates every
+reference up front (`nodes.<i>.<field>` paths, both node ids named) instead of
+letting a forward reference die mid-evaluation with a bare "unknown node".
 
 `compileScene` (`src/scene/compile.ts`) remains as the alternate scene →
 `LayeredCompositionDefinition` converter (no operators — the layered shape can't
@@ -189,5 +327,12 @@ the round trip.
   several generators into one pen would need a `merge` node.
 - **`op:field-distort` `field: "flow"`** — currently always lowers to simplex;
   a flow-field source is a follow-up.
-- **Non-convex clip** — `clip` uses the convex hull of the region; true concave
-  clipping is a follow-up.
+- **`regionOf` on `op:region-hatch`** — region-hatch still takes only a polygon
+  or a node's hull. Hatching a rounded-inset or offset-silhouette region wants
+  the same reference; it needs the patch `regionHatch` node widened first.
+- **`op:mask` stays hull-only** — it is the shorthand; `op:clip` carries the
+  full region vocabulary, and two ways to say the same thing would be worse for
+  an agent-authored IR than one short form and one general one.
+- **Exact silhouette offsetting** — `outline`/`occupied` are a rasterised
+  buffered union, not a true Minkowski sum. Exact polygon offsetting of
+  arbitrary concave geometry is the follow-up if the approximation ever shows.

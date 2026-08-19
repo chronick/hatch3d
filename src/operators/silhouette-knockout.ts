@@ -393,12 +393,19 @@ const MS_TABLE: number[][][] = [
  * interpolated on brightness, so contours are smoother than pure cell
  * midpoints. Holes come out as their own rings, which is exactly what the
  * even-odd `pointInSilhouette` wants.
+ *
+ * `box` places the result somewhere other than the origin — the grid maps onto
+ * `[box.x0, box.x1] x [box.y0, box.y1]` instead of `[0, targetW] x [0,
+ * targetH]`. That is what lets an occupancy raster covering an arbitrary patch
+ * of canvas (`operators/region-shapes.ts`) reuse this marching-squares pass
+ * unchanged; omit it and the behaviour is exactly as before.
  */
 export function ringsFromThreshold(
   image: ThresholdImage,
   threshold: number,
   targetW: number,
   targetH: number,
+  box?: { x0: number; y0: number; x1: number; y1: number },
 ): Polyline[] {
   const w = image.width;
   const h = image.height;
@@ -458,8 +465,12 @@ export function ringsFromThreshold(
 
   // Map grid coordinates into the target box. Sample i sits at its pixel
   // center, so the real image spans grid [-0.5, w-0.5].
-  const mapX = (gx: number) => Math.min(targetW, Math.max(0, ((gx + 0.5) / w) * targetW));
-  const mapY = (gy: number) => Math.min(targetH, Math.max(0, ((gy + 0.5) / h) * targetH));
+  const bx0 = box?.x0 ?? 0;
+  const by0 = box?.y0 ?? 0;
+  const bx1 = box?.x1 ?? targetW;
+  const by1 = box?.y1 ?? targetH;
+  const mapX = (gx: number) => Math.min(bx1, Math.max(bx0, bx0 + ((gx + 0.5) / w) * (bx1 - bx0)));
+  const mapY = (gy: number) => Math.min(by1, Math.max(by0, by0 + ((gy + 0.5) / h) * (by1 - by0)));
 
   const used = new Array<boolean>(segs.length).fill(false);
   const rings: Polyline[] = [];

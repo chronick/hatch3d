@@ -27,6 +27,7 @@ import multiTechnique from "../src/compositions/3d/studies/multi-technique.js";
 import tonalShading from "../src/compositions/3d/studies/tonal-shading.js";
 
 // 2D compositions
+import cellFlowGradient from "../src/compositions/2d/generative/cell-flow-gradient.js";
 import contourMap from "../src/compositions/2d/generative/contour-map.js";
 import differentialGrowth from "../src/compositions/2d/generative/differential-growth.js";
 import flowField from "../src/compositions/2d/generative/flow-field.js";
@@ -72,7 +73,7 @@ const allCompositions: CompositionDefinition[] = [
   sentinelTerrain3D, totemStack, towerAndBase, crystalSpire, phyllotaxisGarden, ribbonCage,
   dnaHelix, atmosphericDepth, engravingStudy, explodedView, multiTechnique, tonalShading,
   // 2D
-  contourMap, differentialGrowth, flowField, flowRaster, glyphDensityField, silhouetteField, strataTriptych, turmiteTrails, gearMeshTruchet, starTilingOrnament, stippleScene, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
+  cellFlowGradient, contourMap, differentialGrowth, flowField, flowRaster, glyphDensityField, silhouetteField, strataTriptych, turmiteTrails, gearMeshTruchet, starTilingOrnament, stippleScene, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
   meshLineart, perlinWorms, photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor,
   tspArt, voronoiTexture, waterArcos, weightedStippling,
   opArtSphere, guillocheRosette, hilbertFill, moireCircles, penroseTiling, recursiveSubdivision,

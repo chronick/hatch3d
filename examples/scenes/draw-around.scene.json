@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "id": "draw-around",
+  "page": { "size": "a3", "orientation": "landscape", "marginMm": 15, "widthPx": 800, "heightPx": 800 },
+  "root": {
+    "type": "group",
+    "id": "root",
+    "children": [
+      {
+        "type": "layer",
+        "id": "focus-layer",
+        "pen": { "color": "#111111", "name": "focus", "width": 0.5 },
+        "children": [
+          {
+            "type": "op:transform",
+            "id": "focus",
+            "scale": 0.4,
+            "translate": [240, 240],
+            "child": {
+              "type": "generator",
+              "id": "focus-gen",
+              "composition": "guillocheRosette",
+              "params": { "rings": 5, "layersPerRing": 6, "lobes": 24, "amplitude": 110, "innerRadius": 60, "ringSpacing": 40 }
+            }
+          }
+        ]
+      },
+      {
+        "type": "layer",
+        "id": "ground-layer",
+        "pen": { "color": "#1d4ed8", "name": "ground", "width": 0.3 },
+        "children": [
+          {
+            "type": "op:clip",
+            "id": "around",
+            "mode": "outside",
+            "region": { "regionOf": { "of": "focus", "kind": "bbox", "offsetPx": 12, "cornerRadius": 18 } },
+            "child": {
+              "type": "generator",
+              "id": "ground-gen",
+              "composition": "contourMap",
+              "params": { "contourLevels": 26 }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
