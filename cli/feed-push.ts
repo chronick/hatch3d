@@ -20,12 +20,14 @@
 import { parseArgs } from "node:util";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadCompositions } from "./load-compositions.js";
 import { compositionRegistry } from "../src/compositions/registry.js";
 import { is2DComposition } from "../src/compositions/types.js";
 import { runPipeline } from "../src/workers/render-pipeline.js";
-import type { RenderRequest } from "../src/workers/render-worker.types.js";
-import { buildSVGContent, computeExportLayout } from "./svg-export.js";
+import type { RenderRequest, RenderResult } from "../src/workers/render-worker.types.js";
+import { buildSVGContent, buildLayeredSVGContent, computeExportLayout } from "./svg-export.js";
+import type { ExportLayout } from "./svg-export.js";
 import { generateBiasedPresets, logGeneration, collectFromFeedAPI, collectFromPrintQueue, loadAllObservations, computeModel, briefToIntent } from "../src/preferences/index.js";
 import type { PreferenceModel, GeneratedPreset, Observation } from "../src/preferences/index.js";
 
@@ -501,7 +503,31 @@ async function pushItem(config: { url: string; token: string }, item: Record<str
 
 // ── Rendering ──
 
-function renderPreset(preset: FeedPreset): { svgContent: string; pngBuffer: Buffer | null; stats: Record<string, number>; durationMs: number } {
+/** The slice of a pipeline result that decides how the SVG gets serialized. */
+export type SerializableRenderResult = Pick<RenderResult, "svgPaths"> &
+  Partial<Pick<RenderResult, "layerGroups">>;
+
+/**
+ * Pick the SVG serializer for a pipeline result — the same decision cli/render.ts
+ * makes (see its renderComposition): a layered composition (`type: "layered"`,
+ * e.g. twoPenOffset, phyllotaxisIsoblocks) carries per-pen `layerGroups`, and
+ * those must go out through buildLayeredSVGContent so the pushed artifact keeps
+ * the Inkscape layer convention (groupmode/label/data-passes) that vpype and
+ * AxiDraw read. Anything without layerGroups falls through to the flat
+ * single-group builder and is byte-identical to the pre-layer output.
+ */
+export function serializeRenderResult(
+  result: SerializableRenderResult,
+  layout: ExportLayout,
+  margin: number,
+  strokeWidth: number,
+): string {
+  return result.layerGroups && result.layerGroups.length > 0
+    ? buildLayeredSVGContent(result.layerGroups, layout, margin, strokeWidth)
+    : buildSVGContent(result.svgPaths, layout, margin, strokeWidth);
+}
+
+function renderPreset(preset: FeedPreset): { svgContent: string; pngBuffer: Buffer | null; stats: Record<string, number>; durationMs: number; layerCount: number } {
   const comp = compositionRegistry.get(preset.composition)!;
   const is2d = is2DComposition(comp);
 
@@ -549,13 +575,14 @@ function renderPreset(preset: FeedPreset): { svgContent: string; pngBuffer: Buff
   };
 
   const result = runPipeline(req);
-  const svgContent = buildSVGContent(result.svgPaths, layout, 15, 0.5);
+  const svgContent = serializeRenderResult(result, layout, 15, 0.5);
 
   return {
     svgContent,
     pngBuffer: null, // Rendered async below
     stats: result.stats,
     durationMs: result.durationMs,
+    layerCount: result.layerGroups?.length ?? 0,
   };
 }
 
@@ -725,7 +752,7 @@ async function main(): Promise<void> {
     console.log(`  [${i + 1}/${selected.length}] ${preset.composition} / "${preset.name}"...`);
 
     // Render
-    const { svgContent, stats, durationMs } = renderPreset(preset);
+    const { svgContent, stats, durationMs, layerCount } = renderPreset(preset);
 
     if (stats.paths === 0) {
       console.log(`    SKIPPED — 0 paths produced`);
@@ -734,6 +761,11 @@ async function main(): Promise<void> {
 
     const pngBuffer = await renderToPng(svgContent, scale);
     console.log(`    Rendered: ${stats.paths} paths, ${stats.lines} lines (${durationMs.toFixed(0)}ms), PNG ${(pngBuffer.length / 1024).toFixed(0)}KB`);
+    // Dry runs never upload, so the layer breakdown is the only signal that a
+    // layered composition serialized as layers rather than one flat group.
+    if (dryRun && layerCount > 0) {
+      console.log(`    Layered: ${layerCount} SVG layers`);
+    }
 
     // Log observation for preference learning
     try {
@@ -829,7 +861,15 @@ async function main(): Promise<void> {
   console.log(`\nDone.${dryRun ? " (dry run — nothing pushed)" : ""}`);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Only drive the feed pipeline when this file is the process entry point, so
+// unit tests can import the pure serialization helper above without the module
+// reaching for the feed API.
+const invokedDirectly =
+  !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
