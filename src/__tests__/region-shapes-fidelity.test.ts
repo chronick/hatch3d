@@ -25,6 +25,7 @@ import {
   polygonArea,
   rasterGridSpec,
   rasterUnionRings,
+  CLUSTER_TOTAL_CELL_WALL,
   ESCALATE_FACTOR,
   OUTLINE_BASE_RADIUS,
   RASTER_MAX_CELLS,
@@ -144,6 +145,7 @@ const freshStats = (): RasterRefineStats => ({
   keptUnrefined: 0,
   replaced: 0,
   escalated: false,
+  trimmed: false,
   fineCandidates: 0,
 });
 
@@ -153,7 +155,7 @@ const freshStats = (): RasterRefineStats => ({
  * spread so the `toEqual`s below keep saying what they said before the
  * escalation fields existed: nothing escalated, and there was no fine grid.
  */
-const SPARSE_PATH = { escalated: false, fineCandidates: 0 } as const;
+const SPARSE_PATH = { escalated: false, trimmed: false, fineCandidates: 0 } as const;
 
 /** Best of `reps` timed runs, after a warm-up call for JIT and allocation. */
 function timeBest(run: () => unknown, reps = 3): number {
@@ -252,7 +254,13 @@ describe("thin strokes stay whole instead of rasterising into specks", () => {
 
   it("keeps a hair-thin stroke connected even when the cap forces a coarse grid", () => {
     // 5000px of geometry at radius 0.5 wants a 40 000-cell grid; the cap allows
-    // 512, so the radius is widened to one cell rather than allowed to dot.
+    // 512, so the radius is widened to one cell rather than allowed to dot —
+    // that is what the spec assertions below pin. Since round-9 this particular
+    // stroke never reaches the lattice at all (a lone segment's buffer is a
+    // capsule, emitted exactly), so it comes back at the 0.5 asked for; the
+    // widening rule still governs every stroke that *is* rastered, and the
+    // property being checked here — one connected ring covering the geometry,
+    // not a dotted line of specks — is what both paths have to deliver.
     const long: Polyline[] = [[{ x: 0, y: 0 }, { x: 5000, y: 3000 }]];
     const spec = rasterGridSpec(long, 0.5)!;
     expect(spec.cells).toBe(RASTER_CAP_CELLS);
@@ -1122,6 +1130,202 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
       expect(ms, `lattice + ${pts.length} stray took ${ms.toFixed(1)}ms`).toBeLessThan(2000);
     });
   });
+
+  /**
+   * Separating the ink must not *cost* the ink its resolution — the round-9
+   * finding, and the end of the last budget that was stated relative to the
+   * bounding box.
+   *
+   * Round-8 gave every cluster a grid sized to its own extent, then held the
+   * total to `4 ×` the single whole-extent grid it replaced. That comparison is
+   * circular: the single grid is sized by the bounding box, and the bounding box
+   * is the thing decomposition exists to stop trusting. Push the ink apart and
+   * the divisor grows while the demand does not, so the budget bites hardest
+   * exactly where decomposition was supposed to help.
+   *
+   * Three copies of the 170 × 170 pocket lattice 100px apart is that case, and
+   * it is not exotic — it is a plate of panels, the ordinary shape of a plotter
+   * page. The whole-drawing grid has 20.3px cells against the panels' own 6.7px,
+   * so `4 × 518 × 174` allowance against `3 × 517 × 517` demand trimmed every
+   * panel's cap from 512 cells to 343. At 343 the panel's cell is 9.94px, the
+   * widened radius goes with it, and the 20px pitch has nothing left: **86 703
+   * rings collapsed to 3, with all 768 sampled pocket centres reading as solid
+   * ink.** Four panels: 4 rings, 1 024 / 1 024 wrong. The drawing did not get
+   * harder — it got *wider*, and the budget read that as a reason to look less
+   * carefully.
+   *
+   * A trimmed cap is not a cheaper answer, it is a wrong one, so there is no
+   * trimming below what each cluster's own ink asks for. The only bound left is
+   * an absolute wall on the total (see `CLUSTER_TOTAL_CELL_WALL`), the total is
+   * proportional to ink rather than to page area, and when the wall does bite
+   * the call says so in `trimmed` instead of quietly drawing something else.
+   */
+  describe("separated panels are each priced on their own ink (review round-9)", () => {
+    /** The lattice shifted `dx` to the right — one panel of the plate. */
+    const panel = (dx: number): Polyline[] =>
+      LATTICE.map((line) => line.map((p) => ({ x: p.x + dx, y: p.y })));
+    /** `n` panels in a row, 100px of blank paper between them. */
+    const PANEL_PITCH = N * PITCH + 100;
+    const panels = (n: number): Polyline[] =>
+      Array.from({ length: n }, (_, i) => panel(i * PANEL_PITCH)).flat();
+    const pocketIn = (p: number, i: number): Point => ({
+      x: p * PANEL_PITCH + (Math.floor(i / N) + 0.5) * PITCH,
+      y: ((i % N) + 0.5) * PITCH,
+    });
+
+    it("the fixture really does defeat a bounding-box-relative budget", () => {
+      // Guards the fixture: if the panels ever stop tripping the old `4 ×
+      // single grid` allowance, the cases below stop exercising round-9.
+      const alone = rasterGridSpec(panel(0), RADIUS)!;
+      const plate = rasterGridSpec(panels(3), RADIUS)!;
+      const demand = 3 * alone.gw * alone.gh;
+      const oldAllowance = 4 * plate.gw * plate.gh;
+      expect(demand, `demand ${demand} vs old allowance ${oldAllowance}`).toBeGreaterThan(
+        oldAllowance,
+      );
+
+      // …and the trim that allowance implied really did swallow the pitch: the
+      // cap falls from 512 to 343 cells, which puts the panel's own cell at
+      // 9.94px, widens the radius with it, and leaves 0.13px of pocket — a
+      // twentieth of even the *escalated* fine cell, so no amount of looking
+      // harder gets it back.
+      const trimmedCap = Math.floor(alone.cells * Math.sqrt(oldAllowance / demand));
+      expect(trimmedCap).toBe(343);
+      const trimmed = rasterGridSpec(panel(0), RADIUS, trimmedCap, trimmedCap)!;
+      const pocket = PITCH - 2 * trimmed.effectiveRadius;
+      expect(pocket / (trimmed.cell / ESCALATE_FACTOR), `pocket ${pocket.toFixed(3)}px`).toBeLessThan(
+        0.1,
+      );
+      // …while at its own cap the pocket is four escalated fine cells across.
+      expect((PITCH - 2 * alone.effectiveRadius) / (alone.cell / ESCALATE_FACTOR)).toBeGreaterThan(3);
+    });
+
+    it.each([1, 2, 3, 4])("resolves every pocket of every panel — %s panel(s)", (n) => {
+      const stats = freshStats();
+      const rings = rasterUnionRings(panels(n), RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+
+      // One outer boundary and N² pockets per panel — nothing lost, nothing
+      // invented, and nothing borrowed from a neighbouring panel's budget.
+      // 3 panels gave 3 rings before this change; 4 gave 4.
+      expect(rings).toHaveLength(n * (1 + N * N));
+      expect(stats.escalated).toBe(true);
+      expect(stats.dropped).toBe(0);
+      expect(stats.keptUnrefined).toBe(0);
+      // Fidelity was not cut, and the stats say so rather than the caller
+      // having to infer it from the geometry.
+      expect(stats.trimmed).toBe(false);
+
+      // The finding itself, sampled per panel: 256 pocket centres each 10px
+      // from the nearest stroke and so paper. 768/768 and 1024/1024 read as ink
+      // at 3 and 4 panels before.
+      let ink = 0;
+      let sampled = 0;
+      for (let p = 0; p < n; p++) {
+        for (let i = 0; i < 256; i++) {
+          sampled++;
+          if (pointInSilhouette(pocketIn(p, (i * 617) % (N * N)), rings)) ink++;
+        }
+      }
+      expect(ink, `${ink}/${sampled} pocket centres classified as ink`).toBe(0);
+
+      // …and the walls of every panel still read as ink, the gaps between them
+      // as paper.
+      for (let p = 0; p < n; p++) {
+        expect(pointInSilhouette({ x: p * PANEL_PITCH + PITCH, y: PITCH }, rings)).toBe(true);
+        if (p > 0) {
+          expect(
+            pointInSilhouette({ x: p * PANEL_PITCH - 50, y: 1700 }, rings),
+            `gap before panel ${p}`,
+          ).toBe(false);
+        }
+      }
+    });
+
+    it.each([1, 2, 3, 4])("costs about one panel's work per panel — %s panel(s)", (n) => {
+      // Measured: 186 / 387 / 406 / 538ms — the point being that the total
+      // tracks the *ink*, so adding a panel adds a panel's work rather than
+      // re-pricing the ones already there. (Before the change 3 and 4 panels
+      // were *fast* — 33ms and 19ms — because they had stopped resolving
+      // anything; cheapness was the symptom.) The ceiling is the same generous
+      // per-panel one the single-lattice fixture carries.
+      const lines = panels(n);
+      const ms = timeBest(() => rasterUnionRings(lines, RADIUS), 1);
+      expect(ms, `${n} panel(s) took ${ms.toFixed(1)}ms`).toBeLessThan(2000 * n);
+    });
+
+    it("keeps four dense panels well clear of the absolute wall", () => {
+      // What replaced the relative budget has to be loose enough that a real
+      // drawing never meets it. Four panels ask for 1.07M coarse cells against
+      // a 67.1M wall — 1.6% of it, or ~64 panels of headroom.
+      const alone = rasterGridSpec(panel(0), RADIUS)!;
+      const four = 4 * alone.gw * alone.gh;
+      expect(four).toBeLessThan(CLUSTER_TOTAL_CELL_WALL / 32);
+    });
+  });
+});
+
+/**
+ * The wall bites, and says so.
+ *
+ * `trimmed` is the one stat that means *fidelity was cut* — and it exists
+ * because the round-9 failure was a silent cut. A caller that gets fewer rings
+ * than the drawing has features should be able to tell "the raster looked and
+ * this is what is there" from "the raster could not afford to look".
+ *
+ * The fixture is the shape that genuinely justifies a wall: 300 separated
+ * hair-fine diagonal strokes, each 200px of geometry at radius 0.05, so each
+ * cluster's own ink asks for the full 512-cell cap — 300 × 518² = 80.5M coarse
+ * cells against the 67.1M wall. Every cap is scaled by √(67.1/80.5) together,
+ * none below its floor, and `trimmed` comes back true.
+ *
+ * There is deliberately no fixture here where the trim *changes the pixels*:
+ * by construction any such input has to allocate the wall's worth of cells —
+ * that is what the wall is a wall on — which is seconds of work and not
+ * something a unit suite should pay for once per run. What is pinned here is
+ * the part that failed silently: that the call knows it trimmed and reports it.
+ */
+describe("trimming to the absolute wall is reported, never silent", () => {
+  const RADIUS = 0.05;
+  /** Diagonal, so each cluster's grid is square rather than a 6-cell ribbon. */
+  const SPAN = 141;
+  const N = 300;
+  /** 300 fine strokes on a 20 × 15 plate, far enough apart to cluster apart. */
+  const FINE: Polyline[] = Array.from({ length: N }, (_, i) => {
+    const x = (i % 20) * 400;
+    const y = Math.floor(i / 20) * 400;
+    return [{ x, y }, { x: x + SPAN, y: y + SPAN }];
+  });
+
+  it("the fixture really does exceed the wall", () => {
+    const one = rasterGridSpec([FINE[0]], RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS)!;
+    expect(one.cells).toBe(RASTER_CAP_CELLS);
+    expect(N * one.gw * one.gh).toBeGreaterThan(CLUSTER_TOTAL_CELL_WALL);
+  });
+
+  it("sets `trimmed`, and still returns every mark", () => {
+    const stats = freshStats();
+    const rings = rasterUnionRings(FINE, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+    expect(stats.trimmed).toBe(true);
+    // Nothing is lost to the wall — one ring per stroke, each still covering
+    // the stroke it stands for.
+    expect(rings).toHaveLength(N);
+    for (const line of FINE) {
+      expect(pointInSilhouette(line[0], rings)).toBe(true);
+      const mid = { x: (line[0].x + line[1].x) / 2, y: (line[0].y + line[1].y) / 2 };
+      expect(pointInSilhouette(mid, rings)).toBe(true);
+    }
+  });
+
+  it("is false on every ordinary drawing", () => {
+    for (const [label, lines, r] of [
+      ["star", STAR, OUTLINE_BASE_RADIUS],
+      ["star field", STAR_FIELD, OUTLINE_BASE_RADIUS],
+    ] as const) {
+      const stats = freshStats();
+      rasterUnionRings(lines, r, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+      expect(stats.trimmed, label).toBe(false);
+    }
+  });
 });
 
 /**
@@ -1260,11 +1464,14 @@ describe("cost — the adaptive grid stays bounded on fine-detail geometry", () 
    * past `capCells` once per mark — 20 000 marks each claiming the 192-cell
    * floor would be 750M cells — so the per-cluster floor is the resolution the
    * single grid would have given that cluster, and the total is held to
-   * `CLUSTER_COST_FACTOR ×` the single grid.
+   * `CLUSTER_TOTAL_CELL_WALL` (2.9M cells here, 4% of it).
    *
    * What it buys is not subtle: the whole field spans 12 000px, so one grid at
    * the 512 cap has 23.4px cells and widens every 4px dot into a radius-23 blob
-   * that merges with its neighbours. Decomposed, each dot is a radius-4 disc.
+   * that merges with its neighbours. Decomposed, each dot is a radius-4 disc —
+   * and since round-9 not a rastered approximation of one but the exact circle,
+   * because a lone dot's buffered union is a disc and there is nothing for a
+   * grid to discover about it. 20 000 grids that never get allocated: 76ms.
    */
   it("resolves 20 000 disjoint marks inside the budget", () => {
     const N = 20000;
@@ -1284,12 +1491,8 @@ describe("cost — the adaptive grid stays bounded on fine-detail geometry", () 
     for (const i of [0, 1, cols, N - 1]) {
       const c = ringCentre(rings[i]);
       expect(Math.hypot(c.x - dots[i][0].x, c.y - dots[i][0].y)).toBeLessThan(0.1);
-      // Every vertex one radius from the mark. This is the fidelity claim, not
-      // the enclosed area: 20 000 clusters is where CLUSTER_COST_FACTOR bites,
-      // and a trimmed cap buys its cells back by drawing the same circle with
-      // fewer vertices (13 instead of 25) — which costs ~5% of the *area* of a
-      // shape this small while leaving every point of the contour on the
-      // circle to 0.03px. Radius is what the region means; vertex count is not.
+      // Every vertex exactly one radius from the mark — which the closed-form
+      // emitter gives to floating point rather than to a fraction of a cell.
       for (const p of rings[i]) {
         expect(Math.hypot(p.x - dots[i][0].x, p.y - dots[i][0].y)).toBeCloseTo(
           OUTLINE_BASE_RADIUS,
@@ -1297,5 +1500,145 @@ describe("cost — the adaptive grid stays bounded on fine-detail geometry", () 
         );
       }
     }
+  });
+});
+
+
+/**
+ * A mark must not change shape because of where the *cluster boundary* fell.
+ *
+ * Clusters are merged by inflated bounding box, and a bounding box says nothing
+ * about whether two buffers actually meet — so the boundary between "shares a
+ * grid" and "gets its own" is a threshold in the bookkeeping that nothing in the
+ * drawing crosses. Slide one radius-4 dot away from the end of a 3 400px stroke
+ * and it lands squarely on that threshold: at a box gap of 13.364705882px
+ * (exactly `2 · effectiveRadius`) the dot shares the stroke's 6.68px grid, where
+ * it is barely one sample across, and came back as a **113.4px² blob 11.15px
+ * wide with 9 vertices**. Two millionths of a pixel further out it is its own
+ * cluster on its own 1px grid and came back as a **49.7px² disc 7.94px wide**.
+ * A 128% jump in area from a 2e-6px move — the kind of pop that shows up in a
+ * plot as one mark inexplicably fatter than its neighbours.
+ *
+ * No grid fixes this, because the answer on the merged side is a *sampled*
+ * answer and the answer on the split side is a differently-sampled one. What
+ * fixes it is not sampling at all: a dot's buffered union is exactly a disc and
+ * a segment's is exactly a capsule, so a stroke that reduces to one of those and
+ * is provably clear of everything else in its cluster is emitted in closed form
+ * and taken off the grid entirely (`extractAnalyticStrokes`). "Provably clear"
+ * is the exact pairwise distance against `2 · effectiveRadius` — the same
+ * separation the clustering pass proves, measured on the geometry instead of on
+ * the boxes, which is precisely the gap a box-chained neighbour falls into.
+ *
+ * The dot then takes the identical path on both sides, and the discontinuity is
+ * not reduced but *gone*: the two rings below are equal vertex for vertex. What
+ * a hard boundary remains for is strokes whose buffers genuinely interact, where
+ * it is a real feature of the geometry and not an artefact of the bookkeeping —
+ * the last case here pins that those still merge.
+ */
+describe("the cluster-split boundary is invisible in the output (review round-9)", () => {
+  const RADIUS = 4;
+  const LEN = 3400;
+  const STROKE: Polyline = [{ x: 0, y: 0 }, { x: LEN, y: 0 }];
+  /** The dot placed diagonally off the stroke's far end by `gap` on each axis. */
+  const dotAt = (gap: number): Point => ({ x: LEN + gap, y: gap });
+  const drawing = (gap: number): Polyline[] => [STROKE, [dotAt(gap)]];
+  /** The largest box gap that still merges the dot into the stroke's cluster. */
+  const MERGED = 13.364705882;
+  const SPLIT = MERGED + 0.000002;
+
+  /** The ring around `q`, described the way the finding described it. */
+  const discAround = (rings: Polyline[], q: Point) => {
+    const near = rings.filter((r) => Math.hypot(ringCentre(r).x - q.x, ringCentre(r).y - q.y) < 30);
+    expect(near, `one ring around ${q.x},${q.y}`).toHaveLength(1);
+    const ring = near[0];
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    let minR = Infinity, maxR = 0;
+    for (const p of ring) {
+      xMin = Math.min(xMin, p.x); xMax = Math.max(xMax, p.x);
+      yMin = Math.min(yMin, p.y); yMax = Math.max(yMax, p.y);
+      const d = Math.hypot(p.x - q.x, p.y - q.y);
+      minR = Math.min(minR, d); maxR = Math.max(maxR, d);
+    }
+    return { ring, area: Math.abs(polygonArea(ring)), w: xMax - xMin, h: yMax - yMin, minR, maxR };
+  };
+
+  it("the fixture really does straddle the split", () => {
+    // Guards the fixture: the two placements have to sit on opposite sides of
+    // the merge threshold, or nothing below is about a boundary at all.
+    const merged = rasterGridSpec(drawing(MERGED), RADIUS)!;
+    const split = rasterGridSpec(drawing(SPLIT), RADIUS)!;
+    expect(MERGED).toBeLessThanOrEqual(2 * merged.effectiveRadius);
+    expect(SPLIT).toBeGreaterThan(2 * split.effectiveRadius);
+    // …and the merged side's grid really is too coarse to draw the dot: one
+    // cell is wider than the dot's whole diameter.
+    expect(merged.cell).toBeGreaterThan(2 * RADIUS * 0.8);
+  });
+
+  it("renders the same disc on both sides of the boundary", () => {
+    const a = discAround(rasterUnionRings(drawing(MERGED), RADIUS), dotAt(MERGED));
+    const b = discAround(rasterUnionRings(drawing(SPLIT), RADIUS), dotAt(SPLIT));
+    const report = `merged ${a.area.toFixed(3)}/${a.w.toFixed(3)} vs split ${b.area.toFixed(3)}/${b.w.toFixed(3)}`;
+    // 113.367 / 11.147 against 49.662 / 7.936 before — 128% and 40% apart.
+    expect(b.area / a.area, `area: ${report}`).toBeCloseTo(1, 2);
+    expect(b.w / a.w, `width: ${report}`).toBeCloseTo(1, 2);
+    expect(b.h / a.h, `height: ${report}`).toBeCloseTo(1, 2);
+    // …and both are the radius that was asked for, not the grid's widened one.
+    for (const d of [a, b]) {
+      expect(d.minR).toBeCloseTo(RADIUS, 6);
+      expect(d.maxR).toBeCloseTo(RADIUS, 6);
+      expect(d.area / (Math.PI * RADIUS * RADIUS)).toBeCloseTo(1, 3);
+    }
+    // The strong form: not merely within tolerance but the same ring, vertex
+    // for vertex, once the 2e-6px translation between the two placements is
+    // taken out. (Exactly, up to the float error of taking it out.)
+    expect(a.ring).toHaveLength(b.ring.length);
+    for (let i = 0; i < a.ring.length; i++) {
+      expect(a.ring[i].x - MERGED, `vertex ${i}`).toBeCloseTo(b.ring[i].x - SPLIT, 9);
+      expect(a.ring[i].y - MERGED, `vertex ${i}`).toBeCloseTo(b.ring[i].y - SPLIT, 9);
+    }
+  });
+
+  it("sweeps through the boundary without a step in either direction", () => {
+    // The threshold is not the only place the two regimes could disagree, so
+    // walk the dot across it and pin the whole neighbourhood flat.
+    const areas = [-1, -0.1, -1e-6, 1e-6, 0.1, 1].map(
+      (d) => discAround(rasterUnionRings(drawing(MERGED + d), RADIUS), dotAt(MERGED + d)).area,
+    );
+    for (const area of areas) {
+      expect(area, `disc areas across the boundary: ${areas.map((a) => a.toFixed(3))}`).toBeCloseTo(
+        areas[0],
+        6,
+      );
+    }
+  });
+
+  it("still merges a dot whose buffer genuinely touches the stroke", () => {
+    // The residual discontinuity is geometric, not bookkeeping: inside
+    // `2 · radius` the two buffers really do meet, and one ring is the right
+    // answer. Nothing here is emitted in closed form, because nothing here is
+    // isolated.
+    const gap = 2;
+    expect(Math.hypot(gap, gap)).toBeLessThan(2 * RADIUS);
+    const rings = rasterUnionRings(drawing(gap), RADIUS);
+    expect(rings).toHaveLength(1);
+    expect(pointInSilhouette(dotAt(gap), rings)).toBe(true);
+    expect(pointInSilhouette({ x: LEN / 2, y: 0 }, rings)).toBe(true);
+  });
+
+  it("emits an isolated mark exactly, not to the grid's resolution", () => {
+    // What the closed form buys, stated on its own: every vertex is on the true
+    // offset curve to floating point, and the enclosed area is within 0.04% of
+    // the exact disc — the chord sagitta at ANALYTIC_ARC_SAMPLES, and two
+    // orders of magnitude finer than the raster manages anywhere.
+    for (const r of [0.5, 4, 37]) {
+      const rings = rasterUnionRings([[{ x: 0, y: 0 }]], r);
+      expect(rings).toHaveLength(1);
+      for (const p of rings[0]) expect(Math.hypot(p.x, p.y)).toBeCloseTo(r, 9);
+      expect(Math.abs(polygonArea(rings[0])) / (Math.PI * r * r), `r=${r}`).toBeCloseTo(1, 3);
+    }
+    // …and a segment is a capsule: two flanks and two half turns, exact.
+    const capsule = rasterUnionRings([[{ x: 0, y: 0 }, { x: 100, y: 0 }]], 3);
+    expect(capsule).toHaveLength(1);
+    expect(Math.abs(polygonArea(capsule[0])) / (2 * 3 * 100 + Math.PI * 9)).toBeCloseTo(1, 3);
   });
 });

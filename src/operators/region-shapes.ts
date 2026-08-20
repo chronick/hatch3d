@@ -715,6 +715,11 @@ export const REFINE_DRAIN_SLACK_CELLS = 1;
  * clusters took *different* paths only the weaker
  * `kept + dropped + keptUnrefined <= candidates + fineCandidates` survives,
  * since the aggregate no longer says which candidates belonged to which path.
+ *
+ * Strokes drawn in closed form (see {@link extractAnalyticStrokes}) touch none
+ * of these counters. They never reach a grid, so they are not candidates for
+ * anything and there is no verdict to record — a drawing made entirely of
+ * isolated marks comes back with every counter at zero and a full set of rings.
  */
 export interface RasterRefineStats {
   /** Rings enclosing at most one *coarse* cell — the sub-cell features found. */
@@ -732,11 +737,24 @@ export interface RasterRefineStats {
   /** …of `kept`, how many had their contour ring replaced by the refined one. */
   replaced: number;
   /**
-   * Whether refining the coarse candidates one window at a time would have cost
-   * more than the whole call's allowance, so the entire extent was re-rastered
-   * at {@link ESCALATE_FACTOR}× instead and the rings come off *that* grid.
+   * Whether **some cluster** left the per-window path: refining its coarse
+   * candidates one window at a time would have cost more than re-rastering its
+   * whole extent at {@link ESCALATE_FACTOR}×, so that is what it did and its
+   * rings come off the fine grid. A flag, not a count — see above.
    */
   escalated: boolean;
+  /**
+   * Whether the per-cluster grids had to be **scaled down** to fit
+   * {@link CLUSTER_TOTAL_CELL_WALL} — i.e. some part of this drawing was
+   * rendered coarser than its own ink justified.
+   *
+   * It is the one thing in the stats that says *fidelity was cut*, and it is
+   * here so that cutting it is never silent. False on every ordinary drawing,
+   * including a page of dense separated panels; true only past the wall, where
+   * the alternative is an unbounded allocation. Even then no cluster goes below
+   * the resolution the single whole-extent grid would have given it.
+   */
+  trimmed: boolean;
   /**
    * Sub-cell candidates on the escalated fine grid — the residue that is finer
    * than a *fine* cell and so still needs a window. Rare by construction (see
@@ -1130,25 +1148,50 @@ function ringTouchesBox(ring: Polyline, box: BBox): boolean {
 // ── Cluster decomposition ────────────────────────────────────────────
 
 /**
- * How much more grid, in total, the decomposed call may allocate than the one
- * whole-extent grid it replaces — the cost bound on decomposition.
+ * Coarse cells the decomposed call may allocate **across every cluster** — the
+ * one wall the per-cluster grids are held to, and an absolute number rather
+ * than a multiple of anything.
  *
- * Splitting a drawing into clusters is what stops blank space from coarsening
- * the ink (see {@link strokeClusters}), but it also lets the drawing buy past
- * `capCells` once per cluster: a hundred disjoint 300px blobs each resolved at
- * `radius/4` is ~36× the single grid, which is a real cost, not a rounding
- * error. So decomposition is *budgeted*: past this multiple of the single
- * grid's cells every cluster's cap is scaled down by the same factor until the
- * total fits.
+ * The multiple was the round-8 bug. Decomposition used to be budgeted at
+ * `4 ×` the single whole-extent grid it replaced, which sounds conservative and
+ * is exactly backwards: **the single grid is sized by the drawing's bounding
+ * box, and the bounding box is what decomposition exists to stop trusting.**
+ * Separate the ink and the box grows while the budget derived from it does not
+ * keep up — three copies of a 170 × 170 pocket lattice 100px apart trimmed
+ * every panel's cap from 512 cells to 343, which put the 20px pitch under the
+ * widened radius and collapsed 86 703 rings to 3, with all 768 sampled pocket
+ * centres reading as solid ink. Trimming below what registration needs is not a
+ * cheaper answer, it is a wrong one.
  *
- * The scaling has a floor it may not cross — each cluster is always given at
- * least the resolution the single whole-extent grid would have given *it* (see
- * {@link clusterFloorCells}) — so a budgeted decomposition is still never worse
- * than not decomposing, only less good than an unbudgeted one. 4 is chosen so
- * the ordinary multi-blob drawing (a field of stars, a page of glyphs) is
- * unscaled and only the pathological confetti case is trimmed.
+ * So the rule is now the one the whole review arc has been converging on —
+ * *degrade to slower, never to wrong*:
+ *
+ *  - **Each cluster prices its grid as if it were the only input.** That is
+ *    what "resolution tracks ink" means, taken seriously. The total is then
+ *    proportional to the drawing's total *ink*, which is what a real drawing is
+ *    bounded by; blank space between clusters costs nothing at all.
+ *  - **The wall is an absolute ceiling on that total, not a comparison.** It
+ *    exists only so an adversarial input cannot allocate without bound. 2^26
+ *    coarse cells is ~64 dense 512-cap panels — measured, four such panels come
+ *    to 1.07M cells, 1.6% of the wall, and resolve in ~0.8s including four
+ *    escalations. A drawing that reaches this is pathological by construction.
+ *  - **Past the wall every cap is scaled down together, never below
+ *    {@link clusterFloorCells}** — the resolution the single whole-extent grid
+ *    would have given that cluster — so the trimmed decomposition is still no
+ *    worse than not decomposing.
+ *  - **And trimming is reported.** `trimmed` in {@link RasterRefineStats} is
+ *    set whenever the wall bites, because a call that quietly renders part of
+ *    the drawing coarser than its ink justifies is exactly the failure this
+ *    constant used to cause.
+ *
+ * It is stated in *coarse* cells. A cluster that escalates allocates
+ * {@link ESCALATE_FACTOR}² more than it counted against the wall — but only one
+ * cluster's fine grid is ever live at a time and each is bounded by
+ * {@link ESCALATE_MAX_CELLS}, and escalation is taken only when it is the
+ * *cheaper* of the two ways to finish that cluster (see {@link ESCALATE_FACTOR}).
+ * It substitutes for work the wall has already accepted rather than adding to it.
  */
-export const CLUSTER_COST_FACTOR = 4;
+export const CLUSTER_TOTAL_CELL_WALL = 1 << 26;
 
 /** One connected group of strokes, and the bounds of the strokes in it. */
 interface StrokeCluster {
@@ -1317,6 +1360,248 @@ function clusterFloorCells(bounds: BBox, radius: number, globalCell: number): nu
   return Math.max(1, Math.ceil(span / globalCell));
 }
 
+// ── Analytic strokes ─────────────────────────────────────────────────
+
+/**
+ * Vertices per full turn of arc on an analytically emitted outline.
+ *
+ * The emitted ring's vertices lie *exactly* on the true offset curve, so the
+ * only error is the chord sagitta between them: `r · (1 − cos(π/n))`, which at
+ * 128 is `3.0e-4 · r` — a thirty-thousandth of a pixel on a 1px buffer, and an
+ * enclosed area within 0.04% of the exact disc. That is two orders of magnitude
+ * finer than the raster manages anywhere, which is the point: this path exists
+ * because the answer is known in closed form, so the sampling should not be
+ * what limits it.
+ *
+ * It is deliberately *not* tied to the grid. A count derived from the cell
+ * would reintroduce the discontinuity this path removes — the same dot lands on
+ * a 6.7px cell when it is merged into a long stroke's cluster and a 1px cell
+ * when it is split out, and would come back as two different polygons. Fixed,
+ * it comes back as the same one.
+ */
+export const ANALYTIC_ARC_SAMPLES = 128;
+
+/** A stroke reduced to a primitive whose buffered outline is known exactly. */
+type AnalyticStroke =
+  | { kind: "point"; a: Point }
+  | { kind: "segment"; a: Point; b: Point };
+
+/**
+ * The primitive a stroke reduces to, or null if it is not one.
+ *
+ * Only two shapes qualify, because only two have an offset outline that is
+ * exact and trivially closed: a point (a disc) and a single segment (a capsule
+ * — two parallel lines and two half-turns of arc). A polyline with a genuine
+ * bend has an *inner* offset that self-intersects, and untangling that is the
+ * job the raster is already doing correctly; there is nothing to gain by
+ * half-doing it here.
+ *
+ * Consecutive duplicate points are folded first, so `[p, p]` is a point and
+ * `[a, a, b]` is a segment. A non-finite coordinate disqualifies the stroke
+ * outright — the raster's own handling of those is the status quo and this path
+ * has no business changing it.
+ */
+function analyticPrimitive(line: Polyline): AnalyticStroke | null {
+  const pts: Point[] = [];
+  for (const p of line) {
+    if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+    const last = pts[pts.length - 1];
+    if (last && last.x === p.x && last.y === p.y) continue;
+    pts.push(p);
+    if (pts.length > 2) return null;
+  }
+  if (pts.length === 0) return null;
+  if (pts.length === 1) return { kind: "point", a: pts[0] };
+  return { kind: "segment", a: pts[0], b: pts[1] };
+}
+
+/**
+ * The primitive's exact offset outline, as one closed ring wound the same way
+ * marching squares winds an outer boundary (positive shoelace area).
+ */
+function analyticRing(s: AnalyticStroke, radius: number): Polyline {
+  const n = ANALYTIC_ARC_SAMPLES;
+  const out: Polyline = [];
+  if (s.kind === "point") {
+    for (let i = 0; i < n; i++) {
+      const t = (2 * Math.PI * i) / n;
+      out.push({ x: s.a.x + radius * Math.cos(t), y: s.a.y + radius * Math.sin(t) });
+    }
+    return out;
+  }
+  // The capsule, walked as: the far cap's half turn, then the near cap's. The
+  // two straight flanks are the chords that close between them, so they are
+  // exact rather than sampled.
+  const base = Math.atan2(s.b.y - s.a.y, s.b.x - s.a.x);
+  const half = n / 2;
+  for (const [c, from] of [
+    [s.b, base - Math.PI / 2],
+    [s.a, base + Math.PI / 2],
+  ] as const) {
+    for (let i = 0; i <= half; i++) {
+      const t = from + (Math.PI * i) / half;
+      out.push({ x: c.x + radius * Math.cos(t), y: c.y + radius * Math.sin(t) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Do the segments a1→a2 and b1→b2 cross *properly* — each strictly straddling
+ * the other's line?
+ *
+ * Strictly, because that is the only case the endpoint distances below miss.
+ * Every other way two segments can meet — a T, a shared endpoint, a collinear
+ * overlap — puts an endpoint of one *on* the other, which those distances
+ * already report as zero. Testing non-strictly instead would call two collinear
+ * but well-separated dashes "touching" and cost them the exact path for nothing.
+ */
+function segmentsCross(a1: Point, a2: Point, b1: Point, b2: Point): boolean {
+  const side = (p: Point, q: Point, r: Point) =>
+    (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  return (
+    side(b1, b2, a1) * side(b1, b2, a2) < 0 && side(a1, a2, b1) * side(a1, a2, b2) < 0
+  );
+}
+
+/** Exact distance from a primitive to any point of `line` (0 if they cross). */
+function primitiveDistanceTo(s: AnalyticStroke, line: Polyline): number {
+  const ends: Point[] = s.kind === "point" ? [s.a] : [s.a, s.b];
+  let best = Infinity;
+  for (let i = 0; i < line.length; i++) {
+    const a = line[i];
+    const b = line[i + 1] ?? a; // a 1-point polyline is a degenerate segment
+    if (s.kind === "segment" && segmentsCross(s.a, s.b, a, b)) return 0;
+    for (const p of ends) best = Math.min(best, distPointSegmentSq(p.x, p.y, a.x, a.y, b.x, b.y));
+    if (s.kind === "segment") {
+      for (const p of [a, b]) {
+        best = Math.min(best, distPointSegmentSq(p.x, p.y, s.a.x, s.a.y, s.b.x, s.b.y));
+      }
+    }
+  }
+  return Math.sqrt(best);
+}
+
+/**
+ * Neighbour tests one cluster's analytic extraction may spend.
+ *
+ * Proving a stroke isolated costs a scan of the cluster, so the pass is
+ * quadratic in a cluster's members in the worst case — a cluster of long
+ * mutually-separated parallel strokes, where nothing rejects early. The scan is
+ * four float comparisons per test, so millions of them are milliseconds, but
+ * "milliseconds × the drawing²" is still the wrong shape for a cost bound.
+ *
+ * Exhausting it is safe by construction, which is why a budget is the right
+ * tool here: the analytic path is a *fidelity* improvement over a raster that
+ * is already correct, so a stroke it could not afford to consider is simply
+ * rastered as before. Fail-toward-the-status-quo, deterministic in input order.
+ */
+export const ANALYTIC_SCAN_BUDGET = 1 << 22;
+
+/** A cluster's strokes, split into the ones drawn exactly and the rest. */
+interface AnalyticSplit {
+  /** Finished rings for the strokes that were emitted in closed form. */
+  rings: Polyline[];
+  /** Everything else, to be rasterised as before. */
+  rastered: Polyline[];
+}
+
+/**
+ * Pull the strokes that can be drawn exactly out of a cluster before it is
+ * rasterised — the fix for the discontinuity at a cluster-split boundary.
+ *
+ * **The problem.** Clustering merges by *inflated bounding box*, so whether two
+ * marks share a grid is decided by their boxes, not by their buffers. Slide a
+ * dot away from the end of a 3 400px stroke and at a box gap of exactly
+ * `2 · effectiveRadius` it stops sharing: two millionths of a pixel either side
+ * of that, the same radius-4 dot came back as a 113.4px² blob 11.15px wide
+ * (drawn on the long stroke's 6.68px grid, where it is one sample across) or as
+ * a 49.7px² disc 7.94px wide (drawn on a grid of its own). A visible pop, from
+ * a threshold nothing in the drawing crosses.
+ *
+ * **The fix.** A dot's buffered union *is* a disc and a segment's *is* a
+ * capsule; there is nothing for a raster to discover about either. So a stroke
+ * that reduces to one of those (see {@link analyticPrimitive}) and is far
+ * enough from its cluster-mates to have its own boundary is emitted in closed
+ * form and dropped from the raster. It then renders identically whichever side
+ * of the split boundary it lands on, because on both sides it takes this path —
+ * and identically at any cap, any drawing extent, and any neighbour it happens
+ * to share a bounding box with.
+ *
+ * **Far enough** is `distance > 2 · effectiveRadius`, measured on the geometry
+ * rather than on the boxes. That is exactly the separation {@link
+ * strokeClusters} proves for two *clusters*: `effectiveRadius` is the widest
+ * anything in this cluster is drawn at, so beyond twice it the two buffered
+ * unions provably cannot meet. A stroke that clears it shares this cluster only
+ * transitively — by a chain of overlapping boxes — and never by touching
+ * anything. Two consequences follow, and they are the whole soundness argument:
+ *
+ *  - **Its ring cannot cross a sibling's.** Disjoint unions compose under
+ *    even-odd by concatenation, nesting included, which is what the rest of this
+ *    module already relies on.
+ *  - **Removing it cannot move a sibling's contour.** A field cell where the
+ *    extracted stroke was the nearest and was *ink* (distance < `effectiveRadius`)
+ *    is more than `effectiveRadius` from every other stroke, so it is outside
+ *    every other buffer: no cell's in/out class changes except inside the
+ *    footprint being replaced. What is left is sub-cell movement of an
+ *    interpolated crossing where such a cell borders another blob — the raster's
+ *    own everyday error, not a new one.
+ *
+ * The exact radius, not the widened one, is what gets drawn: `effectiveRadius`
+ * exists so a stroke thinner than a cell does not rasterise into a dotted line
+ * (see {@link RASTER_MIN_RADIUS_CELLS}), and a curve that is never sampled
+ * cannot dot. Drawing a narrower buffer than the separation was proved against
+ * only ever helps.
+ *
+ * **There is deliberately no size threshold.** The obvious one — "only when the
+ * stroke is sub-cell on the grid it would have used" — reintroduces the very
+ * discontinuity being removed: the dot above is one sample across on the merged
+ * side and *eight* samples across on the split side, so a per-grid threshold
+ * fires on one side only and the pop survives at reduced amplitude. The
+ * condition that makes the closed form correct is exactness and isolation, and
+ * neither has a size in it.
+ */
+function extractAnalyticStrokes(
+  lines: Polyline[],
+  radius: number,
+  effectiveRadius: number,
+): AnalyticSplit {
+  const prims = lines.map(analyticPrimitive);
+  if (!prims.some((p) => p !== null)) return { rings: [], rastered: lines };
+
+  const boxes = lines.map((l) => geometryBounds([l]));
+  const sep = 2 * effectiveRadius;
+  const rings: Polyline[] = [];
+  const rastered: Polyline[] = [];
+  let scans = ANALYTIC_SCAN_BUDGET;
+
+  for (let i = 0; i < lines.length; i++) {
+    const p = prims[i];
+    const bi = boxes[i];
+    if (!p || !bi) {
+      rastered.push(lines[i]);
+      continue;
+    }
+    let isolated = true;
+    for (let j = 0; j < lines.length && isolated; j++) {
+      const bj = boxes[j];
+      if (j === i || !bj) continue;
+      if (scans-- <= 0) {
+        isolated = false; // out of budget: keep the status quo for this stroke
+        break;
+      }
+      // Boxes further apart than `sep` on either axis bound the true distance
+      // from below, so most neighbours never reach the geometry test.
+      if (bj.xMin - bi.xMax > sep || bi.xMin - bj.xMax > sep) continue;
+      if (bj.yMin - bi.yMax > sep || bi.yMin - bj.yMax > sep) continue;
+      isolated = primitiveDistanceTo(p, lines[j]) > sep;
+    }
+    if (isolated) rings.push(analyticRing(p, radius));
+    else rastered.push(lines[i]);
+  }
+  return { rings, rastered };
+}
+
 /**
  * Rasterise the geometry's strokes buffered by `radius` and recover the union's
  * boundary as rings (marching squares, via `ringsFromThreshold`).
@@ -1380,15 +1665,23 @@ function clusterFloorCells(bounds: BBox, radius: number, globalCell: number): nu
  *    guaranteed to stand for the same buffer distance. They were not before
  *    either; the difference is that the widening is now driven by the ink near
  *    each ring instead of by the drawing's furthest corner.
- *  - **Decomposition is budgeted.** Per-cluster grids can total more than the
- *    single grid they replace, so past {@link CLUSTER_COST_FACTOR}× that cost
- *    every cluster's cap is scaled down together — never below the resolution
- *    the single grid would have given it, so the budgeted decomposition is
- *    still no worse than none.
+ *  - **Every cluster prices its grid alone.** No cluster's cap is cut to pay
+ *    for another's, because a cap below what registration needs is not a
+ *    cheaper answer but a wrong one (see {@link CLUSTER_TOTAL_CELL_WALL}, and
+ *    the three-panel collapse that constant records). The total is therefore
+ *    proportional to the drawing's ink, and is held only by an absolute wall
+ *    that a real drawing never approaches; if it ever does bite, `trimmed` says
+ *    so in the stats rather than the fidelity going quietly.
  *
  * A single-cluster drawing — which is every fixture in the suite bar the
- * multi-blob ones, and most real geometry — skips all of it and takes exactly
+ * multi-blob ones, and most real geometry — skips the decomposition and takes
  * the path it took before.
+ *
+ * **One step runs inside every grid, single-cluster or not:** a stroke that
+ * reduces to a disc or a capsule and touches nothing is emitted in closed form
+ * rather than sampled (see {@link extractAnalyticStrokes}). That is what makes
+ * a mark render identically on both sides of a cluster split, since clustering
+ * merges by bounding box and a box says nothing about whether two buffers meet.
  */
 export function rasterUnionRings(
   lines: Polyline[],
@@ -1406,7 +1699,7 @@ export function rasterUnionRings(
   // One cluster is the common case and is handed the original `lines` and the
   // original spec — byte-identical to the pre-decomposition path, not merely
   // equivalent to it.
-  if (clusters.length <= 1) return unionRingsOnGrid(lines, spec, stats);
+  if (clusters.length <= 1) return unionRingsOnGrid(lines, radius, spec, stats);
 
   // Each cluster gets its own grid, floored at the resolution the single grid
   // would have given it and capped at the caller's `capCells` — that second
@@ -1419,44 +1712,66 @@ export function rasterUnionRings(
     rasterGridSpec(clusters[i].lines, radius, floors[i], cap)!;
   let specs = clusters.map((_, i) => gridFor(i, capCells));
 
+  // Nothing is trimmed to pay for anything else. The only bound is the absolute
+  // wall, and reaching it is pathology rather than density — see
+  // CLUSTER_TOTAL_CELL_WALL for why a bounding-box-relative budget was the
+  // round-8 bug rather than a safety net.
   let total = 0;
   for (const s of specs) total += s.gw * s.gh;
-  const allowance = CLUSTER_COST_FACTOR * spec.gw * spec.gh;
-  if (total > allowance) {
+  if (total > CLUSTER_TOTAL_CELL_WALL) {
     // Cells scale linearly per side, so one factor applied to every cap brings
-    // the quadratic total back inside the allowance in a single pass. `floors`
-    // is the line it may not cross: a cluster trimmed to its floor is exactly
-    // as well resolved as the undecomposed grid would have left it.
-    const scale = Math.sqrt(allowance / total);
+    // the quadratic total back inside the wall in a single pass. `floors` is the
+    // line it may not cross: a cluster trimmed to its floor is exactly as well
+    // resolved as the undecomposed grid would have left it, so the total can
+    // land a little over the wall rather than any cluster landing under its
+    // floor. And it is reported — the caller can see that fidelity was cut.
+    const scale = Math.sqrt(CLUSTER_TOTAL_CELL_WALL / total);
     const wanted = specs.map((s) => s.cells);
     specs = clusters.map((_, i) =>
       gridFor(i, Math.max(floors[i], Math.floor(wanted[i] * scale))),
     );
+    if (stats) stats.trimmed = true;
   }
 
   const out: Polyline[] = [];
   for (let i = 0; i < clusters.length; i++) {
     // Not `push(...rings)`: an escalated cluster returns tens of thousands of
     // rings, which is spread-as-arguments territory.
-    for (const ring of unionRingsOnGrid(clusters[i].lines, specs[i], stats)) out.push(ring);
+    for (const ring of unionRingsOnGrid(clusters[i].lines, radius, specs[i], stats)) out.push(ring);
   }
   return out;
 }
 
 /**
- * The whole pipeline — contour, refine, escalate — on one cluster's grid.
+ * The whole pipeline — extract, contour, refine, escalate — on one cluster's
+ * grid.
  *
  * The refinement allowance and the escalation decision are both scoped to this
  * grid, which is the point of decomposing: a cluster's candidates are weighed
  * against a budget sized to the cluster, not to the drawing's bounding box.
  * `stats` accumulates across every call, so its counters come back summed.
+ *
+ * Before any of that, the strokes whose outlines are known in closed form and
+ * touch nothing are drawn exactly and taken off the grid (see
+ * {@link extractAnalyticStrokes}). They contribute no candidates because there
+ * is nothing about them left to decide; a cluster made entirely of such strokes
+ * never allocates a field at all.
  */
 function unionRingsOnGrid(
   lines: Polyline[],
+  radius: number,
   spec: RasterGridSpec,
   stats?: RasterRefineStats,
 ): Polyline[] {
   const { cell, gw, gh, x0, y0, effectiveRadius: r } = spec;
+
+  const exact = extractAnalyticStrokes(lines, radius, r);
+  const ink = exact.rastered;
+  if (ink.length === 0) return exact.rings;
+  // Rastered rings first, then the exact ones — so ring order still follows the
+  // contouring pass, with the closed-form marks appended per cluster.
+  const withExact = (rings: Polyline[]) =>
+    exact.rings.length === 0 ? rings : [...rings, ...exact.rings];
 
   // The refinement allowance for the *call*, sized against the coarse grid (see
   // REFINE_CELL_BUDGET). Escalating does not raise it and does not spend it:
@@ -1486,10 +1801,10 @@ function unionRingsOnGrid(
   // drawing that escalates has tens of thousands of coarse rings, and none of
   // them survives the decision.
   {
-    const coarse = contourGrid(lines, r, cell, gw, gh, x0, y0);
+    const coarse = contourGrid(ink, r, cell, gw, gh, x0, y0);
     if (stats) stats.candidates += coarse.candidates;
     if (coarse.demand <= fgw * fgh || fgw * fgh > ESCALATE_MAX_CELLS) {
-      return refineCandidates(lines, r, cell, gw, gh, x0, y0, coarse, budget, stats);
+      return withExact(refineCandidates(ink, r, cell, gw, gh, x0, y0, coarse, budget, stats));
     }
   }
 
@@ -1500,9 +1815,9 @@ function unionRingsOnGrid(
   // Same origin and same physical extent (fgw · cell/F === gw · cell), so the
   // fine grid keeps the coarse one's border padding and its `effectiveRadius`:
   // escalation changes how finely the union is sampled, never which union.
-  const fine = contourGrid(lines, r, fineCell, fgw, fgh, x0, y0);
+  const fine = contourGrid(ink, r, fineCell, fgw, fgh, x0, y0);
   if (stats) stats.fineCandidates += fine.candidates;
-  return refineCandidates(lines, r, fineCell, fgw, fgh, x0, y0, fine, budget, stats);
+  return withExact(refineCandidates(ink, r, fineCell, fgw, fgh, x0, y0, fine, budget, stats));
 }
 
 /** One resolution's worth of contouring, plus what refining it would cost. */
