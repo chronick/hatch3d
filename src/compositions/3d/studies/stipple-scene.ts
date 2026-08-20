@@ -259,6 +259,20 @@ const DEG = Math.PI / 180;
  */
 export const MAX_GROUND_SIZE = 5;
 
+/**
+ * Smallest ground half-extent `layers()` will accept — the `groundSize`
+ * slider's own minimum.
+ *
+ * The upper cap alone is not enough. `paramOverrides` reach `layers()` without
+ * passing through the slider, so a negative `groundSize` slips under a
+ * `Math.min`-only clamp and mirrors the plane through the origin: `-20` puts
+ * the corners 28.3 units out, the very outside-the-orbit geometry
+ * MAX_GROUND_SIZE exists to prevent, arrived at from below. A zero or
+ * near-zero value is no better — it collapses the plane and divides by the
+ * span in `dotsPerUV`.
+ */
+export const MIN_GROUND_SIZE = 1.5;
+
 interface Face {
   name: string;
   normal: [number, number, number];
@@ -585,7 +599,12 @@ const stippleScene: Composition3DDefinition = {
     const slabWidth = num("slabWidth", 0.6);
     const slabHeight = num("slabHeight", 2.3);
     const slabDepth = num("slabDepth", 0.25);
-    const groundSize = Math.min(num("groundSize", 4), MAX_GROUND_SIZE);
+    // Clamped from *both* sides — see MIN_GROUND_SIZE: a negative override is
+    // as far outside the camera orbit as an oversized one.
+    const groundSize = Math.min(
+      Math.max(num("groundSize", 4), MIN_GROUND_SIZE),
+      MAX_GROUND_SIZE,
+    );
     const density = num("stippleDensity", 31.5);
     const dotSize = num("dotSize", 0.014);
     const seed = Math.round(num("seed", 7));

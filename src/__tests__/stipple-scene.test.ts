@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as THREE from "three";
 import stippleScene, {
   MAX_GROUND_SIZE,
+  MIN_GROUND_SIZE,
   lightVector,
   shadowOffset,
   shadowPolygon,
@@ -259,6 +260,40 @@ describe("stipple scene stays inside the camera orbit (vault-3bkv6)", () => {
     const corners = [0, 1].flatMap((i) => [ground.params![`p0${i}x`], ground.params![`p1${i}x`]]);
     expect(Math.max(...corners.map(Math.abs))).toBeCloseTo(MAX_GROUND_SIZE, 9);
     expect(MAX_GROUND_SIZE * Math.SQRT2).toBeLessThan(CLI_CAMERA.dist);
+  });
+
+  it("clamps a negative groundSize up to the floor instead of mirroring the plane", () => {
+    // `paramOverrides` bypass the slider, so `layers()` sees raw numbers. A
+    // Math.min-only clamp passes -20 straight through: the ground quad mirrors
+    // through the origin, corners land 28.3 units out, and the scene is back
+    // outside the camera orbit from the other direction.
+    const corners = (overrides: Record<string, unknown>) => {
+      const ground = layersWith(overrides).find((l) => l.group === "Ground")!;
+      return ["p00", "p10", "p11", "p01"].map((k) => ({
+        x: ground.params![`${k}x`],
+        y: ground.params![`${k}y`],
+        z: ground.params![`${k}z`],
+      }));
+    };
+
+    const negative = corners({ groundSize: -20 });
+    const radius = Math.max(...negative.map((p) => Math.hypot(p.x, p.y, p.z)));
+    expect(radius).toBeLessThan(CLI_CAMERA.dist);
+
+    // and it is exactly the floor-clamped scene, not merely a smaller one
+    expect(negative).toEqual(corners({ groundSize: MIN_GROUND_SIZE }));
+    expect(MIN_GROUND_SIZE).toBeGreaterThan(0);
+    expect(MIN_GROUND_SIZE).toBeLessThanOrEqual(MAX_GROUND_SIZE);
+  });
+
+  it("every emitted point of a negative-groundSize scene stays inside the orbit", () => {
+    for (const { layer, polylines } of stippleGeometry({ groundSize: -20 })) {
+      for (const pl of polylines) {
+        for (const p of pl) {
+          expect(p.length(), `${layer.group} ${p.toArray()}`).toBeLessThan(CLI_CAMERA.dist);
+        }
+      }
+    }
   });
 
   it("the declared groundSize range cannot express a scene outside the orbit", () => {

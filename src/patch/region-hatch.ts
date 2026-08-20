@@ -16,6 +16,13 @@ export type Pt = { x: number; y: number };
 const MAX_SCANLINES = 100_000;
 
 /**
+ * Coordinate slop below which two x's on a scanline are "the same place".
+ * Spans narrower than this are dropped, and gaps narrower than this are welded
+ * shut — both are tangency artefacts rather than real ink or real whitespace.
+ */
+const EPS = 1e-9;
+
+/**
  * Hatch a set of even-odd rings with parallel lines.
  *
  * The rings are the same representation `resolveRegionRings` (src/patch/
@@ -73,7 +80,23 @@ export function hatchRegion(rings: Pt[][], angleDeg: number, pitch: number): Pt[
   const lines: Pt[][] = [];
   // Start on a pitch-aligned scanline so the pattern is stable under translation.
   const first = Math.ceil(minY / pitch) * pitch;
-  for (let y = first; y <= maxY; y += pitch) {
+
+  // Iterate by *index*, not by accumulating `y += pitch`. Far from the origin
+  // the accumulator stops advancing — at y ≈ 1e20 with pitch 1, `y + pitch`
+  // rounds back to `y` and `y <= maxY` never turns false, hanging the render.
+  // `first + i * pitch` is the same sequence for sane inputs (each term is one
+  // rounding of an exact product, exactly as before) but always terminates.
+  const span = maxY - first;
+  const scanCount =
+    span >= 0 && Number.isFinite(span)
+      ? // One more line than gaps: a span of exactly k pitches carries k+1 lines,
+        // hence the MAX_SCANLINES + 1 ceiling matching the guard above.
+        Math.min(Math.floor(span / pitch) + 1, MAX_SCANLINES + 1)
+      : 0;
+
+  for (let i = 0; i < scanCount; i++) {
+    const y = first + i * pitch;
+    if (y > maxY) break; // rounding may push the final term just past the end
     const xs: number[] = [];
     for (const ring of rot) {
       const n = ring.length;
@@ -91,14 +114,28 @@ export function hatchRegion(rings: Pt[][], angleDeg: number, pitch: number): Pt[
     }
     if (xs.length < 2) continue;
     xs.sort((p, q) => p - q);
-    for (let i = 0; i + 1 < xs.length; i += 2) {
+
+    // Pair the sorted crossings into filled spans, welding any two that only a
+    // tangency separates. A scanline grazing a vertex — a diamond hole's apex,
+    // two rings meeting at a point — emits two crossings at that vertex, equal
+    // or an epsilon apart once the two edge interpolations round differently.
+    // Paired naively those become abutting spans, and the plotter lifts and
+    // re-drops the pen mid-stroke for no visible reason.
+    let lo = xs[0];
+    let hi = xs[1];
+    for (let k = 2; k + 1 < xs.length; k += 2) {
+      if (xs[k] - hi < EPS) {
+        hi = Math.max(hi, xs[k + 1]); // same stroke: the gap isn't real whitespace
+        continue;
+      }
       // Skip zero-length spans (tangent scanlines / self-intersections) and, in
       // a multi-ring region, the empty stretch between an outer ring and a hole
       // that happen to touch.
-      if (xs[i + 1] - xs[i] > 1e-9) {
-        lines.push([back(xs[i], y), back(xs[i + 1], y)]);
-      }
+      if (hi - lo > EPS) lines.push([back(lo, y), back(hi, y)]);
+      lo = xs[k];
+      hi = xs[k + 1];
     }
+    if (hi - lo > EPS) lines.push([back(lo, y), back(hi, y)]);
   }
   return lines;
 }
