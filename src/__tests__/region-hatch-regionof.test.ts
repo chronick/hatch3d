@@ -159,6 +159,109 @@ describe("regionHatch — multi-ring regions leave holes empty", () => {
   });
 });
 
+// ── 2b. Tangent scanlines don't split a stroke in two ───────────────────────
+//
+// A scanline that grazes a vertex rather than crossing it emits *two*
+// crossings at that vertex. Paired naively they become abutting spans, and the
+// plotter lifts and re-drops the pen mid-stroke — a visible dropout on paper.
+// The two crossings are only exactly equal when the arithmetic is lucky; the
+// general case is an epsilon apart, because the two edges meeting at the
+// vertex round their interpolation differently.
+
+describe("regionHatch — vertex-tangent scanlines", () => {
+  const SQUARE: Pt[] = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }];
+
+  /** Segments on the scanline at `y`, left to right. */
+  function spansAt(lines: Pt[][], y: number): Pt[][] {
+    return lines
+      .filter(([a]) => Math.abs(a.y - y) < 1e-6)
+      .sort((s, t) => s[0].x - t[0].x);
+  }
+
+  it("welds the two crossings a diamond hole's apex emits into one span", () => {
+    // Apex at y = 30, widest row at y = 50 — both land on a pitch-10 scanline.
+    const diamond: Pt[] = [
+      { x: 50, y: 30 }, { x: 70, y: 50 }, { x: 50, y: 70 }, { x: 30, y: 50 },
+    ];
+    const lines = hatchRegion([SQUARE, diamond], 0, 10);
+
+    const apex = spansAt(lines, 30);
+    expect(apex).toHaveLength(1);
+    expect(apex[0][0].x).toBeCloseTo(0, 9);
+    expect(apex[0][1].x).toBeCloseTo(100, 9);
+
+    // The widest row is a genuine hole crossing: two spans, real gap between.
+    const widest = spansAt(lines, 50);
+    expect(widest).toHaveLength(2);
+    expect(widest[0][1].x).toBeCloseTo(30, 9);
+    expect(widest[1][0].x).toBeCloseTo(70, 9);
+  });
+
+  it("welds an apex whose two crossings are only epsilon apart", () => {
+    // Asymmetric diamond: at y = 30 the right edge interpolates to exactly
+    // 63.383 (t = 0) while the left edge lands on 63.383000000000007 (t = 1,
+    // 9.855 + (63.383 - 9.855) doesn't round back). ~7e-15 of separation —
+    // invisible on paper, but enough to split the span without the weld.
+    const diamond: Pt[] = [
+      { x: 63.383, y: 30 }, { x: 90, y: 50 }, { x: 63.383, y: 70 }, { x: 9.855, y: 50 },
+    ];
+    expect(9.855 + (63.383 - 9.855)).not.toBe(63.383); // the premise, asserted
+
+    const lines = hatchRegion([SQUARE, diamond], 0, 10);
+    const apex = spansAt(lines, 30);
+    expect(apex).toHaveLength(1);
+    expect(apex[0][0].x).toBeCloseTo(0, 9);
+    expect(apex[0][1].x).toBeCloseTo(100, 9);
+
+    expect(spansAt(lines, 50)).toHaveLength(2);
+  });
+
+  it("emits no zero-width or abutting spans anywhere in the fill", () => {
+    const diamond: Pt[] = [
+      { x: 63.383, y: 30 }, { x: 90, y: 50 }, { x: 63.383, y: 70 }, { x: 9.855, y: 50 },
+    ];
+    for (const pitch of [3, 7, 10]) {
+      const lines = hatchRegion([SQUARE, diamond], 0, pitch);
+      expect(lines.length).toBeGreaterThan(10);
+      for (const [a, b] of lines) expect(b.x - a.x).toBeGreaterThan(1e-9);
+      const ys = new Set(lines.map(([a]) => a.y));
+      for (const y of ys) {
+        const row = spansAt(lines, y);
+        for (let i = 1; i < row.length; i++) {
+          expect(row[i][0].x - row[i - 1][1].x, `pitch ${pitch} @ y=${y}`).toBeGreaterThanOrEqual(1e-9);
+        }
+      }
+    }
+  });
+});
+
+// ── 2c. Scanline loop termination far from the origin ───────────────────────
+
+describe("regionHatch — terminates on rings far from the origin", () => {
+  it("does not hang when y + pitch rounds back to y", () => {
+    // At y ≈ 1e20 with pitch 1, `y += pitch` is a no-op in float64, so the old
+    // accumulator loop spun forever. The span is small enough to pass the
+    // MAX_SCANLINES guard, so nothing else catches it.
+    const big = 1e20;
+    expect(big + 1).toBe(big); // the premise, asserted
+    const ring: Pt[] = [
+      { x: 0, y: big }, { x: 50, y: big }, { x: 50, y: big + 10 }, { x: 0, y: big + 10 },
+    ];
+    const lines = hatchRegion([ring], 0, 1);
+    // Degenerate at this magnitude (every scanline collapses onto one y), but
+    // it returns — bounded, finite, and fast.
+    expect(Array.isArray(lines)).toBe(true);
+    expect(lines.length).toBeLessThanOrEqual(11);
+  });
+
+  it("still throws on a genuinely runaway pitch rather than emitting millions", () => {
+    const ring: Pt[] = [
+      { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 1000 }, { x: 0, y: 1000 },
+    ];
+    expect(() => hatchRegion([ring], 0, 0.001)).toThrow(/increase pitch/);
+  });
+});
+
 // ── 3. Convex equivalence with the pre-widening code path ───────────────────
 
 /**

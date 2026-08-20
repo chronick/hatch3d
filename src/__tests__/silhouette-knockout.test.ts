@@ -290,4 +290,61 @@ describe("ringsFromThreshold", () => {
     const rightEdge = (rings: Polyline[]) => Math.max(...rings.flat().map((p) => p.x));
     expect(rightEdge(high)).toBeGreaterThan(rightEdge(low));
   });
+
+  // ── Saddle cases (marching-squares 5 / 10) ──────────────────────────────
+  //
+  // A cell with two diagonally opposite dark corners has two valid readings.
+  // The tracer picks between them from the cell centre — the mean of the four
+  // corners, which is what the bilinear interpolant evaluates to there. These
+  // 2×2 images *are* one saddle cell (plus the bright padding ring), so each
+  // case is decided in isolation: a dark centre must join the diagonal into
+  // one ring, a bright centre must leave two.
+  describe("saddle cells are disambiguated by the cell centre", () => {
+    /** 2×2 image laid out [TL, TR, BL, BR]. */
+    const saddle = (tl: number, tr: number, bl: number, br: number) =>
+      image(2, 2, (x, y) => (y === 0 ? (x === 0 ? tl : tr) : x === 0 ? bl : br));
+
+    it("joins the dark diagonal when the centre is dark (case 10: TL/BR)", () => {
+      // mean = 0.45 < 0.5 → centre is dark → TL and BR are one region.
+      const rings = ringsFromThreshold(saddle(0, 0.9, 0.9, 0), 0.5, 100, 100);
+      expect(rings).toHaveLength(1);
+    });
+
+    it("joins the dark diagonal when the centre is dark (case 5: TR/BL)", () => {
+      const rings = ringsFromThreshold(saddle(0.9, 0, 0, 0.9), 0.5, 100, 100);
+      expect(rings).toHaveLength(1);
+    });
+
+    it("separates the dark diagonal when the centre is bright (case 10)", () => {
+      // Same corner classification, mean = 0.7 > 0.5 → two disjoint specks.
+      const rings = ringsFromThreshold(saddle(0.4, 1, 1, 0.4), 0.5, 100, 100);
+      expect(rings).toHaveLength(2);
+    });
+
+    it("separates the dark diagonal when the centre is bright (case 5)", () => {
+      const rings = ringsFromThreshold(saddle(1, 0.4, 0.4, 1), 0.5, 100, 100);
+      expect(rings).toHaveLength(2);
+    });
+
+    it("keeps every ring closed in both readings", () => {
+      for (const img of [saddle(0, 0.9, 0.9, 0), saddle(0.4, 1, 1, 0.4)]) {
+        for (const ring of ringsFromThreshold(img, 0.5, 100, 100)) {
+          expect(ring.length).toBeGreaterThanOrEqual(4);
+          expect(ring[0]).toEqual(ring[ring.length - 1]);
+        }
+      }
+    });
+
+    it("traces a diagonal dark band as one connected ring", () => {
+      // A 1-px-wide diagonal stripe is nothing but saddle cells: each has one
+      // dark corner on the stripe and its diagonal partner on the next row's.
+      // Before the decider it came apart into a chain of disjoint diamonds.
+      // Threshold 0.6 puts the centre mean (0.5) on the dark side; at exactly
+      // 0.5 the cell is a tie and the tracer separates it, which is the right
+      // reading of a checkerboard.
+      const img = image(24, 24, (x, y) => (x === y ? 0 : 1));
+      expect(ringsFromThreshold(img, 0.6, 100, 100)).toHaveLength(1);
+      expect(ringsFromThreshold(img, 0.5, 100, 100).length).toBeGreaterThan(1);
+    });
+  });
 });

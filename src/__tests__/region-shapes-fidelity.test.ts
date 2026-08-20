@@ -22,6 +22,7 @@
 import { describe, it, expect } from "vitest";
 import {
   derivedRegionRings,
+  polygonArea,
   rasterGridSpec,
   rasterUnionRings,
   OUTLINE_BASE_RADIUS,
@@ -255,8 +256,108 @@ describe("rasterGridSpec — adaptive resolution, bounded both ways", () => {
   });
 
   it("still honours an explicit finer `maxCells`, as the old signature did", () => {
-    expect(rasterGridSpec(STAR, 40, 700)!.cells).toBe(700);
+    // `maxCells` is the *floor*, so it can only ever refine up to the cap —
+    // raising it past the cap does not raise the ceiling (see the cap block).
+    expect(rasterGridSpec(STAR, 40, 700, 700)!.cells).toBe(700);
     expect(rasterUnionRings(STAR, 40, 8).length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * `capCells` is a *cap*. It used to behave as one only when it happened to be
+ * larger than the 192-cell floor: `max(floor, cap)` meant a caller asking for a
+ * deliberately cheap 8-cell grid silently got a full-resolution one, while
+ * `maxCells = 700` sailed past the advertised 512 ceiling. The cap is now
+ * applied last and always wins.
+ */
+describe("rasterGridSpec — `capCells` is a true cap", () => {
+  it("honours a cap below the 192-cell floor", () => {
+    const spec = rasterGridSpec(STAR, 4, RASTER_MAX_CELLS, 8)!;
+    expect(spec.cells).toBe(8);
+    // The grid is `cells` across the longer side plus the 4 cells of border
+    // padding marching squares needs to close a ring, plus up to 2 more when a
+    // sub-cell radius has been widened — so `cap + 6` is the physical floor on
+    // how small the grid itself can be made.
+    expect(spec.gw).toBeLessThanOrEqual(8 + 6);
+    expect(spec.gh).toBeLessThanOrEqual(8 + 6);
+    // Coarse, but still a working raster rather than an empty one.
+    expect(rasterUnionRings(STAR, 4, RASTER_MAX_CELLS, 8).length).toBeGreaterThan(0);
+  });
+
+  it("stays inside the default cap when no cap is passed", () => {
+    for (const radius of [0.1, 0.5, 4, 40, 400]) {
+      const cells = rasterGridSpec(STAR, radius)!.cells;
+      expect(cells, `radius ${radius}`).toBeGreaterThanOrEqual(RASTER_MAX_CELLS);
+      expect(cells, `radius ${radius}`).toBeLessThanOrEqual(RASTER_CAP_CELLS);
+    }
+  });
+
+  it("lets an explicit cap above 512 win — the constant is a default, not a law", () => {
+    // Documented choice: a caller who names a larger cap has priced it.
+    expect(rasterGridSpec(STAR, 0.5, RASTER_MAX_CELLS, 700)!.cells).toBe(700);
+    // …but only when the geometry actually wants that many cells.
+    expect(rasterGridSpec(STAR, 40, RASTER_MAX_CELLS, 700)!.cells).toBe(RASTER_MAX_CELLS);
+  });
+
+  it("does not let `maxCells` raise the ceiling — a cap is a cap", () => {
+    expect(rasterGridSpec(STAR, 40, 700)!.cells).toBe(RASTER_CAP_CELLS);
+    expect(rasterGridSpec(STAR, 0.5, 4096, 256)!.cells).toBe(256);
+  });
+});
+
+/**
+ * Marching-squares saddle cases (5 / 10) and the chained-strand bookkeeping
+ * around them — the topology half of the raster, as opposed to the fidelity
+ * half above. The fixture is the reviewer's: two radius-10 point buffers whose
+ * centres are 17.4px apart, so the discs overlap and the union is one peanut.
+ */
+describe("buffered union topology — overlapping blobs come back as one ring", () => {
+  const R = 10;
+  /** A single-point polyline at polar (d, deg) — i.e. a point buffer. */
+  const at = (d: number, deg: number): Polyline => [
+    { x: d * Math.cos((deg * Math.PI) / 180), y: d * Math.sin((deg * Math.PI) / 180) },
+  ];
+
+  /** Exact area of the union of two radius-r discs whose centres are d apart. */
+  const unionArea = (r: number, d: number) => {
+    if (d >= 2 * r) return 2 * Math.PI * r * r;
+    const lens = 2 * r * r * Math.acos(d / (2 * r)) - (d / 2) * Math.sqrt(4 * r * r - d * d);
+    return 2 * Math.PI * r * r - lens;
+  };
+
+  it("returns exactly one ring for two overlapping point buffers", () => {
+    // Regression: this returned THREE rings — the true boundary plus two
+    // specks shed where the near-tangent band along the top of a disc put two
+    // crossings on the same lattice point and the chaining pass dead-ended.
+    const pts: Polyline[] = [at(0, 0), at(17.4, 2)];
+    const rings = rasterUnionRings(pts, R);
+    expect(rings.length, `ring areas: ${rings.map((r) => polygonArea(r).toFixed(3))}`).toBe(1);
+    // …and it is the *right* ring, not one of the specks.
+    expect(Math.abs(polygonArea(rings[0]))).toBeCloseTo(unionArea(R, 17.4), 0);
+    for (const p of [{ x: 0, y: 0 }, { x: 17.39, y: 0.6 }, { x: 8.7, y: 0.3 }]) {
+      expect(pointInSilhouette(p, rings)).toBe(true);
+    }
+  });
+
+  it("keeps two rings when the blobs genuinely do not touch", () => {
+    for (const d of [21, 60]) {
+      const rings = rasterUnionRings([at(0, 0), at(d, 2)], R);
+      expect(rings.length, `centres ${d}px apart`).toBe(2);
+      for (const ring of rings) {
+        expect(Math.abs(polygonArea(ring))).toBeCloseTo(Math.PI * R * R, 0);
+      }
+    }
+  });
+
+  it("is stable as the blobs are swept through the touching point", () => {
+    // One ring while they overlap, two once they separate — and never a speck
+    // in between. 20px is exactly tangent, so it is excluded as a genuine tie.
+    for (const d of [12, 15, 17.4, 19, 19.9]) {
+      expect(rasterUnionRings([at(0, 0), at(d, 2)], R).length, `d=${d}`).toBe(1);
+    }
+    for (const d of [20.5, 25, 40]) {
+      expect(rasterUnionRings([at(0, 0), at(d, 2)], R).length, `d=${d}`).toBe(2);
+    }
   });
 });
 

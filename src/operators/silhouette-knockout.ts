@@ -364,6 +364,12 @@ export interface ThresholdImage {
  * side — that consistency is what lets segments chain head-to-tail into rings.
  *
  * Edges: 0 = top, 1 = right, 2 = bottom, 3 = left.
+ *
+ * Cases 5 and 10 (the two dark corners are diagonally opposite) are genuinely
+ * ambiguous: the cell can be read as two dark corners that touch through the
+ * middle, or as two that pinch apart. The table holds the *separated* reading;
+ * `MS_SADDLE_JOINED` holds the joined one, and `ringsFromThreshold` picks
+ * between them per cell (see the asymptotic decider there).
  */
 const MS_TABLE: number[][][] = [
   [],                     // 0
@@ -371,18 +377,31 @@ const MS_TABLE: number[][][] = [
   [[2, 1]],               // 2  BR
   [[3, 1]],               // 3  BL BR
   [[1, 0]],               // 4  TR
-  [[1, 0], [3, 2]],       // 5  TR BL (saddle)
+  [[1, 0], [3, 2]],       // 5  TR BL (saddle, dark separated)
   [[2, 0]],               // 6  TR BR
   [[3, 0]],               // 7  all but TL
   [[0, 3]],               // 8  TL
   [[0, 2]],               // 9  TL BL
-  [[0, 3], [2, 1]],       // 10 TL BR (saddle)
+  [[0, 3], [2, 1]],       // 10 TL BR (saddle, dark separated)
   [[0, 1]],               // 11 all but TR
   [[1, 3]],               // 12 TL TR
   [[1, 2]],               // 13 all but BR
   [[2, 3]],               // 14 all but BL
   [],                     // 15
 ];
+
+/**
+ * The other reading of the two saddle cases: the dark diagonal is *connected*
+ * through the cell centre, so it is the two bright corners that get pinched
+ * off. Each entry is just the complementary single-corner case for each bright
+ * corner (5 → the TL-bright and BR-bright corners of cases 7 and 13; 10 → the
+ * TR-bright and BL-bright corners of cases 11 and 14), which keeps the
+ * dark-on-one-side orientation the chaining depends on.
+ */
+const MS_SADDLE_JOINED: Record<number, number[][]> = {
+  5: [[3, 0], [1, 2]],    // TR BL dark, joined through the centre
+  10: [[0, 1], [2, 3]],   // TL BR dark, joined through the centre
+};
 
 /**
  * Extract closed contour rings around the dark (`brightness < threshold`)
@@ -393,6 +412,17 @@ const MS_TABLE: number[][][] = [
  * interpolated on brightness, so contours are smoother than pure cell
  * midpoints. Holes come out as their own rings, which is exactly what the
  * even-odd `pointInSilhouette` wants.
+ *
+ * **Saddles.** A cell whose two dark corners are diagonally opposite (cases 5
+ * and 10) has two valid contourings, and picking one blindly is a real
+ * topology bug: on a narrow neck — two overlapping buffered blobs, the tangent
+ * band along the top of a disc — the wrong reading pinches the boundary and
+ * sheds spurious specks beside the true ring. It is disambiguated the standard
+ * asymptotic way: the bilinear interpolant's value at the cell centre is the
+ * mean of the four corners, so if that mean is dark the dark corners connect
+ * through the centre, otherwise they separate (equivalently: the bright pair
+ * connects). Both readings emit two segments, so a saddle cell contributes two
+ * strands to the chaining pass rather than one.
  *
  * `box` places the result somewhere other than the origin — the grid maps onto
  * `[box.x0, box.x1] x [box.y0, box.y1]` instead of `[0, targetW] x [0,
@@ -440,9 +470,24 @@ export function ringsFromThreshold(
 
   const key = (p: Point) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`;
 
+  /**
+   * The contouring of one cell, saddles resolved. For cases 5 and 10 the
+   * bilinear interpolant at the cell centre is the mean of the four corners:
+   * a dark centre joins the dark diagonal, a bright one separates it.
+   */
+  const cellSegments = (cx: number, cy: number, idx: number): number[][] => {
+    if (idx !== 5 && idx !== 10) return MS_TABLE[idx];
+    const centre = (at(cx, cy) + at(cx + 1, cy) + at(cx + 1, cy + 1) + at(cx, cy + 1)) / 4;
+    return centre < threshold ? MS_SADDLE_JOINED[idx] : MS_TABLE[idx];
+  };
+
   type Seg = { a: Point; b: Point };
   const segs: Seg[] = [];
-  const startIndex = new Map<string, number>();
+  // Several segments can legitimately start at the same point — a saddle cell
+  // contributes two strands, and a corner sample sitting exactly on the
+  // threshold collapses two edge crossings onto that corner. Keep every
+  // candidate so chaining can take an unused one instead of dead-ending.
+  const startIndex = new Map<string, number[]>();
 
   for (let cy = -1; cy < h; cy++) {
     for (let cx = -1; cx < w; cx++) {
@@ -451,13 +496,15 @@ export function ringsFromThreshold(
         (dark(cx + 1, cy) ? 4 : 0) +
         (dark(cx + 1, cy + 1) ? 2 : 0) +
         (dark(cx, cy + 1) ? 1 : 0);
-      const entries = MS_TABLE[idx];
+      const entries = cellSegments(cx, cy, idx);
       if (entries.length === 0) continue;
       for (const [from, to] of entries) {
         const a = edgePoint(cx, cy, from);
         const b = edgePoint(cx, cy, to);
         const k = key(a);
-        if (!startIndex.has(k)) startIndex.set(k, segs.length);
+        const bucket = startIndex.get(k);
+        if (bucket) bucket.push(segs.length);
+        else startIndex.set(k, [segs.length]);
         segs.push({ a, b });
       }
     }
@@ -475,6 +522,14 @@ export function ringsFromThreshold(
   const used = new Array<boolean>(segs.length).fill(false);
   const rings: Polyline[] = [];
 
+  /** The next unused strand leaving point `p`, or undefined if the chain ends. */
+  const nextFrom = (p: Point): number | undefined => {
+    const bucket = startIndex.get(key(p));
+    if (!bucket) return undefined;
+    for (const i of bucket) if (!used[i]) return i;
+    return undefined;
+  };
+
   for (let s = 0; s < segs.length; s++) {
     if (used[s]) continue;
     const ring: Polyline = [];
@@ -483,8 +538,8 @@ export function ringsFromThreshold(
       used[i] = true;
       const seg = segs[i];
       ring.push({ x: mapX(seg.a.x), y: mapY(seg.a.y) });
-      const next = startIndex.get(key(seg.b));
-      if (next === undefined || used[next]) {
+      const next = nextFrom(seg.b);
+      if (next === undefined) {
         // Chain ends: closed loop back to the start, or an unpaired chain.
         ring.push({ x: mapX(seg.b.x), y: mapY(seg.b.y) });
         break;

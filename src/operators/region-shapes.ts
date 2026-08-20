@@ -60,13 +60,16 @@ export const OCCUPIED_BASE_RADIUS = 1;
 /**
  * Floor on cells along the longest side of the occupancy raster: the *coarsest*
  * the adaptive grid ever gets, and the resolution every grid used before
- * adaptivity existed.
+ * adaptivity existed. A cap below this floor still wins — see
+ * {@link rasterGridSpec}.
  */
 export const RASTER_MAX_CELLS = 192;
 /**
- * Ceiling on cells along the longest side. This is the cost bound: the grid
- * never exceeds ~(cap + 4)² cells, so a drawing with hair-fine strokes pays a
- * bounded price instead of an unbounded one.
+ * *Default* ceiling on cells along the longest side. This is the cost bound: the
+ * grid never exceeds ~(cap + 6)² cells, so a drawing with hair-fine strokes pays
+ * a bounded price instead of an unbounded one. A caller may name its own
+ * `capCells` — smaller or larger — and that value wins outright; see
+ * {@link rasterGridSpec}.
  */
 export const RASTER_CAP_CELLS = 512;
 /**
@@ -375,11 +378,28 @@ export interface RasterGridSpec {
  *
  * The rule here scales resolution to the *stroke radius* instead — the thing the
  * ring is actually tracking — and clamps it between the old resolution (never
- * coarser than before) and {@link RASTER_CAP_CELLS} (the cost bound):
+ * coarser than before unless a caller asks for a smaller cap) and
+ * {@link RASTER_CAP_CELLS} (the cost bound):
  *
  * ```text
- * cells = clamp(maxSpan · CELLS_PER_RADIUS / radius, MAX_CELLS, CAP_CELLS)
+ * cells = min(capCells, max(maxCells, maxSpan · CELLS_PER_RADIUS / radius))
  * ```
+ *
+ * **The two bounds are not symmetric, and the cap is applied last.** `maxCells`
+ * is a *floor* (the coarsest the grid may get); `capCells` is a true *ceiling*
+ * and always wins, so:
+ *
+ *  - `capCells = 8` really does give an 8-cell grid — an explicit small cap
+ *    beats the 192 floor rather than being swallowed by it. The grid itself is
+ *    `cells + 4` cells per side (the border padding marching squares needs),
+ *    plus up to 2 more when a sub-cell radius has been widened, so `cap + 6` is
+ *    the true physical bound on `gw`/`gh`.
+ *  - `capCells = 700` really does allow 700 cells: {@link RASTER_CAP_CELLS} is
+ *    the *default* cost bound, not a law, and a caller who names a larger one
+ *    has priced it themselves. Only the default is 512.
+ *  - `maxCells` above `capCells` does not raise the ceiling — the floor is
+ *    clamped down to the cap. Ask for a finer grid by raising the cap
+ *    (`rasterGridSpec(lines, r, 700, 700)`), not by raising the floor.
  *
  * Returns null for empty geometry or a non-positive radius.
  */
@@ -393,8 +413,12 @@ export function rasterGridSpec(
   const b = geometryBounds(lines);
   if (!b) return null;
 
-  const floorCells = Math.max(8, Math.floor(maxCells));
-  const ceilCells = Math.max(floorCells, Math.floor(capCells));
+  // One cell is the smallest grid that means anything; NaN falls back to the
+  // module defaults rather than poisoning every dimension downstream.
+  const cellCount = (v: number, fallback: number) =>
+    Number.isFinite(v) ? Math.max(1, Math.floor(v)) : fallback;
+  const ceilCells = cellCount(capCells, RASTER_CAP_CELLS);
+  const floorCells = Math.min(ceilCells, cellCount(maxCells, RASTER_MAX_CELLS));
   const maxSpan = Math.max(b.xMax - b.xMin + 2 * radius, b.yMax - b.yMin + 2 * radius, 1e-6);
 
   const wanted = Math.ceil((maxSpan * RASTER_CELLS_PER_RADIUS) / radius);
