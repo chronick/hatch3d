@@ -10,7 +10,8 @@
  *   - `hull`     — convex hull. Exact (this is what the legacy `hullOf` means).
  *   - `outline`  — offset silhouette: the union of the geometry's strokes
  *                  buffered by a radius, recovered as rings. Approximate
- *                  (rasterised on a coarse grid, then marching-squares'd).
+ *                  (an exact distance field on an adaptive grid, then
+ *                  marching-squares'd — see `rasterUnionRings`).
  *   - `occupied` — the same union at a small fixed radius ≈ one stroke width,
  *                  i.e. "where the ink actually is".
  *
@@ -56,8 +57,32 @@ export interface RegionOfSpec {
 export const OUTLINE_BASE_RADIUS = 4;
 /** Stroke radius `occupied` buffers by — roughly one pen width. */
 export const OCCUPIED_BASE_RADIUS = 1;
-/** Cells along the longest side of the occupancy raster (outline / occupied). */
+/**
+ * Floor on cells along the longest side of the occupancy raster: the *coarsest*
+ * the adaptive grid ever gets, and the resolution every grid used before
+ * adaptivity existed.
+ */
 export const RASTER_MAX_CELLS = 192;
+/**
+ * Ceiling on cells along the longest side. This is the cost bound: the grid
+ * never exceeds ~(cap + 4)² cells, so a drawing with hair-fine strokes pays a
+ * bounded price instead of an unbounded one.
+ */
+export const RASTER_CAP_CELLS = 512;
+/**
+ * What the adaptive grid adapts *to*: cells across one stroke radius. The
+ * buffered union's boundary is a curve of radius ≈ `radius`, so resolving it
+ * needs cells small relative to the radius — not small relative to the drawing.
+ */
+export const RASTER_CELLS_PER_RADIUS = 4;
+/**
+ * Thinnest stroke the grid can represent, in cells. A stroke thinner than the
+ * lattice's covering radius (cell/√2) samples as a *dotted* line, which
+ * marching squares faithfully reports as dozens of specks instead of one band;
+ * below this floor the radius is widened to the thinnest representable stroke
+ * so the region stays connected and correctly-shaped, just fatter than asked.
+ */
+export const RASTER_MIN_RADIUS_CELLS = 1;
 /** Arc samples emitted per rounded corner. */
 export const CORNER_ARC_SAMPLES = 8;
 
@@ -318,83 +343,213 @@ export function insetAndRoundPolygon(
 
 // ── Buffered union (outline / occupied) ──────────────────────────────
 
+/** The adaptive grid `rasterUnionRings` will use for a given geometry + radius. */
+export interface RasterGridSpec {
+  /** Cell size in canvas px. */
+  cell: number;
+  /** Grid dimensions in cells. */
+  gw: number;
+  gh: number;
+  /** World position of the grid origin (cell (0,0)'s centre is at +cell/2). */
+  x0: number;
+  y0: number;
+  /** Cells along the longest side — what the cost bound is stated in. */
+  cells: number;
+  /**
+   * The radius actually rasterised. Equal to `radius` except when the requested
+   * stroke is thinner than `RASTER_MIN_RADIUS_CELLS` cells and the cap stops the
+   * grid from getting finer; then it is widened to that floor.
+   */
+  effectiveRadius: number;
+}
+
 /**
- * Rasterise the geometry's strokes buffered by `radius` onto a coarse grid and
- * recover the union's boundary as rings (marching squares, via
- * `ringsFromThreshold` — the grid is written "occupied = dark").
+ * Choose the raster grid for a buffered union — the adaptive-resolution rule.
  *
- * This is the buffered-union approximation the design doc allows: it is not an
- * exact Minkowski sum, but it is stable, dependency-free, handles holes and
- * disjoint blobs correctly (each comes back as its own ring, which the
- * even-odd `pointInSilhouette` composes for free), and its resolution is
- * bounded by `maxCells` so cost does not blow up on a dense drawing.
+ * The old rule was "192 cells along the longest side, whatever the geometry",
+ * which ties fidelity to the *drawing's extent* rather than to the feature being
+ * resolved: a 4px outline around a 1500px drawing got 7.8px cells, and a 1px
+ * `occupied` band asked for strokes eight times thinner than a cell — which
+ * rasterises as a dotted line and comes back as hundreds of speck rings rather
+ * than one band.
+ *
+ * The rule here scales resolution to the *stroke radius* instead — the thing the
+ * ring is actually tracking — and clamps it between the old resolution (never
+ * coarser than before) and {@link RASTER_CAP_CELLS} (the cost bound):
+ *
+ * ```text
+ * cells = clamp(maxSpan · CELLS_PER_RADIUS / radius, MAX_CELLS, CAP_CELLS)
+ * ```
+ *
+ * Returns null for empty geometry or a non-positive radius.
+ */
+export function rasterGridSpec(
+  lines: Polyline[],
+  radius: number,
+  maxCells = RASTER_MAX_CELLS,
+  capCells = RASTER_CAP_CELLS,
+): RasterGridSpec | null {
+  if (!(radius > 0)) return null;
+  const b = geometryBounds(lines);
+  if (!b) return null;
+
+  const floorCells = Math.max(8, Math.floor(maxCells));
+  const ceilCells = Math.max(floorCells, Math.floor(capCells));
+  const maxSpan = Math.max(b.xMax - b.xMin + 2 * radius, b.yMax - b.yMin + 2 * radius, 1e-6);
+
+  const wanted = Math.ceil((maxSpan * RASTER_CELLS_PER_RADIUS) / radius);
+  const cells = Math.min(ceilCells, Math.max(floorCells, wanted));
+  const cell = Math.max(maxSpan / cells, 1e-6);
+  // A stroke thinner than the lattice can carry is widened rather than allowed
+  // to disintegrate into specks (see RASTER_MIN_RADIUS_CELLS).
+  const effectiveRadius = Math.max(radius, RASTER_MIN_RADIUS_CELLS * cell);
+
+  // Two spare cells of padding beyond the buffer so blobs never touch the grid
+  // edge (marching squares needs a bright border to close a ring).
+  const gw = Math.max(3, Math.ceil((b.xMax - b.xMin + 2 * effectiveRadius) / cell) + 4);
+  const gh = Math.max(3, Math.ceil((b.yMax - b.yMin + 2 * effectiveRadius) / cell) + 4);
+  const x0 = b.xMin - effectiveRadius - 2 * cell;
+  const y0 = b.yMin - effectiveRadius - 2 * cell;
+
+  return { cell, gw, gh, x0, y0, cells, effectiveRadius };
+}
+
+/**
+ * *Squared* distance from p to the segment a→b (a degenerate segment is a
+ * point). Squared: the field accumulates minima, and min commutes with the
+ * square root, so the root is taken once per cell at the end instead of once
+ * per (cell, segment) pair — the inner loop is the hot path here.
+ */
+function distPointSegmentSq(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const l2 = dx * dx + dy * dy;
+  let t = 0;
+  if (l2 > 1e-18) {
+    t = ((px - ax) * dx + (py - ay) * dy) / l2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+  }
+  const ex = px - (ax + t * dx);
+  const ey = py - (ay + t * dy);
+  return ex * ex + ey * ey;
+}
+
+/**
+ * Rasterise the geometry's strokes buffered by `radius` and recover the union's
+ * boundary as rings (marching squares, via `ringsFromThreshold`).
+ *
+ * The grid holds a **distance field** — each cell stores its exact distance to
+ * the nearest stroke, normalised by the radius — rather than a 0/1 occupancy
+ * mask. That matters twice over:
+ *
+ *  - `ringsFromThreshold` interpolates its crossings linearly along a cell edge.
+ *    On a binary mask every crossing lands dead-centre, so the ring is quantised
+ *    to half-cells (~½ cell of error, whatever the cell size). On a distance
+ *    field the crossing lands where the distance actually equals the radius —
+ *    and distance to a straight stroke *is* linear, so the error collapses to
+ *    the field's curvature over one cell (≈ cell²/8r) instead of ½ cell.
+ *  - No sampling along the stroke, so no scalloping: the field is computed from
+ *    exact point-to-segment distances, evaluated only for cells within
+ *    `radius + 2 cells` of a stroke (long segments are chunked so the visited
+ *    band stays proportional to length × radius, not to length²).
+ *
+ * It is still not an exact Minkowski sum — the boundary is a polyline sampled on
+ * a grid — but it is stable, dependency-free, handles holes and disjoint blobs
+ * correctly (each comes back as its own ring, which the even-odd
+ * `pointInSilhouette` composes for free), and its cost is bounded by
+ * `capCells` (see {@link rasterGridSpec}).
  */
 export function rasterUnionRings(
   lines: Polyline[],
   radius: number,
   maxCells = RASTER_MAX_CELLS,
+  capCells = RASTER_CAP_CELLS,
 ): Polyline[] {
-  if (!(radius > 0)) return [];
-  const b = geometryBounds(lines);
-  if (!b) return [];
-
-  const cells = Math.max(8, Math.floor(maxCells));
-  // One spare cell of padding beyond the buffer so blobs never touch the grid
-  // edge (marching squares needs a bright border to close a ring).
-  const spanX = b.xMax - b.xMin + 2 * radius;
-  const spanY = b.yMax - b.yMin + 2 * radius;
-  const cell = Math.max(Math.max(spanX, spanY) / cells, 1e-6);
-  const gw = Math.max(3, Math.ceil(spanX / cell) + 4);
-  const gh = Math.max(3, Math.ceil(spanY / cell) + 4);
-
-  const x0 = b.xMin - radius - 2 * cell;
-  const y0 = b.yMin - radius - 2 * cell;
+  const spec = rasterGridSpec(lines, radius, maxCells, capCells);
+  if (!spec) return [];
+  const { cell, gw, gh, x0, y0, effectiveRadius: r } = spec;
   const box = { x0, y0, x1: x0 + gw * cell, y1: y0 + gh * cell };
 
-  const grid = new Float32Array(gw * gh).fill(1); // 1 = empty, 0 = inked
-  const rCells = radius / cell;
-  const rCeil = Math.ceil(rCells);
-  const r2 = rCells * rCells;
+  // Cells farther than `reach` keep the sentinel: it is > r, so they are never
+  // inside, and no boundary edge can touch one — distance is 1-Lipschitz, so a
+  // cell next to an inside cell is within r + cell < reach of a stroke and has
+  // therefore been visited and holds its exact distance.
+  const reach = r + 2 * cell;
+  // Held squared until the final pass (see `distPointSegmentSq`).
+  const field = new Float32Array(gw * gh).fill((reach + cell) * (reach + cell));
 
-  /** Stamp a disc of `rCells` around a world point. */
-  const stamp = (px: number, py: number) => {
-    const cx = (px - x0) / cell - 0.5;
-    const cy = (py - y0) / cell - 0.5;
-    const gx0 = Math.max(0, Math.floor(cx - rCeil));
-    const gx1 = Math.min(gw - 1, Math.ceil(cx + rCeil));
-    const gy0 = Math.max(0, Math.floor(cy - rCeil));
-    const gy1 = Math.min(gh - 1, Math.ceil(cy + rCeil));
+  // Symmetrically: a cell already known to be more than a cell's width *inside*
+  // the boundary can never move it. Its own neighbours are then all inside too
+  // (1-Lipschitz again), so every grid edge touching it joins two inside
+  // corners and no crossing is ever interpolated along it. Skipping those cells
+  // is exact — the rings come back bit-identical — and it is what keeps a
+  // saturated canvas from re-measuring the same deep interior once per stroke.
+  const skipInside = Math.max(0, r - 1.001 * cell);
+  const skipBelowSq = skipInside * skipInside;
+
+  /** Fold one segment's exact distances into the field over its reach band. */
+  const addSegment = (ax: number, ay: number, bx: number, by: number) => {
+    if (!Number.isFinite(ax) || !Number.isFinite(ay)) return;
+    if (!Number.isFinite(bx) || !Number.isFinite(by)) return;
+    const gx0 = Math.max(0, Math.floor((Math.min(ax, bx) - reach - x0) / cell - 0.5));
+    const gx1 = Math.min(gw - 1, Math.ceil((Math.max(ax, bx) + reach - x0) / cell - 0.5));
+    const gy0 = Math.max(0, Math.floor((Math.min(ay, by) - reach - y0) / cell - 0.5));
+    const gy1 = Math.min(gh - 1, Math.ceil((Math.max(ay, by) + reach - y0) / cell - 0.5));
     for (let gy = gy0; gy <= gy1; gy++) {
-      const dy = gy - cy;
+      const py = y0 + (gy + 0.5) * cell;
+      const row = gy * gw;
       for (let gx = gx0; gx <= gx1; gx++) {
-        const dx = gx - cx;
-        if (dx * dx + dy * dy <= r2) grid[gy * gw + gx] = 0;
+        const cur = field[row + gx];
+        if (cur < skipBelowSq) continue;
+        const px = x0 + (gx + 0.5) * cell;
+        const d2 = distPointSegmentSq(px, py, ax, ay, bx, by);
+        if (d2 < cur) field[row + gx] = d2;
       }
     }
   };
 
-  const step = cell * 0.5;
+  // A segment's axis-aligned reach box is O(len²) for a long diagonal, so walk
+  // it in chunks of ~2·reach and keep every box O(reach²).
+  const chunkLen = Math.max(2 * reach, cell);
   for (const line of lines) {
     if (line.length === 0) continue;
     if (line.length === 1) {
-      stamp(line[0].x, line[0].y);
+      addSegment(line[0].x, line[0].y, line[0].x, line[0].y);
       continue;
     }
     for (let i = 0; i + 1 < line.length; i++) {
       const a = line[i];
       const c = line[i + 1];
       const len = Math.hypot(c.x - a.x, c.y - a.y);
-      const n = Math.max(1, Math.ceil(len / step));
-      for (let k = 0; k <= n; k++) {
-        const t = k / n;
-        stamp(a.x + (c.x - a.x) * t, a.y + (c.y - a.y) * t);
+      const n = Math.max(1, Math.ceil(len / chunkLen));
+      for (let k = 0; k < n; k++) {
+        const t0 = k / n;
+        const t1 = (k + 1) / n;
+        addSegment(
+          a.x + (c.x - a.x) * t0,
+          a.y + (c.y - a.y) * t0,
+          a.x + (c.x - a.x) * t1,
+          a.y + (c.y - a.y) * t1,
+        );
       }
     }
   }
 
+  // Un-square, and normalise so the boundary sits at 1 — which is also what
+  // `ringsFromThreshold` reads outside the image, so an edge-touching blob still
+  // closes correctly.
+  for (let i = 0; i < field.length; i++) field[i] = Math.sqrt(field[i]) / r;
+
   return ringsFromThreshold(
-    { brightness: grid, width: gw, height: gh },
-    0.5,
+    { brightness: field, width: gw, height: gh },
+    1,
     box.x1 - box.x0,
     box.y1 - box.y0,
     box,
