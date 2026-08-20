@@ -705,6 +705,16 @@ export const REFINE_DRAIN_SLACK_CELLS = 1;
  * ```text
  * kept + dropped + keptUnrefined === escalated ? fineCandidates : candidates
  * ```
+ *
+ * **Every counter is a sum across clusters** (see {@link rasterUnionRings}),
+ * and `escalated` is "some cluster escalated" — deliberately a flag rather than
+ * a count, because what it is read for is "did this call leave the per-window
+ * path", and because the fixtures that pin it are single-cluster drawings where
+ * the two readings coincide. The invariant above is therefore exact for a
+ * single-cluster call and holds per cluster in general; across a call whose
+ * clusters took *different* paths only the weaker
+ * `kept + dropped + keptUnrefined <= candidates + fineCandidates` survives,
+ * since the aggregate no longer says which candidates belonged to which path.
  */
 export interface RasterRefineStats {
   /** Rings enclosing at most one *coarse* cell — the sub-cell features found. */
@@ -1117,6 +1127,196 @@ function ringTouchesBox(ring: Polyline, box: BBox): boolean {
   return false;
 }
 
+// ── Cluster decomposition ────────────────────────────────────────────
+
+/**
+ * How much more grid, in total, the decomposed call may allocate than the one
+ * whole-extent grid it replaces — the cost bound on decomposition.
+ *
+ * Splitting a drawing into clusters is what stops blank space from coarsening
+ * the ink (see {@link strokeClusters}), but it also lets the drawing buy past
+ * `capCells` once per cluster: a hundred disjoint 300px blobs each resolved at
+ * `radius/4` is ~36× the single grid, which is a real cost, not a rounding
+ * error. So decomposition is *budgeted*: past this multiple of the single
+ * grid's cells every cluster's cap is scaled down by the same factor until the
+ * total fits.
+ *
+ * The scaling has a floor it may not cross — each cluster is always given at
+ * least the resolution the single whole-extent grid would have given *it* (see
+ * {@link clusterFloorCells}) — so a budgeted decomposition is still never worse
+ * than not decomposing, only less good than an unbudgeted one. 4 is chosen so
+ * the ordinary multi-blob drawing (a field of stars, a page of glyphs) is
+ * unscaled and only the pathological confetti case is trimmed.
+ */
+export const CLUSTER_COST_FACTOR = 4;
+
+/** One connected group of strokes, and the bounds of the strokes in it. */
+interface StrokeCluster {
+  /** The cluster's strokes, in the order they appeared in the input. */
+  lines: Polyline[];
+  /** Their combined bounds — *not* inflated. */
+  bounds: BBox;
+}
+
+const unionBBox = (a: BBox, b: BBox): BBox => ({
+  xMin: Math.min(a.xMin, b.xMin),
+  yMin: Math.min(a.yMin, b.yMin),
+  xMax: Math.max(a.xMax, b.xMax),
+  yMax: Math.max(a.yMax, b.yMax),
+});
+
+/**
+ * Partition strokes into groups whose buffered unions are provably disjoint.
+ *
+ * Two strokes join the same cluster when their bounding boxes, each grown by
+ * `inflate`, intersect. **Soundness:** if two clusters' inflated boxes are
+ * disjoint then the boxes themselves are more than `2 · inflate` apart, and box
+ * distance is a lower bound on point distance, so every point of one cluster's
+ * strokes is more than `2 · inflate` from every point of the other's. Buffer
+ * each by anything up to `inflate` and the two unions still cannot meet — so
+ * their ring sets are disjoint and compose under even-odd by plain
+ * concatenation, with no ring of one ever crossing or enclosing a ring of the
+ * other.
+ *
+ * The caller passes the whole drawing's `effectiveRadius` as `inflate`, which is
+ * the largest radius any cluster can go on to be rendered at: `effectiveRadius`
+ * is `max(radius, cell)` and a cluster's cell is never larger than the whole
+ * drawing's (see {@link clusterFloorCells}), so `inflate` really does dominate
+ * every per-cluster buffer. Passing more than the buffer only ever *merges*
+ * clusters that could have been separated, which costs fidelity, never
+ * correctness.
+ *
+ * The merge is greedy over cluster boxes rather than a union-find over stroke
+ * pairs: each stroke is tested against the clusters still open and absorbs all
+ * of the ones it touches. A cluster's box is the union of its members' boxes and
+ * so is a superset of the cluster, which means the greedy pass can merge two
+ * clusters that no *pair* of strokes would have joined — the conservative
+ * direction: fewer, larger clusters, never a split that is not provably safe.
+ *
+ * **What keeps it out of the quadratic is the sweep, not the greed.** Strokes
+ * are visited in order along the drawing's longer axis, and a cluster whose box
+ * ends before the current stroke begins can never be touched again — every
+ * remaining stroke starts at or after this one — so it is retired from the scan
+ * as it is passed. A connected drawing therefore costs one test per stroke (the
+ * 342-stroke lattice merges into a single cluster on its second stroke and never
+ * opens another), and a field of disjoint marks costs one test per stroke per
+ * mark still *straddling* the sweep line rather than per mark in the drawing.
+ * Measured end to end on a scattered-dot field — every mark its own cluster, so
+ * worst case for the scan: 5 000 dots resolve in 38 ms swept against 80 ms
+ * unswept, and 20 000 in 116 ms, linear in the marks rather than quadratic.
+ * (The residue is 20 000 small rasters, not the scan, and it is what buys those
+ * dots a radius-4 buffer instead of the radius-23 one a single 12 000px grid
+ * would have widened them to.) The bad case left is a drawing whose clusters all
+ * span the sweep axis while being separated along the other one, which is why
+ * the axis is the longer of the two — such an arrangement has to be narrow, and
+ * a narrow drawing has few clusters to spare.
+ *
+ * Strokes with no finite bounds (empty polylines, all-NaN ones) join no cluster.
+ * They contribute nothing to `geometryBounds` and nothing to the distance field,
+ * so dropping them changes no output.
+ */
+function strokeClusters(lines: Polyline[], inflate: number): StrokeCluster[] {
+  // Inflated per-stroke boxes, parallel to `owner` (the stroke each came from).
+  const boxes: BBox[] = [];
+  const owner: number[] = [];
+  const all: BBox = { xMin: Infinity, yMin: Infinity, xMax: -Infinity, yMax: -Infinity };
+  for (let i = 0; i < lines.length; i++) {
+    const b = geometryBounds([lines[i]]);
+    if (!b) continue;
+    const box: BBox = {
+      xMin: b.xMin - inflate,
+      yMin: b.yMin - inflate,
+      xMax: b.xMax + inflate,
+      yMax: b.yMax + inflate,
+    };
+    boxes.push(box);
+    owner.push(i);
+    if (box.xMin < all.xMin) all.xMin = box.xMin;
+    if (box.yMin < all.yMin) all.yMin = box.yMin;
+    if (box.xMax > all.xMax) all.xMax = box.xMax;
+    if (box.yMax > all.yMax) all.yMax = box.yMax;
+  }
+  if (boxes.length === 0) return [];
+
+  const byX = all.xMax - all.xMin >= all.yMax - all.yMin;
+  const front = (b: BBox) => (byX ? b.xMin : b.yMin);
+  const back = (b: BBox) => (byX ? b.xMax : b.yMax);
+  const order = boxes.map((_, k) => k).sort((a, b) => front(boxes[a]) - front(boxes[b]));
+
+  interface OpenCluster {
+    box: BBox;
+    members: number[];
+  }
+  const live: OpenCluster[] = [];
+  const closed: OpenCluster[] = [];
+
+  for (const k of order) {
+    const box = boxes[k];
+    const edge = front(box);
+    // Descending, so a chosen `keep` always sits at a higher index than the
+    // cluster being examined, which makes both splices easy to account for.
+    let keep = -1;
+    for (let c = live.length - 1; c >= 0; c--) {
+      if (back(live[c].box) < edge) {
+        closed.push(live[c]);
+        live.splice(c, 1);
+        if (keep > c) keep--; // the kept cluster just shifted down one
+        continue;
+      }
+      if (!bboxesOverlap(live[c].box, box)) continue;
+      if (keep >= 0) {
+        live[c].box = unionBBox(live[c].box, live[keep].box);
+        for (const j of live[keep].members) live[c].members.push(j);
+        live.splice(keep, 1);
+      }
+      keep = c;
+    }
+    if (keep < 0) {
+      live.push({ box, members: [owner[k]] });
+    } else {
+      live[keep].box = unionBBox(live[keep].box, box);
+      live[keep].members.push(owner[k]);
+    }
+  }
+
+  return [...closed, ...live]
+    .map(({ box, members }) => {
+      members.sort((p, q) => p - q); // strokes keep their input order…
+      return {
+        lines: members.map((j) => lines[j]),
+        bounds: {
+          xMin: box.xMin + inflate,
+          yMin: box.yMin + inflate,
+          xMax: box.xMax - inflate,
+          yMax: box.yMax - inflate,
+        },
+        first: members[0],
+      };
+    })
+    // …and so do the clusters, so ring order follows the input, not the sweep.
+    .sort((a, b) => a.first - b.first);
+}
+
+/**
+ * The `maxCells` floor a cluster is given: the number of cells the *single*
+ * whole-extent grid would have spent across this cluster's own span.
+ *
+ * This is what makes decomposition monotone. A cluster is never rendered
+ * coarser than it would have been undecomposed — which keeps `effectiveRadius`
+ * from growing (and so keeps {@link strokeClusters}'s separation argument
+ * sound) — while a small cluster no longer claims the full
+ * {@link RASTER_MAX_CELLS} floor for its own postage stamp, which is what would
+ * otherwise turn a thousand specks into a thousand 192-cell grids.
+ */
+function clusterFloorCells(bounds: BBox, radius: number, globalCell: number): number {
+  const span = Math.max(
+    bounds.xMax - bounds.xMin + 2 * radius,
+    bounds.yMax - bounds.yMin + 2 * radius,
+    1e-6,
+  );
+  return Math.max(1, Math.ceil(span / globalCell));
+}
+
 /**
  * Rasterise the geometry's strokes buffered by `radius` and recover the union's
  * boundary as rings (marching squares, via `ringsFromThreshold`).
@@ -1152,6 +1352,43 @@ function ringTouchesBox(ring: Polyline, box: BBox): boolean {
  * candidates there were, which way each went, and which of the two paths ran;
  * it is the only window onto a decision that is otherwise invisible in the
  * output.
+ *
+ * **The extent that sets the resolution is the ink's, not the bounding box's.**
+ * Every grid above is sized from the geometry's bounds, so a single stray mark
+ * out in empty space coarsens the whole drawing: at the default cap a 3 400px
+ * lattice of 6.7px pockets resolves fine, and the same lattice plus one dot
+ * 1 150px past its corner does not — the cells grow from 6.66px to 8.90px, the
+ * widened radius grows with them, and the pockets shrink to 2.20px against an
+ * escalated *fine* cell of 2.23px. Measured on that drawing: 28 224 fine
+ * candidates, 21 828 of them past the allowance and preserved unrefined, and
+ * 120 of 256 pocket centres classifying as ink in 9.0 seconds. So the outermost
+ * step is a **cluster decomposition**: the strokes
+ * are partitioned into groups whose buffered unions provably cannot meet (see
+ * {@link strokeClusters}), and the entire pipeline below — grid spec, contour,
+ * refinement, escalation — runs once per cluster, each on a grid sized to its
+ * own extent. The stray gets its own tiny grid and its own disc ring; the
+ * lattice is resolved as if the stray were not there. Disjoint unions compose
+ * under even-odd by concatenation, so the ring sets simply append.
+ *
+ * Two consequences worth stating plainly:
+ *
+ *  - **`effectiveRadius` is per cluster, and clusters may differ.** A cluster
+ *    small enough to be resolved exactly is buffered at `radius`; one whose own
+ *    extent still outruns the cap is buffered at its own widened radius. Each
+ *    part of the drawing is rendered at the fidelity its own extent affords,
+ *    which is the whole point — but it does mean the returned rings are not all
+ *    guaranteed to stand for the same buffer distance. They were not before
+ *    either; the difference is that the widening is now driven by the ink near
+ *    each ring instead of by the drawing's furthest corner.
+ *  - **Decomposition is budgeted.** Per-cluster grids can total more than the
+ *    single grid they replace, so past {@link CLUSTER_COST_FACTOR}× that cost
+ *    every cluster's cap is scaled down together — never below the resolution
+ *    the single grid would have given it, so the budgeted decomposition is
+ *    still no worse than none.
+ *
+ * A single-cluster drawing — which is every fixture in the suite bar the
+ * multi-blob ones, and most real geometry — skips all of it and takes exactly
+ * the path it took before.
  */
 export function rasterUnionRings(
   lines: Polyline[],
@@ -1162,6 +1399,63 @@ export function rasterUnionRings(
 ): Polyline[] {
   const spec = rasterGridSpec(lines, radius, maxCells, capCells);
   if (!spec) return [];
+
+  // `effectiveRadius` is the widest any cluster will be buffered by, so it is
+  // the separation the decomposition has to prove (see `strokeClusters`).
+  const clusters = strokeClusters(lines, spec.effectiveRadius);
+  // One cluster is the common case and is handed the original `lines` and the
+  // original spec — byte-identical to the pre-decomposition path, not merely
+  // equivalent to it.
+  if (clusters.length <= 1) return unionRingsOnGrid(lines, spec, stats);
+
+  // Each cluster gets its own grid, floored at the resolution the single grid
+  // would have given it and capped at the caller's `capCells` — that second
+  // half is the fix: the cap now applies to the cluster's extent, not to the
+  // drawing's bounding box.
+  const floors = clusters.map((c) => clusterFloorCells(c.bounds, radius, spec.cell));
+  // Every cluster holds at least one stroke with finite bounds, and `radius > 0`
+  // already produced a spec above, so `rasterGridSpec` cannot be null here.
+  const gridFor = (i: number, cap: number) =>
+    rasterGridSpec(clusters[i].lines, radius, floors[i], cap)!;
+  let specs = clusters.map((_, i) => gridFor(i, capCells));
+
+  let total = 0;
+  for (const s of specs) total += s.gw * s.gh;
+  const allowance = CLUSTER_COST_FACTOR * spec.gw * spec.gh;
+  if (total > allowance) {
+    // Cells scale linearly per side, so one factor applied to every cap brings
+    // the quadratic total back inside the allowance in a single pass. `floors`
+    // is the line it may not cross: a cluster trimmed to its floor is exactly
+    // as well resolved as the undecomposed grid would have left it.
+    const scale = Math.sqrt(allowance / total);
+    const wanted = specs.map((s) => s.cells);
+    specs = clusters.map((_, i) =>
+      gridFor(i, Math.max(floors[i], Math.floor(wanted[i] * scale))),
+    );
+  }
+
+  const out: Polyline[] = [];
+  for (let i = 0; i < clusters.length; i++) {
+    // Not `push(...rings)`: an escalated cluster returns tens of thousands of
+    // rings, which is spread-as-arguments territory.
+    for (const ring of unionRingsOnGrid(clusters[i].lines, specs[i], stats)) out.push(ring);
+  }
+  return out;
+}
+
+/**
+ * The whole pipeline — contour, refine, escalate — on one cluster's grid.
+ *
+ * The refinement allowance and the escalation decision are both scoped to this
+ * grid, which is the point of decomposing: a cluster's candidates are weighed
+ * against a budget sized to the cluster, not to the drawing's bounding box.
+ * `stats` accumulates across every call, so its counters come back summed.
+ */
+function unionRingsOnGrid(
+  lines: Polyline[],
+  spec: RasterGridSpec,
+  stats?: RasterRefineStats,
+): Polyline[] {
   const { cell, gw, gh, x0, y0, effectiveRadius: r } = spec;
 
   // The refinement allowance for the *call*, sized against the coarse grid (see
@@ -1199,6 +1493,8 @@ export function rasterUnionRings(
     }
   }
 
+  // Only ever set, never cleared, so across clusters this reads "some cluster
+  // escalated" — see RasterRefineStats.
   if (stats) stats.escalated = true;
   const fineCell = cell / ESCALATE_FACTOR;
   // Same origin and same physical extent (fgw · cell/F === gw · cell), so the

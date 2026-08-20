@@ -29,7 +29,6 @@ import {
   OUTLINE_BASE_RADIUS,
   RASTER_MAX_CELLS,
   RASTER_CAP_CELLS,
-  REFINE_BUDGET_PER_COARSE_CELL,
   REFINE_CELL_BUDGET,
   REFINE_FACTOR,
   REFINE_PAD_CELLS,
@@ -990,6 +989,220 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
     const ms = timeBest(() => rasterUnionRings(LATTICE, RADIUS), 1);
     expect(ms, `dense 170x170 lattice took ${ms.toFixed(1)}ms`).toBeLessThan(2000);
   });
+
+  /**
+   * Blank extent coarsens the *grid*, not just the escalation decision — the
+   * round-8 finding, and the reason the pipeline now starts by decomposing the
+   * drawing into clusters.
+   *
+   * Round-7 stopped a stray point from suppressing escalation. It could not
+   * stop the stray from inflating the bounding box the grid is sized from: at
+   * a stray 1 150px past the lattice's corner the 512-cap grid's cell grows
+   * from 6.66px to 8.90px, the widened effective radius grows with it, and the
+   * 20px pitch leaves pockets of only 2.20px — *thinner than the escalated fine
+   * grid's own 2.23px cell*. So escalation fired, correctly and expensively,
+   * and still landed on a grid too coarse to register the pockets: 28 224 FINE
+   * candidates, 21 828 of them past the inherited allowance and preserved
+   * unrefined, and (measured on this fixture, four stray placements) 120–132 of
+   * 256 real pocket centres classifying as ink, in 6.4–9.0 seconds.
+   *
+   * The grid's resolution was tracking the bounding box rather than the ink,
+   * and no budget or escalation factor fixes that, because the coarsening
+   * happens before either is consulted. Cluster decomposition does: the stray
+   * and the lattice are more than `2 · effectiveRadius` apart, so their
+   * buffered unions provably cannot meet, and each is rastered on a grid sized
+   * to its own extent. The lattice is then resolved exactly as if the stray
+   * were not in the drawing at all — which is what the `toEqual(BARE)` below
+   * says, counter for counter — and the stray comes back as its own small disc.
+   */
+  describe("a stray in empty space cannot coarsen the ink (review round-8)", () => {
+    /** The four placements the reviewer pinned: diagonal, each axis, and both. */
+    const STRAYS = {
+      "diagonally past the corner": [{ x: 4550, y: 4550 }],
+      "off the x axis only": [{ x: 4550, y: 1700 }],
+      "off the y axis only": [{ x: 1700, y: 4550 }],
+      "two orthogonal strays": [
+        { x: 4550, y: 1700 },
+        { x: 1700, y: 4550 },
+      ],
+    } as const;
+
+    /** The lattice on its own — what every case below has to reproduce. */
+    const bareStats = () => {
+      const s = freshStats();
+      rasterUnionRings(LATTICE, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, s);
+      return s;
+    };
+
+    it("the fixture really does defeat escalation without decomposition", () => {
+      // Guards the fixture: if the stray ever stops coarsening the grid past
+      // the escalated fine cell, these cases stop exercising round-8 and would
+      // pass on the undecomposed path.
+      const alone = rasterGridSpec(LATTICE, RADIUS)!;
+      const withStray = rasterGridSpec([...LATTICE, [STRAYS["diagonally past the corner"][0]]], RADIUS)!;
+      expect(withStray.effectiveRadius).toBeGreaterThan(alone.effectiveRadius);
+
+      // On the lattice's own extent a pocket is ~4 fine cells across, which is
+      // what makes escalation a fix…
+      const pocketAlone = PITCH - 2 * alone.effectiveRadius;
+      expect(pocketAlone / (alone.cell / ESCALATE_FACTOR)).toBeGreaterThan(3);
+      // …and on the inflated one it is *under* a fine cell, which is why
+      // escalating there fixed nothing.
+      const pocketInflated = PITCH - 2 * withStray.effectiveRadius;
+      expect(pocketInflated / (withStray.cell / ESCALATE_FACTOR)).toBeLessThan(1);
+    });
+
+    it.each(Object.entries(STRAYS))("resolves the lattice at full fidelity — %s", (_label, pts) => {
+      const BARE = bareStats();
+      const stats = freshStats();
+      const lines = [...LATTICE, ...pts.map((p) => [p] as Polyline)];
+      const rings = rasterUnionRings(lines, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+
+      // The lattice cluster is rastered exactly as it is alone, so every
+      // counter matches the bare drawing's: same 28 899 coarse candidates, same
+      // escalation, nothing sub-cell left on the fine grid, nothing dropped and
+      // nothing preserved-unrefined. Before decomposition this read
+      // `{candidates: 1764, kept: 6198, dropped: 198, keptUnrefined: 21828,
+      // replaced: 6198, fineCandidates: 28224}`.
+      expect(stats).toEqual(BARE);
+      expect(stats.dropped).toBe(0);
+      expect(stats.keptUnrefined).toBe(0);
+      expect(stats.escalated).toBe(true);
+
+      // One outer boundary, one ring per pocket, one disc per stray — nothing
+      // filled in and nothing invented. 28 028 / 28 171 rings before.
+      expect(rings).toHaveLength(1 + N * N + pts.length);
+
+      // The finding itself: every sampled pocket centre is 10px from the
+      // nearest stroke and so paper. 120 / 132 of these read as ink before.
+      let ink = 0;
+      for (let i = 0; i < 256; i++) {
+        const p = holeCentre((i * 617) % (N * N));
+        if (pointInSilhouette(p, rings)) ink++;
+      }
+      expect(ink, `${ink}/256 pocket centres classified as ink`).toBe(0);
+
+      // …and the strays are present, each as its own ring, each buffered at the
+      // radius that was actually asked for rather than at the lattice's widened
+      // one. That is the honest half of per-cluster `effectiveRadius`: the disc
+      // came back with |area| ≈ 246 (r ≈ 8.9) when one grid served the whole
+      // drawing, and ≈ 50 (r = 4) now that the stray has a grid of its own.
+      for (const q of pts) {
+        const near = rings.filter((r) => {
+          const c = ringCentre(r);
+          return Math.hypot(c.x - q.x, c.y - q.y) < RADIUS;
+        });
+        expect(near, `stray at ${q.x},${q.y}`).toHaveLength(1);
+        const area = Math.abs(polygonArea(near[0]));
+        expect(area / (Math.PI * RADIUS * RADIUS), `stray disc area ${area.toFixed(2)}`).toBeCloseTo(
+          1,
+          1,
+        );
+        // …and it is a disc, not a smear: every vertex one radius from the dot.
+        for (const p of near[0]) {
+          expect(Math.hypot(p.x - q.x, p.y - q.y)).toBeCloseTo(RADIUS, 0);
+        }
+      }
+
+      // …and the ink between the pockets still reads as ink, while the paper
+      // between the lattice and the stray does not.
+      expect(pointInSilhouette({ x: PITCH, y: PITCH }, rings)).toBe(true);
+      expect(pointInSilhouette({ x: 100 * PITCH, y: 137.5 * PITCH }, rings)).toBe(true);
+      expect(pointInSilhouette({ x: 3900, y: 3900 }, rings)).toBe(false);
+    });
+
+    it.each(Object.entries(STRAYS))("costs no more than the lattice alone — %s", (_label, pts) => {
+      // 8.98s / 6.42s / 6.35s / 8.81s before decomposition, for a *worse*
+      // answer: the inflated grid pushed 28 224 candidates onto the per-window
+      // path. ~200–260ms after — the lattice's own cost plus a 12 × 12 grid per
+      // stray. The ceiling is the same generous one the fixture already
+      // carries; what fails here is a regression to rastering the blank space.
+      const lines = [...LATTICE, ...pts.map((p) => [p] as Polyline)];
+      const ms = timeBest(() => rasterUnionRings(lines, RADIUS), 1);
+      expect(ms, `lattice + ${pts.length} stray took ${ms.toFixed(1)}ms`).toBeLessThan(2000);
+    });
+  });
+});
+
+/**
+ * Cluster decomposition must be *invisible* on a drawing that is one cluster.
+ *
+ * Everything above is a behavioural test, and behaviour has slack: a grid one
+ * cell finer still passes a tolerance stated in cells. What a refactor of the
+ * outermost step needs is the tighter statement — that on a single-cluster
+ * input the pipeline does not merely agree with the old one, it *is* the old
+ * one, down to the vertices it emits.
+ *
+ * So each digest below is the exact ring set the pre-decomposition
+ * implementation produced (captured on the commit before, by running the same
+ * cases against it): ring count, total vertex count, and the sum of every
+ * coordinate — which pins position, resolution and ordering all at once and
+ * would move under any change to the grid spec, the contour or the refinement.
+ * The cases span the paths: the widened sub-cell radius, an explicit small cap,
+ * an overlapping pair, a dropped cusp speck, a substituted pinhole, both
+ * escalating lattices and the saturated canvas.
+ *
+ * Multi-blob fixtures are deliberately absent. Those *do* change — that is the
+ * point of the change — and they are covered by the fidelity and cost blocks,
+ * which state what must remain true of them rather than freezing what they are.
+ */
+describe("cluster decomposition is a no-op on single-cluster drawings", () => {
+  const HALF = 4.05;
+  const PINHOLE: Polyline[] = [
+    [
+      { x: -HALF, y: -HALF },
+      { x: HALF, y: -HALF },
+      { x: HALF, y: HALF },
+      { x: -HALF, y: HALF },
+      { x: -HALF, y: -HALF },
+    ],
+    [{ x: HALF, y: HALF }, { x: HALF + 14, y: HALF + 14 }],
+  ];
+  const at = (d: number, deg: number): Polyline => [
+    { x: d * Math.cos((deg * Math.PI) / 180), y: d * Math.sin((deg * Math.PI) / 180) },
+  ];
+  const lattice = (n: number, pitch: number): Polyline[] =>
+    Array.from({ length: 2 * (n + 1) }, (_, i) => {
+      const k = Math.floor(i / 2) * pitch;
+      const end = n * pitch;
+      return i % 2 === 0
+        ? [{ x: 0, y: k }, { x: end, y: k }]
+        : [{ x: k, y: 0 }, { x: k, y: end }];
+    });
+  const hatch: Polyline[] = Array.from({ length: 2000 }, (_, i) => {
+    const y = (i / 2000) * 1000;
+    return [{ x: 0, y }, { x: 1000, y: y + 3 }];
+  });
+
+  /** [label, geometry, radius, maxCells, capCells, rings, vertices, Σ coords] */
+  const DIGESTS: [string, Polyline[], number, number, number, number, number, number][] = [
+    ["star, sub-cell radius", STAR, 1, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 2, 8866, 5319205.107857],
+    ["star, outline", STAR, OUTLINE_BASE_RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 10, 6538, 3922414.17043],
+    ["star, explicit 8-cell cap", STAR, OUTLINE_BASE_RADIUS, RASTER_MAX_CELLS, 8, 2, 50, 29855.953901],
+    ["overlapping pair", [at(0, 0), at(17.4, 2)], 10, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 1, 693, 6220.980378],
+    ["dropped cusp speck", [at(0, 0), at(19.9, 45)], 10, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 1, 865, 12146.473457],
+    ["substituted pinhole", PINHOLE, OUTLINE_BASE_RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 2, 814, 10735.055055],
+    ["56 × 56 lattice", lattice(56, 20), 8.8, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 3137, 61505, 68878121.369935],
+    ["170 × 170 lattice", lattice(170, 20), 4, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 28901, 501545, 1704867355.209918],
+    ["saturated canvas", hatch, OUTLINE_BASE_RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 1, 2047, 2048821.75533],
+  ];
+
+  it.each(DIGESTS)("reproduces the pre-change ring set — %s", (label, lines, r, maxC, capC, n, v, c) => {
+    const rings = rasterUnionRings(lines, r, maxC, capC);
+    let verts = 0;
+    let coords = 0;
+    for (const ring of rings) {
+      verts += ring.length;
+      for (const p of ring) coords += p.x + p.y;
+    }
+    expect({ rings: rings.length, verts }, label).toEqual({ rings: n, verts: v });
+    // Relative, because the 170 × 170 lattice's coordinate sum is 1.7e9 and
+    // float summation order is not something this test should be pinning. Eight
+    // relative digits is as tight as the six-decimal digests above allow, and
+    // is far tighter than a cell: any real change of grid moves this by
+    // percent, not by parts per hundred million.
+    expect(coords / c, `${label}: Σ coords ${coords}`).toBeCloseTo(1, 8);
+  });
 });
 
 // ── 3. Cost bound ───────────────────────────────────────────────────────────
@@ -1023,12 +1236,66 @@ describe("cost — the adaptive grid stays bounded on fine-detail geometry", () 
 
   it("resolves a saturated 2 000-stroke canvas inside the budget", () => {
     // Every stroke spans the canvas, so the buffered bands overlap everywhere —
-    // the case that would expose a per-stroke × whole-grid blow-up.
+    // the case that would expose a per-stroke × whole-grid blow-up. It is also
+    // the one-cluster extreme: 2 000 strokes, one live cluster from the second
+    // stroke on, so the decomposition costs one box test each. Measured 47ms
+    // both before and after decomposition existed.
     const hatch: Polyline[] = Array.from({ length: 2000 }, (_, i) => {
       const y = (i / 2000) * 1000;
       return [{ x: 0, y }, { x: 1000, y: y + 3 }];
     });
     const ms = timeBest(() => rasterUnionRings(hatch, OUTLINE_BASE_RADIUS), 2);
     expect(ms, `saturated canvas took ${ms.toFixed(1)}ms`).toBeLessThan(RESOLVE_BUDGET_MS);
+  });
+
+  /**
+   * The other extreme, and the one decomposition itself creates: a drawing that
+   * is *nothing but* clusters.
+   *
+   * Two things could blow up here and both are guarded. The partition is a scan
+   * of the clusters still straddling the sweep line, which is a pairwise scan of
+   * the whole drawing if nothing is ever retired (5 000 dots: 80ms unswept
+   * against 38ms swept, and it is the 20 000 case that separates linear from
+   * quadratic). And each cluster gets its own grid, which lets the drawing buy
+   * past `capCells` once per mark — 20 000 marks each claiming the 192-cell
+   * floor would be 750M cells — so the per-cluster floor is the resolution the
+   * single grid would have given that cluster, and the total is held to
+   * `CLUSTER_COST_FACTOR ×` the single grid.
+   *
+   * What it buys is not subtle: the whole field spans 12 000px, so one grid at
+   * the 512 cap has 23.4px cells and widens every 4px dot into a radius-23 blob
+   * that merges with its neighbours. Decomposed, each dot is a radius-4 disc.
+   */
+  it("resolves 20 000 disjoint marks inside the budget", () => {
+    const N = 20000;
+    const cols = 200;
+    const dots: Polyline[] = Array.from({ length: N }, (_, i) => [
+      { x: (i % cols) * 60 + 20, y: Math.floor(i / cols) * 60 + 20 },
+    ]);
+    const ms = timeBest(() => rasterUnionRings(dots, OUTLINE_BASE_RADIUS), 1);
+    expect(ms, `20 000 disjoint marks took ${ms.toFixed(1)}ms`).toBeLessThan(RESOLVE_BUDGET_MS * 4);
+
+    // One ring per mark — no dot swallowed by a neighbour's widened buffer…
+    const rings = rasterUnionRings(dots, OUTLINE_BASE_RADIUS);
+    expect(rings).toHaveLength(N);
+    // …and each is the disc that was actually asked for, not the 23px one a
+    // single whole-extent grid would have had to widen it to.
+    expect(rasterGridSpec(dots, OUTLINE_BASE_RADIUS)!.effectiveRadius).toBeGreaterThan(20);
+    for (const i of [0, 1, cols, N - 1]) {
+      const c = ringCentre(rings[i]);
+      expect(Math.hypot(c.x - dots[i][0].x, c.y - dots[i][0].y)).toBeLessThan(0.1);
+      // Every vertex one radius from the mark. This is the fidelity claim, not
+      // the enclosed area: 20 000 clusters is where CLUSTER_COST_FACTOR bites,
+      // and a trimmed cap buys its cells back by drawing the same circle with
+      // fewer vertices (13 instead of 25) — which costs ~5% of the *area* of a
+      // shape this small while leaving every point of the contour on the
+      // circle to 0.03px. Radius is what the region means; vertex count is not.
+      for (const p of rings[i]) {
+        expect(Math.hypot(p.x - dots[i][0].x, p.y - dots[i][0].y)).toBeCloseTo(
+          OUTLINE_BASE_RADIUS,
+          1,
+        );
+      }
+    }
   });
 });
