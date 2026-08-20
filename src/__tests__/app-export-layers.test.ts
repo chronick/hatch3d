@@ -11,6 +11,7 @@
  * serializing, so the shared builder is called under an identity layout; these
  * tests pin both the layer convention and that baking.
  */
+import { createHash } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
 
 // App.tsx reads persisted state at module load (`const INITIAL = loadState()`),
@@ -238,23 +239,131 @@ describe("browser layered export — matches the shared serializer", () => {
   });
 });
 
-describe("browser layered export — preview border", () => {
+/**
+ * The border used to be spliced into the serialized layered SVG as an
+ * anonymous top-level <g> just before </svg>. vpype imports every top-level
+ * group as a layer, so an N-pen bordered export grew a phantom *unlabelled*
+ * layer N+1, and Inkscape didn't see it as a layer at all. It now goes through
+ * the shared serializer as a real labelled layer group. These assertions are
+ * structural — nothing here may depend on where a substring sits in the string.
+ */
+describe("browser layered export — preview border is a real layer", () => {
   const BORDER = ["M 15 15 L 405 15", "M 405 15 L 405 282"];
 
-  it("appends the border as a top-level group just before </svg>", () => {
+  /** Every top-level (2-space indented) group open tag, in document order. */
+  function topLevelGroupTags(svg: string): string[] {
+    return svg.split("\n").filter((l) => /^ {2}<g[ >]/.test(l));
+  }
+
+  /** The full source block of the top-level group carrying `label`. */
+  function groupBlock(svg: string, label: string): string {
+    const lines = svg.split("\n");
+    const start = lines.findIndex((l) => l.includes(`inkscape:label="${label}"`));
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = lines.findIndex((l, i) => i > start && l === "  </g>");
+    return lines.slice(start, end + 1).join("\n");
+  }
+
+  it("emits no unlabelled top-level groups (no phantom vpype layer)", () => {
     const svg = exportLayered(GROUPS, { borderPaths: BORDER });
-    const expectedTail =
-      `\n  <g fill="none" stroke="black" stroke-width="${STROKE}" stroke-linecap="round" stroke-linejoin="round">\n` +
-      `    ${BORDER.map((d) => `<path d="${d}"/>`).join("\n    ")}\n  </g>\n</svg>`;
-    expect(svg.endsWith(expectedTail)).toBe(true);
+    const tags = topLevelGroupTags(svg);
+    expect(tags).toHaveLength(3);
+    for (const tag of tags) {
+      expect(tag).toContain('inkscape:groupmode="layer"');
+      expect(tag).toMatch(/inkscape:label="[^"]+"/);
+    }
   });
 
-  it("leaves the layer groups untouched", () => {
-    const withBorder = exportLayered(GROUPS, { borderPaths: BORDER });
-    const without = exportLayered(GROUPS);
-    expect(withBorder.slice(0, withBorder.lastIndexOf("\n  <g fill=\"none\""))).toBe(
-      without.slice(0, without.lastIndexOf("\n</svg>")),
+  it("labels the border as the layer after the pens (N+1-border)", () => {
+    const labels = [
+      ...exportLayered(GROUPS, { borderPaths: BORDER }).matchAll(
+        /inkscape:label="([^"]*)"/g,
+      ),
+    ].map((m) => m[1]);
+    expect(labels).toEqual(["1-ground", "2-overlay", "3-border"]);
+  });
+
+  it("numbers the border over surviving pen layers when one clips away", () => {
+    const offscreen: LayerGroupResult = {
+      id: "gone",
+      name: "empty",
+      svgPaths: ["M 100000 100000 L 100100 100100"],
+    };
+    const labels = [
+      ...exportLayered([GROUPS[0], offscreen], { borderPaths: BORDER }).matchAll(
+        /inkscape:label="([^"]*)"/g,
+      ),
+    ].map((m) => m[1]);
+    expect(labels).toEqual(["1-ground", "2-border"]);
+  });
+
+  it("gives the border layer group the border attrs and paths, unclipped", () => {
+    const block = groupBlock(exportLayered(GROUPS, { borderPaths: BORDER }), "3-border");
+    expect(block).toContain('id="border"');
+    expect(block).toContain('stroke="black"');
+    expect(block).toContain(`stroke-width="${STROKE.toFixed(4)}"`);
+    expect(block).not.toContain("data-passes");
+    // The border rect sits *on* the margin edge (and ticks/cropmarks reach
+    // past it), so it must not inherit the pen layers' margin clip.
+    expect(block).not.toContain("clip-path");
+    expect(block.match(/<path d="[^"]*"\/>/g)).toEqual(
+      BORDER.map((d) => `<path d="${d}"/>`),
     );
+  });
+
+  it("is byte-identical to buildLayeredSVGContent with the border as an extra group", () => {
+    const direct = buildLayeredSVGContent(
+      bake(GROUPS, LAYOUT, MARGIN, 0),
+      bakedLayout(LAYOUT, 0),
+      MARGIN,
+      STROKE,
+      [{ id: "border", name: "border", svgPaths: BORDER }],
+    );
+    expect(exportLayered(GROUPS, { borderPaths: BORDER })).toBe(direct);
+  });
+
+  it("leaves the pen layer groups byte-identical to the borderless export", () => {
+    const penBlocks = (svg: string) =>
+      ["1-ground", "2-overlay"].map((label) => groupBlock(svg, label));
+    expect(penBlocks(exportLayered(GROUPS, { borderPaths: BORDER }))).toEqual(
+      penBlocks(exportLayered(GROUPS)),
+    );
+  });
+
+  it("adds nothing at all when the border is off", () => {
+    expect(topLevelGroupTags(exportLayered(GROUPS))).toHaveLength(2);
+    expect(exportLayered(GROUPS)).not.toContain("border");
+  });
+});
+
+/**
+ * Byte-for-byte pins captured *before* the border-layer fix (vault border
+ * finding), so that refactor could only ever change the bordered output.
+ * A digest change here means borderless layered output or the flat export
+ * moved — which the border fix must never do.
+ */
+describe("browser export — pre-border-fix output digests", () => {
+  const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
+
+  it("borderless layered export is unchanged", () => {
+    expect(sha(exportLayered(GROUPS))).toBe("4dfbc13674cbdfcb261abeeda634b073e250f3a249d7d9e6dabb6381ef9fccb9");
+  });
+
+  it("borderless layered export with clip inset is unchanged", () => {
+    expect(sha(exportLayered(GROUPS, { clipInset: 2 }))).toBe("304518c03eb96168d394e7079af3ee0cfedd6db39e418739dff503e4a179f359");
+  });
+
+  it("flat (non-layered) export with a border is unchanged", () => {
+    const svg = buildBrowserExportSVG({
+      svgPaths: [PATH_A, PATH_B, PATH_C],
+      layerGroups: undefined,
+      layout: LAYOUT,
+      margin: MARGIN,
+      clipInset: 0,
+      strokeWidth: STROKE,
+      borderPaths: ["M 15 15 L 405 15", "M 405 15 L 405 282"],
+    });
+    expect(sha(svg)).toBe("2580fd033c18d89d61e9dd4fad44a12794f88ba1a1b75378760d9e2bc203b66e");
   });
 });
 

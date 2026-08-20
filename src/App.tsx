@@ -144,7 +144,25 @@ function toDashMm(px: number, scale: number): number {
   return Number((px * scale).toFixed(2));
 }
 
-/** The preview border, emitted as its own top-level group in page-mm space. */
+/**
+ * The border as a pen layer for layered exports.
+ *
+ * It must be a real, labelled layer group — an anonymous top-level <g> is
+ * imported by vpype as a phantom unlabelled layer N+1 and ignored entirely by
+ * Inkscape's layer UI. Paths are already page-mm and the layered browser export
+ * serializes under an identity layout, so they need no transform or width
+ * scaling; the shared serializer leaves it unclipped so ticks/cropmarks that
+ * reach past the margin survive.
+ */
+function borderLayerGroup(borderPaths: string[]): LayerGroupResult[] {
+  if (borderPaths.length === 0) return [];
+  return [{ id: "border", name: "border", svgPaths: borderPaths }];
+}
+
+/**
+ * The preview border for the NON-layered export, emitted as its own top-level
+ * group in page-mm space (that output has no layer convention at all).
+ */
 function borderGroupSVG(borderPaths: string[], strokeWidth: number): string {
   if (borderPaths.length === 0) return "";
   return `\n  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">\n    ${borderPaths
@@ -205,16 +223,13 @@ export function buildBrowserExportSVG(input: BrowserExportInput): string {
       cx: 0,
       cy: 0,
     };
-    const layered = buildLayeredSVGContent(
+    return buildLayeredSVGContent(
       bakedGroups,
       bakedLayout,
       margin + clipInset,
       strokeWidth,
+      borderLayerGroup(borderPaths),
     );
-    const border = borderGroupSVG(borderPaths, strokeWidth);
-    if (!border) return layered;
-    const close = layered.lastIndexOf("\n</svg>");
-    return `${layered.slice(0, close)}${border}\n</svg>`;
   }
 
   const clippedPaths = svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));

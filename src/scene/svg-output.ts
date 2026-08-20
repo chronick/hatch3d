@@ -77,6 +77,53 @@ export function buildSVGContent(
 /** Inkscape namespace URI emitted on layered SVG roots (vpype/AxiDraw layer convention). */
 export const INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape";
 
+/** Prefix every line of `block` with `pad`. */
+function indentLines(block: string, pad: string): string {
+  return block
+    .split("\n")
+    .map((line) => pad + line)
+    .join("\n");
+}
+
+/**
+ * Serialize one top-level Inkscape layer group.
+ *
+ * `clip` wraps the drawing group in the margin clipPath — what every pen layer
+ * wants. Groups that must be able to draw *on or outside* the margin boundary
+ * (the decorative page border: its rect sits exactly on the clip edge, and the
+ * ticked/cropmarks styles reach past it) pass `clip: false` and get the same
+ * layer envelope with the clip wrapper omitted.
+ */
+function renderLayerGroup(
+  g: LayerGroupResult,
+  index: number,
+  layout: ExportLayout,
+  strokeWidth: number,
+  clip: boolean,
+): string {
+  const { scale, cx, cy } = layout;
+  const label = `${index + 1}-${g.name ?? g.color ?? `pen${index + 1}`}`;
+  const idAttr = g.name ? ` id="${escapeAttr(g.name)}"` : ` id="layer-${index}"`;
+  const passesAttr = g.passes !== undefined ? ` data-passes="${g.passes}"` : "";
+  const stroke = g.color ? ` stroke="${escapeAttr(g.color)}"` : ` stroke="black"`;
+  // Paths are in viewport px inside the scale() transform, so per-group
+  // width compensates by /scale like the parent <g> does; dash values
+  // are viewport px and scale naturally with the transform.
+  const widthAttr = ` stroke-width="${((strokeWidth * (g.widthScale ?? 1)) / scale).toFixed(4)}"`;
+  const dashAttr = g.dash ? ` stroke-dasharray="${g.dash.join(" ")}"` : "";
+  const opacityAttr = g.opacity !== undefined ? ` opacity="${g.opacity}"` : "";
+  const paths = `  ${g.svgPaths.map((d) => `<path d="${d}"/>`).join("\n  ")}`;
+  const draw = `<g transform="translate(${cx},${cy}) scale(${scale})" fill="none"${stroke}${widthAttr}${dashAttr}${opacityAttr} stroke-linecap="round" stroke-linejoin="round">
+${paths}
+</g>`;
+  const inner = clip
+    ? `<g clip-path="url(#margin-clip)">\n${indentLines(draw, "  ")}\n</g>`
+    : draw;
+  return `  <g inkscape:groupmode="layer" inkscape:label="${escapeAttr(label)}"${idAttr}${passesAttr}>
+${indentLines(inner, "    ")}
+  </g>`;
+}
+
 /**
  * Build SVG output with one TOP-LEVEL <g> group per layered-composition layer.
  *
@@ -92,40 +139,31 @@ export const INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape";
  *
  * The default `stroke="black"` on each transform group is the fallback for
  * layers that don't specify a color.
+ *
+ * `extraGroups` are appended after the pen layers and numbered continuing the
+ * same 1-based sequence (N pens + a border → `N+1-border`). They are *not*
+ * clipped to the margin, because the only current caller — the browser's
+ * decorative page border — draws on and past the margin edge. Everything else
+ * about them (label, id, stroke, width, transform) is identical to a pen
+ * layer, so vpype and Inkscape both see a real, labelled layer rather than the
+ * anonymous top-level group this used to be spliced in as. The CLI never
+ * passes any.
  */
 export function buildLayeredSVGContent(
   layerGroups: LayerGroupResult[],
   layout: ExportLayout,
   margin: number,
   strokeWidth: number,
+  extraGroups: LayerGroupResult[] = [],
 ): string {
-  const { pageW, pageH, contentW, contentH, scale, cx, cy } = layout;
+  const { pageW, pageH, contentW, contentH } = layout;
   const clipInset = 0;
-  const layerSvg = layerGroups
-    .map((g, i) => {
-      const label = `${i + 1}-${g.name ?? g.color ?? `pen${i + 1}`}`;
-      const idAttr = g.name ? ` id="${escapeAttr(g.name)}"` : ` id="layer-${i}"`;
-      const passesAttr = g.passes !== undefined ? ` data-passes="${g.passes}"` : "";
-      const stroke = g.color ? ` stroke="${escapeAttr(g.color)}"` : ` stroke="black"`;
-      // Paths are in viewport px inside the scale() transform, so per-group
-      // width compensates by /scale like the parent <g> does; dash values
-      // are viewport px and scale naturally with the transform.
-      const widthAttr = ` stroke-width="${(
-        (strokeWidth * (g.widthScale ?? 1)) /
-        scale
-      ).toFixed(4)}"`;
-      const dashAttr = g.dash ? ` stroke-dasharray="${g.dash.join(" ")}"` : "";
-      const opacityAttr = g.opacity !== undefined ? ` opacity="${g.opacity}"` : "";
-      const paths = g.svgPaths.map((d) => `<path d="${d}"/>`).join("\n        ");
-      return `  <g inkscape:groupmode="layer" inkscape:label="${escapeAttr(label)}"${idAttr}${passesAttr}>
-    <g clip-path="url(#margin-clip)">
-      <g transform="translate(${cx},${cy}) scale(${scale})" fill="none"${stroke}${widthAttr}${dashAttr}${opacityAttr} stroke-linecap="round" stroke-linejoin="round">
-        ${paths}
-      </g>
-    </g>
-  </g>`;
-    })
-    .join("\n");
+  const layerSvg = [
+    ...layerGroups.map((g, i) => renderLayerGroup(g, i, layout, strokeWidth, true)),
+    ...extraGroups.map((g, i) =>
+      renderLayerGroup(g, layerGroups.length + i, layout, strokeWidth, false),
+    ),
+  ].join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="${INKSCAPE_NS}" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
   <defs>

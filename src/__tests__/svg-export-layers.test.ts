@@ -136,6 +136,57 @@ describe("buildLayeredSVGContent — path payload is unchanged", () => {
   });
 });
 
+describe("buildLayeredSVGContent — extraGroups (unclipped trailing layers)", () => {
+  const groups: LayerGroupResult[] = [
+    { id: "flowField", name: "ground", color: "#1d4ed8", svgPaths: [PATH_A] },
+    { id: "spirograph", name: "overlay", color: "#dc2626", svgPaths: [PATH_B] },
+  ];
+  const extra: LayerGroupResult[] = [{ id: "border", name: "border", svgPaths: [PATH_C] }];
+
+  /** The full source block of the top-level group carrying `label`. */
+  function groupBlock(svg: string, label: string): string {
+    const lines = svg.split("\n");
+    const start = lines.findIndex((l) => l.includes(`inkscape:label="${label}"`));
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = lines.findIndex((l, i) => i > start && l === "  </g>");
+    return lines.slice(start, end + 1).join("\n");
+  }
+
+  it("is optional — the CLI's 4-arg call is unchanged", () => {
+    // The CLI never passes extraGroups; the default must be a no-op.
+    expect(buildLayeredSVGContent(groups, LAYOUT, MARGIN, STROKE)).toBe(
+      buildLayeredSVGContent(groups, LAYOUT, MARGIN, STROKE, []),
+    );
+  });
+
+  it("numbers extra groups continuing the pen-layer sequence", () => {
+    const svg = buildLayeredSVGContent(groups, LAYOUT, MARGIN, STROKE, extra);
+    const labels = [...svg.matchAll(/inkscape:label="([^"]*)"/g)].map((m) => m[1]);
+    expect(labels).toEqual(["1-ground", "2-overlay", "3-border"]);
+  });
+
+  it("emits them as labelled top-level layer groups, never anonymous", () => {
+    const svg = buildLayeredSVGContent(groups, LAYOUT, MARGIN, STROKE, extra);
+    const topLevel = svg.split("\n").filter((l) => /^ {2}<g[ >]/.test(l));
+    expect(topLevel).toHaveLength(3);
+    for (const tag of topLevel) expect(tag).toContain('inkscape:groupmode="layer"');
+  });
+
+  it("omits the margin clip on extra groups but keeps it on pen layers", () => {
+    const svg = buildLayeredSVGContent(groups, LAYOUT, MARGIN, STROKE, extra);
+    expect(groupBlock(svg, "3-border")).not.toContain("clip-path");
+    expect(groupBlock(svg, "1-ground")).toContain('clip-path="url(#margin-clip)"');
+  });
+
+  it("leaves the pen layer groups byte-identical", () => {
+    const withExtra = buildLayeredSVGContent(groups, LAYOUT, MARGIN, STROKE, extra);
+    const without = buildLayeredSVGContent(groups, LAYOUT, MARGIN, STROKE);
+    for (const label of ["1-ground", "2-overlay"]) {
+      expect(groupBlock(withExtra, label)).toBe(groupBlock(without, label));
+    }
+  });
+});
+
 describe("twoPenOffset demo composition", () => {
   it("is a valid layered definition", () => {
     expect(twoPenOffset.id).toBe("twoPenOffset");
