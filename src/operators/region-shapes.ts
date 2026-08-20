@@ -576,14 +576,53 @@ export const REFINE_FACTOR = 16;
 /** Cells of margin added around a candidate ring's bbox to make its window. */
 export const REFINE_PAD_CELLS = 2;
 /**
+ * Refined cells a *single* candidate's window may cost.
+ *
+ * Windows are tiny — the padding alone is (2·PAD·FACTOR)² = 4k cells, and a
+ * compact candidate's own span takes it to ≈6.5k — so
+ * this is not the interesting bound; it exists because a ring can be sub-cell in
+ * *area* and still span many cells (a hairline sliver between two blobs), and
+ * such a window would otherwise scale with the drawing rather than with the
+ * feature. 64k allows a window 16 coarse cells on a side, which is four times
+ * wider than the pad on every side and comfortably wider than any feature a
+ * sub-cell ring can be hiding.
+ */
+export const REFINE_WINDOW_CELLS = 1 << 16;
+/**
  * Refined cells one `rasterUnionRings` call may spend on refinement in total —
  * the cost bound, the same role {@link RASTER_CAP_CELLS} plays for the main
- * grid. A compact candidate costs ≈(2·PAD·FACTOR)² ≈ 6.5k of it, so this is
- * ~160 of them; a drawing that somehow sheds more sub-cell rings than that gets
- * the honest resolution statement for the rest (a feature the raster cannot
- * afford to look at is a feature it cannot claim) rather than an unbounded bill.
+ * grid. A compact candidate costs ≈6.5k of it, so this is ~160 of them.
+ *
+ * **Exhausting it preserves, it does not delete.** Refinement is *evidence*
+ * against the raw contour, and a candidate the raster could not afford to look
+ * at has produced no evidence either way — so it keeps the ring marching squares
+ * actually drew (counted as `keptUnrefined`, never as `dropped`). The earlier
+ * reading, "over budget ⇒ not real", failed closed: a drawing whose buffer
+ * leaves a dense lattice of genuine sub-cell holes — 3 136 of them in the
+ * reviewer's grid fixture — spent the budget on the first ~160 and then had the
+ * remaining 2 977 real holes filled in on no evidence at all.
+ *
+ * The budget is one-shot rather than a per-candidate quota: the first window
+ * that will not fit ends refinement for the whole call, so the outcome does not
+ * depend on the order rings happen to come off the contouring pass.
  */
 export const REFINE_CELL_BUDGET = 1 << 20;
+/**
+ * Coarse cells of slack when asking whether a refined flood's escape point has
+ * reached the *global* exterior (see {@link escapeLeavesTheFeature}).
+ *
+ * The refined window's border can land inside a coarse cell whose own centre
+ * samples as ink even though the exterior is immediately next door — the coarse
+ * classification is only accurate to about a cell, which is the whole reason
+ * refinement exists. One cell of Chebyshev slack (the 3×3 neighbourhood of the
+ * escape cell) absorbs that without letting an escape into a cavity two coarse
+ * cells deep count as reaching the outside.
+ *
+ * It is not decorative: at 0 the near-tangent cusp at d=19.9, 45° stops draining
+ * — its wedge is barely a cell wide where the window border cuts it, so the one
+ * coarse cell under the escape point reads as ink — and the speck comes back.
+ */
+export const REFINE_DRAIN_SLACK_CELLS = 1;
 
 /** What `rasterUnionRings` did with the sub-cell rings it found, for tests. */
 export interface RasterRefineStats {
@@ -593,6 +632,130 @@ export interface RasterRefineStats {
   kept: number;
   /** …and the ones it showed to be sampling artefacts. */
   dropped: number;
+  /**
+   * …and the ones kept *without* being looked at, because the refinement budget
+   * was spent (see {@link REFINE_CELL_BUDGET}). Absence of evidence preserves
+   * the raw contour, so these are keeps, not drops.
+   */
+  keptUnrefined: number;
+  /** …of `kept`, how many had their coarse ring replaced by the refined one. */
+  replaced: number;
+}
+
+/** The main raster, as the refinement pass needs to consult it. */
+interface CoarseGrid {
+  /** Normalised distance field: `< 1` is ink. */
+  field: Float32Array;
+  cell: number;
+  gw: number;
+  gh: number;
+  x0: number;
+  y0: number;
+  /**
+   * Cells of the *global exterior*: outside-class cells 4-connected to the grid
+   * border. The grid carries two spare cells of padding beyond the buffer, so
+   * every border cell is outside and the flood is seeded from all of them.
+   */
+  outside: Uint8Array;
+}
+
+/**
+ * Mark every outside-class cell 4-connected to the grid border — the raster's
+ * one global fact about connectivity, computed once per `rasterUnionRings` call
+ * in O(grid) and consulted by every refinement window.
+ */
+function globalOutsideMask(field: Float32Array, gw: number, gh: number): Uint8Array {
+  const mask = new Uint8Array(gw * gh);
+  const stack: number[] = [];
+  const push = (gx: number, gy: number) => {
+    const i = gy * gw + gx;
+    if (mask[i] || field[i] < 1) return; // already seen, or ink
+    mask[i] = 1;
+    stack.push(i);
+  };
+  for (let gx = 0; gx < gw; gx++) {
+    push(gx, 0);
+    push(gx, gh - 1);
+  }
+  for (let gy = 0; gy < gh; gy++) {
+    push(0, gy);
+    push(gw - 1, gy);
+  }
+  while (stack.length > 0) {
+    const i = stack.pop()!;
+    const gx = i % gw;
+    const gy = (i - gx) / gw;
+    if (gx > 0) push(gx - 1, gy);
+    if (gx < gw - 1) push(gx + 1, gy);
+    if (gy > 0) push(gx, gy - 1);
+    if (gy < gh - 1) push(gx, gy + 1);
+  }
+  return mask;
+}
+
+/**
+ * Does a refined flood reaching the window border at (px, py) actually prove the
+ * feature is not isolated?
+ *
+ * Reaching the border only proves the flooded class *continues past the window*.
+ * Whether that disqualifies the feature depends on where it continues to, and
+ * the coarse grid — the one thing here that knows about the drawing as a whole —
+ * is what says:
+ *
+ *  - **A pocket of paper** is disqualified only by draining to the **global
+ *    exterior**. Paper that is itself enclosed is part of some hole, and a hole
+ *    reached through a corridor finer than a cell is still a hole, so an escape
+ *    into an enclosed chamber is not drainage. The old test — "touched the
+ *    window border" — could not tell the two apart and deleted genuinely
+ *    enclosed pockets whose corridor merely left the window.
+ *  - **A speck of ink** is disqualified by the coarse grid agreeing there is ink
+ *    out there: the blob it is really part of already has its own ring, so the
+ *    speck is a duplicate wearing the other colour. There is no ink counterpart
+ *    to "the exterior" — the unbounded component is a property of the paper
+ *    class alone — so the ink test stops at the coarse grid's own reading, and
+ *    the asymmetry is in the geometry, not in the implementation.
+ *
+ * Escaping the raster grid outright is drainage by construction: the grid is
+ * padded well past the buffered union, so there is nothing but exterior there.
+ */
+function escapeLeavesTheFeature(
+  px: number,
+  py: number,
+  wantInside: boolean,
+  g: CoarseGrid,
+): boolean {
+  const cx = Math.floor((px - g.x0) / g.cell);
+  const cy = Math.floor((py - g.y0) / g.cell);
+  if (cx < 0 || cy < 0 || cx >= g.gw || cy >= g.gh) return true;
+  const s = REFINE_DRAIN_SLACK_CELLS;
+  for (let dy = -s; dy <= s; dy++) {
+    const y = cy + dy;
+    if (y < 0 || y >= g.gh) continue;
+    for (let dx = -s; dx <= s; dx++) {
+      const x = cx + dx;
+      if (x < 0 || x >= g.gw) continue;
+      const i = y * g.gw + x;
+      if (wantInside ? g.field[i] < 1 : g.outside[i] === 1) return true;
+    }
+  }
+  return false;
+}
+
+/** What refinement concluded about one sub-cell candidate. */
+interface RefineResult {
+  /**
+   * `drop` — the refined field showed it to be a sampling artefact.
+   * `keep` — it is a real feature.
+   * `unrefined` — nothing was looked at; the raw contour stands (see
+   * {@link REFINE_CELL_BUDGET}).
+   */
+  outcome: "drop" | "keep" | "unrefined";
+  /**
+   * The feature's contour at refinement resolution, in world coordinates, when
+   * one exists — only for a `keep` whose flood never touched the window border,
+   * since a component running out of the window has no closed contour inside it.
+   */
+  refined: Polyline | null;
 }
 
 /**
@@ -628,31 +791,45 @@ export interface RasterRefineStats {
  * turns out to be connected to the main blob through a sub-cell isthmus is the
  * same artefact wearing the other colour.
  *
- * Two decisions worth naming:
+ * Three decisions worth naming:
  *
- *  - **The coarse ring is kept, not the refined one.** The refined contour would
- *    track the pocket better, but it would be a contour of a *different* grid:
- *    mixed-resolution rings can cross each other, and even-odd fill over
- *    crossing rings is meaningless. Sibling rings all being contours of one
- *    field is what makes the even-odd composition sound, so refinement is used
- *    as evidence only.
+ *  - **Reaching the window border is not by itself drainage.** It proves the
+ *    class continues past the window, not where it continues *to* — see
+ *    {@link escapeLeavesTheFeature}, which puts that question to the coarse
+ *    grid's global-exterior mask. A pocket whose corridor merely leads to
+ *    another enclosed chamber is still enclosed.
+ *  - **A confirmed feature is re-drawn at refinement resolution.** The coarse
+ *    ring carries up to a cell of positional error, which on a sub-cell feature
+ *    is error of the same order as the feature: on the exact 8.1 px closed
+ *    square the kept pinhole ring was shifted far enough that the square's
+ *    centre — analytically 4.05 px from every stroke, so outside the ink — came
+ *    back *inside* the silhouette. Refinement already holds the better contour;
+ *    withholding it keeps the bug it was added to fix. The mixed-resolution
+ *    worry that motivated keeping the coarse ring is real but local, and is
+ *    handled by a proximity guard in `rasterUnionRings` rather than by throwing
+ *    the contour away. A component that ran out of the window has no closed
+ *    contour inside it, so those keeps stay on the coarse ring.
  *  - **No seed, no keep.** If the refined window holds no cell of the pocket's
  *    own class inside the candidate ring, the feature did not survive refinement
- *    either and the raster is not entitled to report it.
+ *    either and the raster is not entitled to report it. Unlike an exhausted
+ *    budget this *is* evidence: the window was opened and there was nothing in
+ *    it.
  *
  * `budget` is the caller's remaining refined-cell allowance; it is debited by
- * the window this call opens, and a window that will not fit in what is left is
- * not opened at all (see {@link REFINE_CELL_BUDGET}).
+ * the window this call opens. A window too large to be worth opening, or larger
+ * than the allowance that is left, returns `unrefined` — the raw contour stands
+ * (see {@link REFINE_CELL_BUDGET}).
  */
-function subCellRingIsReal(
+function refineSubCellRing(
   lines: Polyline[],
   radius: number,
   ring: Polyline,
-  cell: number,
+  grid: CoarseGrid,
   budget: { cells: number },
-): boolean {
+): RefineResult {
+  const nothing: RefineResult = { outcome: "drop", refined: null };
   const area = polygonArea(ring);
-  if (area === 0) return false; // encloses nothing measurable
+  if (area === 0) return nothing; // encloses nothing measurable
   // Rings come off `ringsFromThreshold` oriented with the ink on one side, so
   // the sign says which class the ring encloses: negative is a pocket of
   // paper (a hole), positive a speck of ink (an island).
@@ -668,8 +845,9 @@ function subCellRingIsReal(
     if (p.y < yMin) yMin = p.y;
     if (p.y > yMax) yMax = p.y;
   }
-  if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) return false;
+  if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) return nothing;
 
+  const cell = grid.cell;
   const pad = REFINE_PAD_CELLS * cell;
   const rcell = cell / REFINE_FACTOR;
   const x0 = xMin - pad;
@@ -678,11 +856,22 @@ function subCellRingIsReal(
   const gh = Math.max(3, Math.ceil((yMax - yMin + 2 * pad) / rcell));
   // A ring can be sub-cell in *area* and still span many cells (a hairline
   // sliver between two blobs), so the window is not bounded by the trigger.
-  if (gw * gh > budget.cells) return false;
-  budget.cells -= gw * gh;
+  const windowCells = gw * gh;
+  // Too wide to be worth looking at — but a wide window is this candidate's
+  // problem, not the call's, so it does not spend anyone else's allowance.
+  if (windowCells > REFINE_WINDOW_CELLS) return { outcome: "unrefined", refined: null };
+  if (windowCells > budget.cells) {
+    budget.cells = 0; // one-shot: order of candidates must not change verdicts
+    return { outcome: "unrefined", refined: null };
+  }
+  budget.cells -= windowCells;
 
   const field = rasterizeDistanceField(lines, radius, rcell, gw, gh, x0, y0);
   const isWanted = (i: number) => field[i] < 1 === wantInside;
+  const centre = (gx: number, gy: number) => ({
+    x: x0 + (gx + 0.5) * rcell,
+    y: y0 + (gy + 0.5) * rcell,
+  });
 
   // Seed from every refined cell inside the candidate ring that carries the
   // enclosed class; if the feature has vanished at this resolution there are
@@ -690,28 +879,38 @@ function subCellRingIsReal(
   // bbox can hold such a cell, so the point-in-ring test never runs over the
   // padding.
   const stack: number[] = [];
-  const seen = new Uint8Array(gw * gh);
+  const seen = new Uint8Array(windowCells);
+  let seed: Point | null = null;
   const lo = (v: number, n: number) => Math.max(0, Math.min(n - 1, Math.floor(v / rcell - 0.5)));
   const hi = (v: number, n: number) => Math.max(0, Math.min(n - 1, Math.ceil(v / rcell)));
   for (let gy = lo(yMin - y0, gh); gy <= hi(yMax - y0, gh); gy++) {
     for (let gx = lo(xMin - x0, gw); gx <= hi(xMax - x0, gw); gx++) {
       const i = gy * gw + gx;
       if (!isWanted(i)) continue;
-      const p = { x: x0 + (gx + 0.5) * rcell, y: y0 + (gy + 0.5) * rcell };
+      const p = centre(gx, gy);
       if (!pointInSilhouette(p, [ring])) continue;
       seen[i] = 1;
       stack.push(i);
+      seed ??= p;
     }
   }
-  if (stack.length === 0) return false;
+  if (seed === null) return nothing;
 
-  // Flood-fill that class. Touching the window border means the pocket is not
-  // enclosed at all — it drains out through a channel finer than a coarse cell.
+  // Flood-fill that class. Reaching the window border is where the feature stops
+  // being decidable locally: it may be draining to the outside world through a
+  // channel finer than a coarse cell, or it may be a chamber of a larger
+  // enclosed cavity. The coarse grid's global-exterior mask settles which.
+  let escaped = false;
   while (stack.length > 0) {
     const i = stack.pop()!;
     const gx = i % gw;
     const gy = (i - gx) / gw;
-    if (gx === 0 || gy === 0 || gx === gw - 1 || gy === gh - 1) return false;
+    if (gx === 0 || gy === 0 || gx === gw - 1 || gy === gh - 1) {
+      escaped = true;
+      const p = centre(gx, gy);
+      if (escapeLeavesTheFeature(p.x, p.y, wantInside, grid)) return nothing;
+      continue; // border cell: nothing beyond it to expand into
+    }
     const neighbours = [i - 1, i + 1, i - gw, i + gw];
     for (const n of neighbours) {
       if (seen[n] || !isWanted(n)) continue;
@@ -719,7 +918,81 @@ function subCellRingIsReal(
       stack.push(n);
     }
   }
-  return true;
+  if (escaped) return { outcome: "keep", refined: null };
+
+  // Strictly interior, so the window holds the feature's whole contour: hand it
+  // back in world coordinates, oriented like the candidate it replaces.
+  const refined = ringsFromThreshold(
+    { brightness: field, width: gw, height: gh },
+    1,
+    gw * rcell,
+    gh * rcell,
+    { x0, y0, x1: x0 + gw * rcell, y1: y0 + gh * rcell },
+  );
+  let best: Polyline | null = null;
+  let bestArea = Infinity;
+  for (const r of refined) {
+    const a = polygonArea(r);
+    if (a === 0 || a > 0 !== wantInside) continue;
+    if (Math.abs(a) >= bestArea) continue;
+    if (!pointInSilhouette(seed, [r])) continue;
+    best = r;
+    bestArea = Math.abs(a);
+  }
+  return { outcome: "keep", refined: best };
+}
+
+/** Axis-aligned bounds of a ring, grown by `pad` on every side. */
+function ringBounds(ring: Polyline, pad = 0): BBox {
+  let xMin = Infinity;
+  let yMin = Infinity;
+  let xMax = -Infinity;
+  let yMax = -Infinity;
+  for (const p of ring) {
+    if (p.x < xMin) xMin = p.x;
+    if (p.x > xMax) xMax = p.x;
+    if (p.y < yMin) yMin = p.y;
+    if (p.y > yMax) yMax = p.y;
+  }
+  return { xMin: xMin - pad, yMin: yMin - pad, xMax: xMax + pad, yMax: yMax + pad };
+}
+
+function bboxesOverlap(a: BBox, b: BBox): boolean {
+  return a.xMin <= b.xMax && b.xMin <= a.xMax && a.yMin <= b.yMax && b.yMin <= a.yMax;
+}
+
+/** Does any edge of `ring` (a closed loop) touch the box? Liang–Barsky clip. */
+function ringTouchesBox(ring: Polyline, box: BBox): boolean {
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[j];
+    const b = ring[i];
+    if (Math.max(a.x, b.x) < box.xMin || Math.min(a.x, b.x) > box.xMax) continue;
+    if (Math.max(a.y, b.y) < box.yMin || Math.min(a.y, b.y) > box.yMax) continue;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    let t0 = 0;
+    let t1 = 1;
+    let inside = true;
+    const clip = (p: number, q: number) => {
+      if (p === 0) return q >= 0; // parallel to this slab
+      const t = q / p;
+      if (p < 0) {
+        if (t > t1) return false;
+        if (t > t0) t0 = t;
+      } else {
+        if (t < t0) return false;
+        if (t < t1) t1 = t;
+      }
+      return true;
+    };
+    inside =
+      clip(-dx, a.x - box.xMin) &&
+      clip(dx, box.xMax - a.x) &&
+      clip(-dy, a.y - box.yMin) &&
+      clip(dy, box.yMax - a.y);
+    if (inside) return true;
+  }
+  return false;
 }
 
 /**
@@ -748,7 +1021,8 @@ function subCellRingIsReal(
  * `capCells` (see {@link rasterGridSpec}).
  *
  * Features finer than one cell are not guessed at from their size but looked at
- * — see {@link subCellRingIsReal}. Pass `stats` to see how many there were and
+ * — see {@link refineSubCellRing} — and a confirmed one is re-drawn at the
+ * resolution it was confirmed at. Pass `stats` to see how many there were and
  * which way each went; it is the only window onto a decision that is otherwise
  * invisible in the output.
  */
@@ -776,19 +1050,61 @@ export function rasterUnionRings(
   // A ring enclosing at most one grid cell is below *this* grid's sampling
   // scale, but not below the raster's: it still holds the exact segments, so
   // each such ring is decided by re-rasterising a small window around it at a
-  // finer resolution rather than by its area (see `subCellRingIsReal`).
+  // finer resolution rather than by its area (see `refineSubCellRing`).
   const cellArea = cell * cell;
   const budget = { cells: REFINE_CELL_BUDGET };
-  return rings.filter((ring) => {
-    if (Math.abs(polygonArea(ring)) > cellArea) return true;
-    if (stats) stats.candidates++;
-    const real = subCellRingIsReal(lines, r, ring, cell, budget);
-    if (stats) {
-      if (real) stats.kept++;
-      else stats.dropped++;
+  let grid: CoarseGrid | null = null; // built once, and only if anything asks
+
+  const out: Polyline[] = [];
+  const swaps: { index: number; refined: Polyline }[] = [];
+  for (const ring of rings) {
+    if (Math.abs(polygonArea(ring)) > cellArea) {
+      out.push(ring);
+      continue;
     }
-    return real;
-  });
+    if (stats) stats.candidates++;
+    grid ??= { field, cell, gw, gh, x0, y0, outside: globalOutsideMask(field, gw, gh) };
+    const verdict = refineSubCellRing(lines, r, ring, grid, budget);
+    if (verdict.outcome === "drop") {
+      if (stats) stats.dropped++;
+      continue;
+    }
+    if (stats) {
+      if (verdict.outcome === "unrefined") stats.keptUnrefined++;
+      else stats.kept++;
+    }
+    if (verdict.refined) swaps.push({ index: out.length, refined: verdict.refined });
+    out.push(ring);
+  }
+
+  // Substitute the refined contour for the coarse one wherever that cannot
+  // disturb a sibling.
+  //
+  // Rings composed by even-odd fill only mean anything while they do not cross,
+  // and a refined ring is a contour of a *different* grid than its siblings, so
+  // near a shared boundary the two resolutions can in principle disagree by up
+  // to a coarse cell and cross. They cannot disagree anywhere else: both are
+  // contours of the same exact distance function, and away from a boundary that
+  // function is nowhere near the threshold. So the guard is proximity, not
+  // containment — a refined ring is used unless some other output ring passes
+  // within one coarse cell of its bounds, in which case the coarse ring stands
+  // (visible as `kept` without `replaced` in the stats).
+  if (swaps.length > 0) {
+    const bounds = out.map((ring) => ringBounds(ring));
+    for (const { index, refined } of swaps) {
+      const guard = ringBounds(refined, cell);
+      let clear = true;
+      for (let i = 0; i < out.length && clear; i++) {
+        if (i === index || !bboxesOverlap(bounds[i], guard)) continue;
+        clear = !ringTouchesBox(out[i], guard);
+      }
+      if (!clear) continue;
+      out[index] = refined;
+      bounds[index] = ringBounds(refined);
+      if (stats) stats.replaced++;
+    }
+  }
+  return out;
 }
 
 // ── The public entry point ───────────────────────────────────────────

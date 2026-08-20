@@ -28,6 +28,9 @@ import {
   OUTLINE_BASE_RADIUS,
   RASTER_MAX_CELLS,
   RASTER_CAP_CELLS,
+  REFINE_CELL_BUDGET,
+  REFINE_FACTOR,
+  REFINE_PAD_CELLS,
   type Point,
   type Polyline,
   type RasterRefineStats,
@@ -131,6 +134,42 @@ function samplesAlong(lines: Polyline[], step: number): Point[] {
  * would fail this.
  */
 const TOL_CELLS = 0.35;
+
+/** A zeroed refinement-stats accumulator to hand to `rasterUnionRings`. */
+const freshStats = (): RasterRefineStats => ({
+  candidates: 0,
+  kept: 0,
+  dropped: 0,
+  keptUnrefined: 0,
+  replaced: 0,
+});
+
+/** Best of `reps` timed runs, after a warm-up call for JIT and allocation. */
+function timeBest(run: () => unknown, reps = 3): number {
+  run();
+  let best = Infinity;
+  for (let i = 0; i < reps; i++) {
+    const t0 = performance.now();
+    run();
+    best = Math.min(best, performance.now() - t0);
+  }
+  return best;
+}
+
+/** Centroid of a ring's bbox — where a sub-cell ring *is*, near enough. */
+function ringCentre(ring: Polyline): Point {
+  let xMin = Infinity;
+  let yMin = Infinity;
+  let xMax = -Infinity;
+  let yMax = -Infinity;
+  for (const p of ring) {
+    xMin = Math.min(xMin, p.x);
+    xMax = Math.max(xMax, p.x);
+    yMin = Math.min(yMin, p.y);
+    yMax = Math.max(yMax, p.y);
+  }
+  return { x: (xMin + xMax) / 2, y: (yMin + yMax) / 2 };
+}
 
 /**
  * Worst |distance-to-ring − radius| over the geometry, in cells. A thin stroke
@@ -375,16 +414,19 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
   it.each(CUSP_SPECKS)("drops the cusp speck at %s on refined evidence", (pos) => {
     const [d, deg] = pos.split("/").map(Number);
     const pts: Polyline[] = [at(0, 0), at(d, deg)];
-    const stats: RasterRefineStats = { candidates: 0, kept: 0, dropped: 0 };
+    const stats = freshStats();
     const rings = rasterUnionRings(pts, R, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
 
     // The refinement is what removed them: one sub-cell candidate per cusp,
     // each examined and dropped. A blanket area filter would show up here as
-    // candidates = 0 — nothing was ever looked at.
+    // candidates = 0 — nothing was ever looked at, and a spent budget as
+    // keptUnrefined — nothing was affordable to look at.
     expect(stats, `ring areas: ${rings.map((r) => polygonArea(r).toFixed(4))}`).toEqual({
       candidates: 2,
       kept: 0,
       dropped: 2,
+      keptUnrefined: 0,
+      replaced: 0,
     });
     expect(rings).toHaveLength(1);
     expect(Math.abs(polygonArea(rings[0]))).toBeCloseTo(unionArea(R, d), 0);
@@ -406,6 +448,94 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
       expect(pointInSilhouette(onMidline(k * (out - 0.5)), rings), `inside ${pos}`).toBe(true);
       expect(pointInSilhouette(onMidline(k * (out + 0.5)), rings), `outside ${pos}`).toBe(false);
     }
+  });
+
+  /**
+   * The same cusp, one wall away from being an artefact.
+   *
+   * Drop the 19/27° peanut inside a closed rectangle buffered by the same
+   * radius and the drawing becomes a **closed cavity complex**: a large chamber
+   * (the paper between the box wall and the peanut), a narrow corridor (the
+   * exterior wedge at each of the peanut's two cusps, which opens by 36° and is
+   * finer than a coarse cell near its tip) and a small chamber (the sub-cell
+   * pocket at the wedge tip that the lattice catches a sample in). Every one of
+   * them is enclosed by ink; none of them touches the outside world.
+   *
+   * The candidate is the same cusp pocket, and the refined flood does exactly
+   * what it does on the bare peanut — it walks out of the window along the
+   * wedge. Reading that as drainage deleted a chamber of a genuine hole and
+   * flipped its sample from paper to ink. Drainage is a statement about the
+   * **global** exterior, so the escape point is now checked against the coarse
+   * grid's border-connected outside mask: outside the box it is drainage and
+   * the speck goes, inside the box it is a corridor and the chamber stays. The
+   * bare peanut is run at the same call parameters below, so the verdicts flip
+   * on the wall and on nothing else.
+   *
+   * `maxCells` is pinned so the enclosure — which triples the drawing's extent —
+   * does not coarsen the grid away from the ≈0.2px cell that puts a sample in
+   * the wedge tip in the first place. It is the fixture holding the cusp still,
+   * not part of what is being tested.
+   */
+  it("keeps a sub-cell chamber whose corridor drains into an enclosed cavity", () => {
+    const MARGIN = 25;
+    const CELLS = 480;
+    const c = at(19, 27)[0];
+    const box: Polyline = [
+      { x: -R - MARGIN, y: -R - MARGIN },
+      { x: c.x + R + MARGIN, y: -R - MARGIN },
+      { x: c.x + R + MARGIN, y: c.y + R + MARGIN },
+      { x: -R - MARGIN, y: c.y + R + MARGIN },
+      { x: -R - MARGIN, y: -R - MARGIN },
+    ];
+    const lines: Polyline[] = [at(0, 0), at(19, 27), box];
+
+    const bare = freshStats();
+    rasterUnionRings([at(0, 0), at(19, 27)], R, CELLS, RASTER_CAP_CELLS, bare);
+    const enclosed = freshStats();
+    const rings = rasterUnionRings(lines, R, CELLS, RASTER_CAP_CELLS, enclosed);
+
+    // Same two candidates, opposite verdicts — the only difference is the wall.
+    expect(bare).toMatchObject({ candidates: 2, kept: 0, dropped: 2 });
+    expect(enclosed, `ring areas: ${rings.map((r) => polygonArea(r).toFixed(4))}`).toEqual({
+      candidates: 2,
+      kept: 2,
+      dropped: 0,
+      keptUnrefined: 0,
+      // A component that leaves its window has no closed contour inside it, so
+      // these two keeps stay on their coarse rings (cf. the pinhole below).
+      replaced: 0,
+    });
+
+    // Three structural rings — the box's outer skin, the cavity inside it, the
+    // peanut — plus the two chambers.
+    expect(rings).toHaveLength(5);
+    const spec = rasterGridSpec(lines, R, CELLS, RASTER_CAP_CELLS)!;
+    const kept = rings.filter((ring) => Math.abs(polygonArea(ring)) <= spec.cell ** 2);
+    expect(kept).toHaveLength(2);
+
+    // …and they are the two cusps, not specks from somewhere else. The cusps sit
+    // on the neck's midline, `out` px either side of the centre-to-centre axis.
+    const u = { x: Math.cos((27 * Math.PI) / 180), y: Math.sin((27 * Math.PI) / 180) };
+    const nrm = { x: -u.y, y: u.x };
+    const off = Math.sqrt(R * R - 9.5 * 9.5);
+    const cusps = [1, -1].map((k) => ({
+      x: 9.5 * u.x + k * off * nrm.x,
+      y: 9.5 * u.y + k * off * nrm.y,
+    }));
+    for (const ring of kept) {
+      const centre = ringCentre(ring);
+      const nearest = Math.min(...cusps.map((q) => Math.hypot(centre.x - q.x, centre.y - q.y)));
+      expect(nearest, `sub-cell ring at ${centre.x.toFixed(3)},${centre.y.toFixed(3)}`).toBeLessThan(
+        spec.cell,
+      );
+    }
+
+    // The composition still reads correctly at large: wall is ink, the chamber
+    // between wall and peanut is paper, the peanut is ink, outside is paper.
+    expect(pointInSilhouette({ x: -R - MARGIN, y: 0 }, rings)).toBe(true);
+    expect(pointInSilhouette({ x: -R - MARGIN + 12, y: 0 }, rings)).toBe(false);
+    expect(pointInSilhouette({ x: 0, y: 0 }, rings)).toBe(true);
+    expect(pointInSilhouette({ x: -R - MARGIN - 12, y: 0 }, rings)).toBe(false);
   });
 
   it("returns one boundary ring for a near-tangent neck at an off-axis angle", () => {
@@ -444,11 +574,12 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
     ] as const) {
       for (const deg of angles) {
         const pts = [at(0, 0), at(d, deg)];
-        const stats: RasterRefineStats = { candidates: 0, kept: 0, dropped: 0 };
+        const stats = freshStats();
         const rings = rasterUnionRings(pts, R, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
         const where = `d=${d} deg=${deg}: ${rings.map((r) => polygonArea(r).toFixed(4))}`;
         expect(rings.length, where).toBe(want);
         expect(stats.kept, `${where} kept a sub-cell ring`).toBe(0);
+        expect(stats.keptUnrefined, `${where} kept a sub-cell ring unexamined`).toBe(0);
         if (stats.candidates > 0) specked.push(`${d}/${deg}`);
         expect(Math.abs(polygonArea(rings[0])), where).toBeCloseTo(
           want === 1 ? unionArea(R, d) : Math.PI * R * R,
@@ -471,20 +602,29 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
  * wedge whose channel to the outside is finer than a cell, while the pinhole
  * below is a genuine enclosed pocket that happens to catch a single sample.
  *
- * The fixture: a closed 8.2 × 8.2 square outline buffered at radius 4, with a
+ * The fixture: a closed `2·HALF` square outline buffered at radius 4, with a
  * tail stroke attached at one corner — the tail is there only to widen the
  * drawing until the adaptive grid picks a cell of ≈0.157px, which is what makes
  * the hole land on exactly one sample. Points further than 4px from all four
- * sides form a real 0.2 × 0.2 pocket at the centre; the grid catches one sample
- * inside it, and the raw contour reports it as a ring of |area| ≈ 0.020 against
- * a cell² of ≈0.025 — sub-cell, and so a candidate.
+ * sides form a real `2(HALF−4)` square pocket at the centre; the grid catches
+ * one sample inside it, and the raw contour reports it as a ring of |area|
+ * ≈ 0.02 against a cell² of ≈0.025 — sub-cell, and so a candidate.
  *
  * Blanket-filtering everything below a cell² deleted that ring and flipped the
  * centre of the square from outside the silhouette to inside — a hole in the
  * drawing filled in by the approximation.
+ *
+ * **Keeping the ring is only half the fix.** The coarse ring carries up to a
+ * cell of positional error, which on a feature two thirds of a cell across is
+ * error the size of the feature: at HALF = 4.05 the pinhole was kept and the
+ * centre *still* came back inside the silhouette, because the ring the raster
+ * reported sat 0.02px off the pocket it stood for. (The 8.2 case below is the
+ * one that happened to be pinned first, and it passes either way — which is
+ * exactly why it could not catch this.) A confirmed feature is therefore
+ * re-drawn at refinement resolution, which is where its true extent already
+ * lives: `replaced` in the stats, and a ring whose bounds are the pocket's.
  */
-describe("sub-cell rings are decided on evidence, not on area alone", () => {
-  const HALF = 4.1;
+describe.each([4.05, 4.1])("sub-cell rings are decided on evidence — half %s", (HALF) => {
   const PINHOLE: Polyline[] = [
     [
       { x: -HALF, y: -HALF },
@@ -495,18 +635,20 @@ describe("sub-cell rings are decided on evidence, not on area alone", () => {
     ],
     [{ x: HALF, y: HALF }, { x: HALF + 14, y: HALF + 14 }],
   ];
+  /** Half-width of the true pocket: everything further than the radius. */
+  const POCKET = HALF - OUTLINE_BASE_RADIUS;
 
-  it("the fixture really does have a hole — the centre is 4.1px from every stroke", () => {
+  it("the fixture really does have a hole — the centre is HALF px from every stroke", () => {
     // Guards the fixture itself: if the geometry ever stops enclosing a pocket,
     // the test below stops meaning anything.
     const rings = derivedRegionRings(PINHOLE, { of: "n", kind: "bbox" }); // cheap sanity
     expect(rings).toHaveLength(1);
     expect(distToRings({ x: 0, y: 0 }, PINHOLE)).toBeCloseTo(HALF, 9);
-    expect(HALF).toBeGreaterThan(OUTLINE_BASE_RADIUS);
+    expect(POCKET).toBeGreaterThan(0);
   });
 
   it("keeps a real sub-cell hole instead of filling it in", () => {
-    const stats: RasterRefineStats = { candidates: 0, kept: 0, dropped: 0 };
+    const stats = freshStats();
     const rings = rasterUnionRings(
       PINHOLE,
       OUTLINE_BASE_RADIUS,
@@ -514,7 +656,6 @@ describe("sub-cell rings are decided on evidence, not on area alone", () => {
       RASTER_CAP_CELLS,
       stats,
     );
-    expect(stats).toEqual({ candidates: 1, kept: 1, dropped: 0 });
     expect(rings).toHaveLength(2);
     // The whole point: the centre of the square is *not* in the silhouette.
     expect(pointInSilhouette({ x: 0, y: 0 }, rings)).toBe(false);
@@ -523,6 +664,137 @@ describe("sub-cell rings are decided on evidence, not on area alone", () => {
     expect(pointInSilhouette({ x: 0, y: HALF }, rings)).toBe(true);
     // …and everything outside the buffered square still is not.
     expect(pointInSilhouette({ x: 0, y: HALF + OUTLINE_BASE_RADIUS + 1 }, rings)).toBe(false);
+    expect(stats).toEqual({
+      candidates: 1,
+      kept: 1,
+      dropped: 0,
+      keptUnrefined: 0,
+      replaced: 1,
+    });
+  });
+
+  it("reports the hole where it actually is, to refinement resolution", () => {
+    const spec = rasterGridSpec(PINHOLE, OUTLINE_BASE_RADIUS)!;
+    const rings = rasterUnionRings(PINHOLE, OUTLINE_BASE_RADIUS);
+    expect(rings).toHaveLength(2);
+    const hole = rings.reduce((a, b) =>
+      Math.abs(polygonArea(a)) < Math.abs(polygonArea(b)) ? a : b,
+    );
+    // The pocket is the square of points further than the radius from all four
+    // sides: centred on the origin, POCKET px to each side. A ring built on the
+    // coarse lattice can only place that to within a cell (0.157px) — a whole
+    // pocket's width out. The refined one lands on it to a refined cell.
+    const refinedCell = spec.cell / REFINE_FACTOR;
+    for (const p of hole) {
+      expect(Math.max(Math.abs(p.x), Math.abs(p.y))).toBeCloseTo(POCKET, 1);
+      expect(Math.abs(Math.max(Math.abs(p.x), Math.abs(p.y)) - POCKET)).toBeLessThan(2 * refinedCell);
+    }
+    const centre = ringCentre(hole);
+    expect(Math.hypot(centre.x, centre.y)).toBeLessThan(refinedCell);
+  });
+});
+
+/**
+ * A dense field of genuine sub-cell holes — the case where "over budget" and
+ * "not real" have to be different answers.
+ *
+ * The fixture is a 20px grid of strokes buffered at 8.8, which leaves a 56 × 56
+ * lattice of 2.4 × 2.4 pockets — 3 136 holes that are unambiguously there, each
+ * enclosed by 6.4px of solid ink on every side, each below the 2.22px grid's
+ * cell² and so a refinement candidate. Refining all of them costs ~20M refined
+ * cells against a budget of 1M.
+ *
+ * Reading an unaffordable candidate as "not real" therefore filled in 2 977 of
+ * the 3 136 holes: stats came back `{candidates: 3136, kept: 159, dropped:
+ * 2977}` and 159 of the 3 136 hole centres classified as paper — the other
+ * 2 977 read as solid ink, on no evidence whatsoever. The budget bounds what
+ * the raster may *look at*; it cannot be allowed to bound what the raster is
+ * willing to *believe*, so a candidate it cannot afford keeps the ring marching
+ * squares drew and is counted as `keptUnrefined`.
+ */
+describe("a spent refinement budget preserves rings, it does not delete them", () => {
+  const PITCH = 20;
+  const N = 56;
+  const RADIUS = 8.8;
+  /** Every genuine pocket: 2.4 × 2.4, centred between four grid lines. */
+  const POCKET = PITCH - 2 * RADIUS;
+  const LATTICE: Polyline[] = Array.from({ length: 2 * (N + 1) }, (_, i) => {
+    const k = Math.floor(i / 2) * PITCH;
+    const end = N * PITCH;
+    return i % 2 === 0
+      ? [{ x: 0, y: k }, { x: end, y: k }]
+      : [{ x: k, y: 0 }, { x: k, y: end }];
+  });
+  const holeCentre = (i: number): Point => ({
+    x: (Math.floor(i / N) + 0.5) * PITCH,
+    y: ((i % N) + 0.5) * PITCH,
+  });
+
+  it("the fixture really does hold 3 136 sub-cell holes", () => {
+    const spec = rasterGridSpec(LATTICE, RADIUS)!;
+    expect(POCKET).toBeCloseTo(2.4, 9);
+    // Every pocket is a real one: its centre is 10px from the nearest stroke,
+    // well past the 8.8 buffer, and its walls are 6.4px of solid ink.
+    expect(distToRings(holeCentre(0), LATTICE)).toBeCloseTo(PITCH / 2, 9);
+    // …and each is about one cell across, so the contour drawn round the single
+    // sample it catches comes back sub-cell — a candidate, 3 136 times over
+    // (pinned as `stats.candidates` below).
+    expect(POCKET / spec.cell).toBeGreaterThan(0.5);
+    expect(POCKET / spec.cell).toBeLessThan(1.5);
+    // …and refining all of them is far more than the budget allows.
+    expect(N * N * (2 * REFINE_PAD_CELLS * REFINE_FACTOR) ** 2).toBeGreaterThan(
+      REFINE_CELL_BUDGET,
+    );
+  });
+
+  it("keeps every real hole once the budget runs out", () => {
+    const stats = freshStats();
+    const rings = rasterUnionRings(LATTICE, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+
+    expect(stats.candidates).toBe(N * N);
+    expect(stats.dropped).toBe(0);
+    expect(stats.kept + stats.keptUnrefined).toBe(stats.candidates);
+    // The budget really did bind — otherwise this fixture proves nothing about
+    // what happens when it does.
+    expect(stats.kept).toBeGreaterThan(0);
+    expect(stats.keptUnrefined).toBeGreaterThan(stats.kept);
+    // One outer boundary plus one ring per hole: nothing was filled in.
+    expect(rings).toHaveLength(1 + N * N);
+
+    // The holes that *were* refined come back as the pocket itself, 2.4 × 2.4.
+    const exact = rings.filter((r) => Math.abs(Math.abs(polygonArea(r)) - POCKET ** 2) < 0.05);
+    expect(exact.length).toBeGreaterThanOrEqual(stats.replaced);
+    expect(stats.replaced).toBe(stats.kept);
+  });
+
+  it("classifies the lattice correctly — paper in the holes, ink in the walls", () => {
+    const rings = rasterUnionRings(LATTICE, RADIUS);
+    // A deterministic scatter over the lattice; the full 3 136-point sweep is
+    // the same answer at 80× the cost (every hole passes).
+    for (let i = 0; i < 48; i++) {
+      const p = holeCentre((i * 617) % (N * N));
+      expect(pointInSilhouette(p, rings), `hole at ${p.x},${p.y}`).toBe(false);
+    }
+    // …and the ink between them still reads as ink.
+    for (const p of [
+      { x: PITCH, y: PITCH },
+      { x: PITCH / 2, y: 2 * PITCH },
+      { x: 3 * PITCH, y: 3.5 * PITCH },
+    ]) {
+      expect(pointInSilhouette(p, rings), `wall at ${p.x},${p.y}`).toBe(true);
+    }
+    // …and outside the lattice is paper.
+    expect(pointInSilhouette({ x: -RADIUS - 2, y: -RADIUS - 2 }, rings)).toBe(false);
+  });
+
+  it("still resolves inside the wall-clock budget", () => {
+    // The densest refinement case in the suite: 3 136 candidates, ~160 windows
+    // opened before the budget closes, ~160 refined rings each checked against
+    // 3 136 siblings for the substitution guard. Measured ~75ms on the dev
+    // machine (M-series, node 24) against the same 250ms ceiling — the guard is
+    // bbox-prefiltered, so this is where an accidental quadratic would show.
+    const ms = timeBest(() => rasterUnionRings(LATTICE, RADIUS), 2);
+    expect(ms, `dense lattice took ${ms.toFixed(1)}ms`).toBeLessThan(RESOLVE_BUDGET_MS);
   });
 });
 
@@ -540,22 +812,13 @@ describe("sub-cell rings are decided on evidence, not on area alone", () => {
  * None of these three sheds a sub-cell ring, so none of them pays for
  * refinement; where it does fire it is small change against the main grid —
  * the pinhole fixture's window is 6.4k refined cells against a 38k-cell main
- * raster, and the whole call still resolves in well under a millisecond.
+ * raster, and the whole call still resolves in well under a millisecond. The
+ * dense-lattice fixture above carries the same ceiling for the case that *does*
+ * pay: 3 136 candidates, a spent budget and ~160 ring substitutions.
  */
 const RESOLVE_BUDGET_MS = 250;
 
 describe("cost — the adaptive grid stays bounded on fine-detail geometry", () => {
-  const timeBest = (run: () => unknown, reps = 3): number => {
-    run(); // warm up: first call pays JIT + allocation
-    let best = Infinity;
-    for (let i = 0; i < reps; i++) {
-      const t0 = performance.now();
-      run();
-      best = Math.min(best, performance.now() - t0);
-    }
-    return best;
-  };
-
   it.each(["outline", "occupied"] as const)(
     "resolves %s over 24 stars (576 segments) inside the budget",
     (kind) => {
