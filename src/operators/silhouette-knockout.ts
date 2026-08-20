@@ -24,6 +24,54 @@ export type Polyline = Point[];
 /** Points closer than this (in px) are treated as the same location. */
 const EPS = 1e-9;
 
+/**
+ * How far a marching-squares crossing is kept away from either end of the grid
+ * edge it sits on, as a fraction of that edge. See `ringsFromThreshold`.
+ *
+ * **Why a contour crossing may never land on a lattice point.** The classifier
+ * is `dark = brightness < threshold` — strict — so a sample sitting *exactly* on
+ * the threshold is bright. Interpolating a crossing on the edge between it and a
+ * dark neighbour gives `t = (threshold - a)/(b - a) = 1` (or 0 the other way
+ * round): the crossing lands on the lattice point itself. Every crossing on
+ * every edge incident to that sample collapses to the same point, so up to four
+ * strands meet there and the tracer has to *pair* them — and a wrong pairing
+ * welds two lobes into one ring that passes through the point twice, a
+ * figure-eight rather than a contour.
+ *
+ * There is no local rule that pairs them correctly. Two 3×3 fields (both in the
+ * tests) present the *identical* local picture at the junction — dark wedges
+ * left and right, bright wedges above and below — and want opposite pairings:
+ * one wants the walks to hug the dark wedges, the other wants them to hug the
+ * bright ones. Which is right depends on how the lobes connect elsewhere in the
+ * image, so a turn rule measured at the junction — sharpest right, sharpest
+ * left, straight through — is right on one and wrong on the other.
+ *
+ * The fix is therefore not a better pairing rule but removing the tie, and the
+ * classifier already says which way to break it: `threshold` counts as *bright*,
+ * so the crossing belongs strictly on the dark side of a threshold-valued
+ * corner, not on top of it. Clamping `t` into `[CROSSING_EPS, 1-CROSSING_EPS]`
+ * states exactly that, and it buys the invariant the chaining pass rests on:
+ *
+ *  - every crossing is strictly interior to its edge, so crossings on different
+ *    edges are distinct points (edge interiors are disjoint) and each edge holds
+ *    at most one crossing;
+ *  - a strand runs between crossings on two *different* edges of its cell, so no
+ *    strand is degenerate;
+ *  - an edge is shared by exactly two cells and the table orients both with dark
+ *    on the right, so of the two strands touching a crossing exactly one leaves
+ *    it. The successor is unique — there is nothing left to choose.
+ *
+ * Rings are therefore simple by construction. The cost is that a pinch comes
+ * back open by a couple of `CROSSING_EPS` of one grid cell instead of exactly
+ * closed, which is invisible in the fill: even-odd classification of a
+ * self-touching walk and of the same walk opened by a hair agree everywhere
+ * except on that hair. The value is bounded below by the need to keep the two
+ * sides of a pinch distinct as doubles once mapped into the target box, and
+ * above by the area it perturbs; a billionth of a cell clears both by orders of
+ * magnitude.
+ */
+const CROSSING_EPS = 1e-9;
+
 // ── Point-in-silhouette ──────────────────────────────────────────────
 
 /**
@@ -424,6 +472,12 @@ const MS_SADDLE_JOINED: Record<number, number[][]> = {
  * two segments, so a saddle cell contributes two strands to the chaining pass
  * rather than one.
  *
+ * **Samples exactly on the threshold.** The other degenerate case — a saddle
+ * that sits on a *lattice point* rather than inside a cell — is removed at the
+ * source instead of resolved: crossings are kept strictly inside their edge, so
+ * no two of them ever coincide, every strand has exactly one possible successor,
+ * and every ring returned is simple. See {@link CROSSING_EPS}.
+ *
  * `box` places the result somewhere other than the origin — the grid maps onto
  * `[box.x0, box.x1] x [box.y0, box.y1]` instead of `[0, targetW] x [0,
  * targetH]`. That is what lets an occupancy raster covering an arbitrary patch
@@ -449,13 +503,17 @@ export function ringsFromThreshold(
   };
   const dark = (x: number, y: number) => at(x, y) < threshold;
 
-  /** Interpolated crossing on the grid edge from corner (x0,y0) to (x1,y1). */
+  /**
+   * Interpolated crossing on the grid edge from corner (x0,y0) to (x1,y1),
+   * always strictly *inside* that edge — never on a lattice point. That is what
+   * makes the successor of a strand unique; see {@link CROSSING_EPS}.
+   */
   const cross = (x0: number, y0: number, x1: number, y1: number): Point => {
     const a = at(x0, y0);
     const b = at(x1, y1);
     let t = 0.5;
     if (b !== a) t = (threshold - a) / (b - a);
-    t = Math.min(1, Math.max(0, t));
+    t = Math.min(1 - CROSSING_EPS, Math.max(CROSSING_EPS, t));
     return { x: x0 + (x1 - x0) * t, y: y0 + (y1 - y0) * t };
   };
 
@@ -468,7 +526,23 @@ export function ringsFromThreshold(
     return cross(cx, cy, cx, cy + 1);                          // left
   };
 
-  const key = (p: Point) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`;
+  /**
+   * Canonical id of the grid edge a crossing sits on — the identity strands are
+   * chained by. Horizontal edge (cx,cy)→(cx+1,cy) and vertical edge
+   * (cx,cy)→(cx,cy+1) are numbered independently; cells start at (-1,-1), so
+   * indices are shifted by one and columns run 0..w+1.
+   *
+   * Chaining on the edge rather than on the crossing's coordinates is both
+   * exact (integer identity, no rounded string key, no float comparison) and
+   * faster — the old `toFixed(6)` key was two allocations per strand endpoint.
+   */
+  const stride = w + 2;
+  const edgeId = (cx: number, cy: number, edge: number): number => {
+    if (edge === 0) return ((cy + 1) * stride + (cx + 1)) * 2; // top:    h(cx,   cy)
+    if (edge === 2) return ((cy + 2) * stride + (cx + 1)) * 2; // bottom: h(cx,   cy+1)
+    if (edge === 1) return ((cy + 1) * stride + (cx + 2)) * 2 + 1; // right:  v(cx+1, cy)
+    return ((cy + 1) * stride + (cx + 1)) * 2 + 1; // left:   v(cx,   cy)
+  };
 
   /**
    * The contouring of one cell, saddles resolved by the **asymptotic decider**.
@@ -523,13 +597,14 @@ export function ringsFromThreshold(
     return darkJoined ? MS_SADDLE_JOINED[idx] : MS_TABLE[idx];
   };
 
-  type Seg = { a: Point; b: Point };
+  /** One contour strand: from its entry crossing to its exit crossing. */
+  type Seg = { a: Point; b: Point; exit: number };
   const segs: Seg[] = [];
-  // Several segments can legitimately start at the same point — a saddle cell
-  // contributes two strands, and a corner sample sitting exactly on the
-  // threshold collapses two edge crossings onto that corner. Keep every
-  // candidate so chaining can take an unused one instead of dead-ending.
-  const startIndex = new Map<string, number[]>();
+  // Which strand *leaves* by a given edge. At most one can (see CROSSING_EPS),
+  // so this is a plain lookup rather than a bucket; should a malformed table
+  // ever produce a second, the first wins and the other is simply picked up as
+  // its own walk below rather than lost.
+  const leavesBy = new Int32Array(2 * stride * (h + 3)).fill(-1);
 
   for (let cy = -1; cy < h; cy++) {
     for (let cx = -1; cx < w; cx++) {
@@ -541,13 +616,9 @@ export function ringsFromThreshold(
       const entries = cellSegments(cx, cy, idx);
       if (entries.length === 0) continue;
       for (const [from, to] of entries) {
-        const a = edgePoint(cx, cy, from);
-        const b = edgePoint(cx, cy, to);
-        const k = key(a);
-        const bucket = startIndex.get(k);
-        if (bucket) bucket.push(segs.length);
-        else startIndex.set(k, [segs.length]);
-        segs.push({ a, b });
+        const enter = edgeId(cx, cy, from);
+        if (leavesBy[enter] < 0) leavesBy[enter] = segs.length;
+        segs.push({ a: edgePoint(cx, cy, from), b: edgePoint(cx, cy, to), exit: edgeId(cx, cy, to) });
       }
     }
   }
@@ -564,65 +635,9 @@ export function ringsFromThreshold(
   const used = new Array<boolean>(segs.length).fill(false);
   const rings: Polyline[] = [];
 
-  /**
-   * How far you must sweep, from the direction you came *back* along, before you
-   * meet the outgoing strand — counter-clockwise on screen, in (0, 2π].
-   *
-   * Every segment is emitted with the dark side on its right, so sweeping this
-   * way and taking the *smallest* angle is the sharpest available right-hand
-   * turn: the walk hugs the dark region instead of cutting across it. A
-   * straight-through continuation sits at exactly π, a left turn beyond it, and
-   * doubling back along the strand you arrived on lands at 2π — last resort,
-   * where it belongs. A degenerate (zero-length) strand has no direction and
-   * scores `Infinity`, which leaves the caller's first-unused pick standing.
-   */
-  const sweepAngle = (inDx: number, inDy: number, outDx: number, outDy: number): number => {
-    if ((inDx === 0 && inDy === 0) || (outDx === 0 && outDy === 0)) return Infinity;
-    const rx = -inDx;
-    const ry = -inDy;
-    const dot = rx * outDx + ry * outDy;
-    const cross = rx * outDy - ry * outDx; // > 0 is a clockwise (right) turn
-    const a = Math.atan2(-cross, dot);
-    return a > 0 ? a : a + Math.PI * 2;
-  };
-
-  /**
-   * The next unused strand leaving point `p`, or undefined if the chain ends.
-   *
-   * Where only one strand leaves — every ordinary point on a contour — this is
-   * just that strand. At a **junction** it is a real choice: a sample sitting
-   * exactly on the threshold collapses all the crossings on its incident edges
-   * onto the lattice point itself, so two strands arrive and two leave. Taking
-   * whichever is unused first welds the two lobes into a single ring that passes
-   * through the junction twice — a figure-eight, not a contour, and every
-   * consumer downstream (even-odd fill, offsetting, pen ordering) assumes simple
-   * rings. Turning as sharply as the orientation allows resolves it the way a
-   * contour-follower should: the lobes come back as two rings that touch at a
-   * point, which is what the field actually says.
-   */
-  const nextFrom = (p: Point, inDx: number, inDy: number): number | undefined => {
-    const bucket = startIndex.get(key(p));
-    if (!bucket) return undefined;
-    let best: number | undefined;
-    let bestSweep = Infinity;
-    const sweepOf = (i: number) =>
-      sweepAngle(inDx, inDy, segs[i].b.x - segs[i].a.x, segs[i].b.y - segs[i].a.y);
-    for (const i of bucket) {
-      if (used[i]) continue;
-      if (best === undefined) {
-        best = i; // scored lazily: an ordinary point never pays for the angle
-        continue;
-      }
-      if (bestSweep === Infinity) bestSweep = sweepOf(best);
-      const sweep = sweepOf(i);
-      if (sweep < bestSweep) {
-        best = i;
-        bestSweep = sweep;
-      }
-    }
-    return best;
-  };
-
+  // Walk each chain head-to-tail. The strand leaving by the edge this one
+  // entered on is the *only* continuation there is (see CROSSING_EPS), so
+  // there is no pairing choice and every ring comes back simple.
   for (let s = 0; s < segs.length; s++) {
     if (used[s]) continue;
     const ring: Polyline = [];
@@ -631,8 +646,8 @@ export function ringsFromThreshold(
       used[i] = true;
       const seg = segs[i];
       ring.push({ x: mapX(seg.a.x), y: mapY(seg.a.y) });
-      const next = nextFrom(seg.b, seg.b.x - seg.a.x, seg.b.y - seg.a.y);
-      if (next === undefined) {
+      const next = leavesBy[seg.exit];
+      if (next < 0 || used[next]) {
         // Chain ends: closed loop back to the start, or an unpaired chain.
         ring.push({ x: mapX(seg.b.x), y: mapY(seg.b.y) });
         break;

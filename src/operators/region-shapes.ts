@@ -35,7 +35,12 @@
  */
 
 import { convexHull } from "../utils/clip.js";
-import { ringsFromThreshold, type Point, type Polyline } from "./silhouette-knockout.js";
+import {
+  pointInSilhouette,
+  ringsFromThreshold,
+  type Point,
+  type Polyline,
+} from "./silhouette-knockout.js";
 
 export type { Point, Polyline };
 
@@ -466,56 +471,40 @@ function distPointSegmentSq(
 }
 
 /**
- * Rasterise the geometry's strokes buffered by `radius` and recover the union's
- * boundary as rings (marching squares, via `ringsFromThreshold`).
+ * Fill `field` with the distance from each cell centre to the nearest stroke,
+ * normalised by `radius` — so the buffered union's boundary sits at exactly 1,
+ * which is also what `ringsFromThreshold` reads outside the grid, so an
+ * edge-touching blob still closes correctly.
  *
- * The grid holds a **distance field** — each cell stores its exact distance to
- * the nearest stroke, normalised by the radius — rather than a 0/1 occupancy
- * mask. That matters twice over:
+ * Shared by the main raster and by the refinement windows below, so both read
+ * the *same* field, just at different cell sizes.
  *
- *  - `ringsFromThreshold` interpolates its crossings linearly along a cell edge.
- *    On a binary mask every crossing lands dead-centre, so the ring is quantised
- *    to half-cells (~½ cell of error, whatever the cell size). On a distance
- *    field the crossing lands where the distance actually equals the radius —
- *    and distance to a straight stroke *is* linear, so the error collapses to
- *    the field's curvature over one cell (≈ cell²/8r) instead of ½ cell.
- *  - No sampling along the stroke, so no scalloping: the field is computed from
- *    exact point-to-segment distances, evaluated only for cells within
- *    `radius + 2 cells` of a stroke (long segments are chunked so the visited
- *    band stays proportional to length × radius, not to length²).
+ * Two exact short-cuts keep it linear in ink rather than in area:
  *
- * It is still not an exact Minkowski sum — the boundary is a polyline sampled on
- * a grid — but it is stable, dependency-free, handles holes and disjoint blobs
- * correctly (each comes back as its own ring, which the even-odd
- * `pointInSilhouette` composes for free), and its cost is bounded by
- * `capCells` (see {@link rasterGridSpec}).
+ *  - Cells farther than `reach = radius + 2 cells` from every stroke keep the
+ *    sentinel, which is > 1: distance is 1-Lipschitz, so a cell next to an
+ *    inside cell is within `radius + cell < reach` of a stroke and has therefore
+ *    been visited and holds its exact distance. No boundary edge can touch a
+ *    sentinel cell.
+ *  - Symmetrically, a cell already known to be more than a cell's width *inside*
+ *    the boundary can never move it, and its neighbours are all inside too, so
+ *    no crossing is ever interpolated along an edge touching it. Skipping those
+ *    is what keeps a saturated canvas from re-measuring the same deep interior
+ *    once per stroke.
  */
-export function rasterUnionRings(
+function rasterizeDistanceField(
   lines: Polyline[],
   radius: number,
-  maxCells = RASTER_MAX_CELLS,
-  capCells = RASTER_CAP_CELLS,
-): Polyline[] {
-  const spec = rasterGridSpec(lines, radius, maxCells, capCells);
-  if (!spec) return [];
-  const { cell, gw, gh, x0, y0, effectiveRadius: r } = spec;
-  const box = { x0, y0, x1: x0 + gw * cell, y1: y0 + gh * cell };
-
-  // Cells farther than `reach` keep the sentinel: it is > r, so they are never
-  // inside, and no boundary edge can touch one — distance is 1-Lipschitz, so a
-  // cell next to an inside cell is within r + cell < reach of a stroke and has
-  // therefore been visited and holds its exact distance.
-  const reach = r + 2 * cell;
+  cell: number,
+  gw: number,
+  gh: number,
+  x0: number,
+  y0: number,
+): Float32Array {
+  const reach = radius + 2 * cell;
   // Held squared until the final pass (see `distPointSegmentSq`).
   const field = new Float32Array(gw * gh).fill((reach + cell) * (reach + cell));
-
-  // Symmetrically: a cell already known to be more than a cell's width *inside*
-  // the boundary can never move it. Its own neighbours are then all inside too
-  // (1-Lipschitz again), so every grid edge touching it joins two inside
-  // corners and no crossing is ever interpolated along it. Skipping those cells
-  // is exact — the rings come back bit-identical — and it is what keeps a
-  // saturated canvas from re-measuring the same deep interior once per stroke.
-  const skipInside = Math.max(0, r - 1.001 * cell);
+  const skipInside = Math.max(0, radius - 1.001 * cell);
   const skipBelowSq = skipInside * skipInside;
 
   /** Fold one segment's exact distances into the field over its reach band. */
@@ -566,11 +555,216 @@ export function rasterUnionRings(
     }
   }
 
-  // Un-square, and normalise so the boundary sits at 1 — which is also what
-  // `ringsFromThreshold` reads outside the image, so an edge-touching blob still
-  // closes correctly.
-  for (let i = 0; i < field.length; i++) field[i] = Math.sqrt(field[i]) / r;
+  for (let i = 0; i < field.length; i++) field[i] = Math.sqrt(field[i]) / radius;
+  return field;
+}
 
+/**
+ * How much finer the refinement window is sampled than the main grid — and so
+ * the raster's actual resolution claim: it can tell an enclosed pocket from a
+ * channel down to a sixteenth of a cell, and no finer.
+ *
+ * It is not a free parameter. The sharpest artefact in the suite is the cusp
+ * where two nearly-tangent discs cross (r=10, centres 19.9 apart): the exterior
+ * wedge there opens by only 11.5°, so at 4× — a quarter-cell — the wedge is
+ * still thinner than one sample near its tip, the flood fill cannot get out of
+ * it, and the speck is wrongly confirmed as a real hole. 8× clears that case and
+ * 16× leaves a factor of two in hand. The window is a handful of cells across
+ * either way, so this is a few thousand distance evaluations, not a rasterise.
+ */
+export const REFINE_FACTOR = 16;
+/** Cells of margin added around a candidate ring's bbox to make its window. */
+export const REFINE_PAD_CELLS = 2;
+/**
+ * Refined cells one `rasterUnionRings` call may spend on refinement in total —
+ * the cost bound, the same role {@link RASTER_CAP_CELLS} plays for the main
+ * grid. A compact candidate costs ≈(2·PAD·FACTOR)² ≈ 6.5k of it, so this is
+ * ~160 of them; a drawing that somehow sheds more sub-cell rings than that gets
+ * the honest resolution statement for the rest (a feature the raster cannot
+ * afford to look at is a feature it cannot claim) rather than an unbounded bill.
+ */
+export const REFINE_CELL_BUDGET = 1 << 20;
+
+/** What `rasterUnionRings` did with the sub-cell rings it found, for tests. */
+export interface RasterRefineStats {
+  /** Rings enclosing at most one cell — the ones sent for refinement. */
+  candidates: number;
+  /** …of those, the ones the refined field confirmed as real features. */
+  kept: number;
+  /** …and the ones it showed to be sampling artefacts. */
+  dropped: number;
+}
+
+/**
+ * Is a sub-cell ring a real enclosed feature, or an artefact of sampling?
+ *
+ * A ring enclosing less than one cell is below the main grid's sampling scale,
+ * and *that grid* has no evidence either way about it — but the raster does. It
+ * holds the exact segment set and the exact distance function, so instead of
+ * guessing from the ring's area it can go and look: re-rasterise the same field
+ * over a small window around the candidate at {@link REFINE_FACTOR}× the
+ * resolution and ask the question the ring is claiming an answer to — *is this
+ * pocket actually enclosed?*
+ *
+ * The window is the ring's bbox plus {@link REFINE_PAD_CELLS} coarse cells on
+ * every side, which is wider than any feature a sub-cell ring can be hiding, so
+ * "the pocket reaches the window border" really does mean "the pocket connects
+ * to the outside world".
+ *
+ * The two cases this separates, both of which really occur:
+ *
+ *  - **Real.** A closed square outline buffered until its interior nearly closes
+ *    leaves a genuine pinhole at the centre — the grid catches a single sample
+ *    inside it, and blanket-filtering by area erased a hole that is actually
+ *    there, flipping the centre of the shape from outside the silhouette to
+ *    inside. Refined, the pocket is still enclosed: kept.
+ *  - **Artefact.** Where two buffered discs cross, the exterior has a reflex
+ *    cusp whose channel to the outside is finer than a cell, so a sample just
+ *    inside the tip reads as an enclosed hole. Refined, the channel opens and
+ *    the pocket walks out to the window border: dropped.
+ *
+ * Islands (a positive sub-cell ring — a speck of ink rather than a pocket of
+ * paper) go through exactly the same test with the classes swapped: a speck that
+ * turns out to be connected to the main blob through a sub-cell isthmus is the
+ * same artefact wearing the other colour.
+ *
+ * Two decisions worth naming:
+ *
+ *  - **The coarse ring is kept, not the refined one.** The refined contour would
+ *    track the pocket better, but it would be a contour of a *different* grid:
+ *    mixed-resolution rings can cross each other, and even-odd fill over
+ *    crossing rings is meaningless. Sibling rings all being contours of one
+ *    field is what makes the even-odd composition sound, so refinement is used
+ *    as evidence only.
+ *  - **No seed, no keep.** If the refined window holds no cell of the pocket's
+ *    own class inside the candidate ring, the feature did not survive refinement
+ *    either and the raster is not entitled to report it.
+ *
+ * `budget` is the caller's remaining refined-cell allowance; it is debited by
+ * the window this call opens, and a window that will not fit in what is left is
+ * not opened at all (see {@link REFINE_CELL_BUDGET}).
+ */
+function subCellRingIsReal(
+  lines: Polyline[],
+  radius: number,
+  ring: Polyline,
+  cell: number,
+  budget: { cells: number },
+): boolean {
+  const area = polygonArea(ring);
+  if (area === 0) return false; // encloses nothing measurable
+  // Rings come off `ringsFromThreshold` oriented with the ink on one side, so
+  // the sign says which class the ring encloses: negative is a pocket of
+  // paper (a hole), positive a speck of ink (an island).
+  const wantInside = area > 0;
+
+  let xMin = Infinity;
+  let yMin = Infinity;
+  let xMax = -Infinity;
+  let yMax = -Infinity;
+  for (const p of ring) {
+    if (p.x < xMin) xMin = p.x;
+    if (p.x > xMax) xMax = p.x;
+    if (p.y < yMin) yMin = p.y;
+    if (p.y > yMax) yMax = p.y;
+  }
+  if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) return false;
+
+  const pad = REFINE_PAD_CELLS * cell;
+  const rcell = cell / REFINE_FACTOR;
+  const x0 = xMin - pad;
+  const y0 = yMin - pad;
+  const gw = Math.max(3, Math.ceil((xMax - xMin + 2 * pad) / rcell));
+  const gh = Math.max(3, Math.ceil((yMax - yMin + 2 * pad) / rcell));
+  // A ring can be sub-cell in *area* and still span many cells (a hairline
+  // sliver between two blobs), so the window is not bounded by the trigger.
+  if (gw * gh > budget.cells) return false;
+  budget.cells -= gw * gh;
+
+  const field = rasterizeDistanceField(lines, radius, rcell, gw, gh, x0, y0);
+  const isWanted = (i: number) => field[i] < 1 === wantInside;
+
+  // Seed from every refined cell inside the candidate ring that carries the
+  // enclosed class; if the feature has vanished at this resolution there are
+  // none, and the raster has no evidence to report it with. Only the ring's own
+  // bbox can hold such a cell, so the point-in-ring test never runs over the
+  // padding.
+  const stack: number[] = [];
+  const seen = new Uint8Array(gw * gh);
+  const lo = (v: number, n: number) => Math.max(0, Math.min(n - 1, Math.floor(v / rcell - 0.5)));
+  const hi = (v: number, n: number) => Math.max(0, Math.min(n - 1, Math.ceil(v / rcell)));
+  for (let gy = lo(yMin - y0, gh); gy <= hi(yMax - y0, gh); gy++) {
+    for (let gx = lo(xMin - x0, gw); gx <= hi(xMax - x0, gw); gx++) {
+      const i = gy * gw + gx;
+      if (!isWanted(i)) continue;
+      const p = { x: x0 + (gx + 0.5) * rcell, y: y0 + (gy + 0.5) * rcell };
+      if (!pointInSilhouette(p, [ring])) continue;
+      seen[i] = 1;
+      stack.push(i);
+    }
+  }
+  if (stack.length === 0) return false;
+
+  // Flood-fill that class. Touching the window border means the pocket is not
+  // enclosed at all — it drains out through a channel finer than a coarse cell.
+  while (stack.length > 0) {
+    const i = stack.pop()!;
+    const gx = i % gw;
+    const gy = (i - gx) / gw;
+    if (gx === 0 || gy === 0 || gx === gw - 1 || gy === gh - 1) return false;
+    const neighbours = [i - 1, i + 1, i - gw, i + gw];
+    for (const n of neighbours) {
+      if (seen[n] || !isWanted(n)) continue;
+      seen[n] = 1;
+      stack.push(n);
+    }
+  }
+  return true;
+}
+
+/**
+ * Rasterise the geometry's strokes buffered by `radius` and recover the union's
+ * boundary as rings (marching squares, via `ringsFromThreshold`).
+ *
+ * The grid holds a **distance field** — each cell stores its exact distance to
+ * the nearest stroke, normalised by the radius — rather than a 0/1 occupancy
+ * mask. That matters twice over:
+ *
+ *  - `ringsFromThreshold` interpolates its crossings linearly along a cell edge.
+ *    On a binary mask every crossing lands dead-centre, so the ring is quantised
+ *    to half-cells (~½ cell of error, whatever the cell size). On a distance
+ *    field the crossing lands where the distance actually equals the radius —
+ *    and distance to a straight stroke *is* linear, so the error collapses to
+ *    the field's curvature over one cell (≈ cell²/8r) instead of ½ cell.
+ *  - No sampling along the stroke, so no scalloping: the field is computed from
+ *    exact point-to-segment distances, evaluated only for cells within
+ *    `radius + 2 cells` of a stroke (long segments are chunked so the visited
+ *    band stays proportional to length × radius, not to length²).
+ *
+ * It is still not an exact Minkowski sum — the boundary is a polyline sampled on
+ * a grid — but it is stable, dependency-free, handles holes and disjoint blobs
+ * correctly (each comes back as its own ring, which the even-odd
+ * `pointInSilhouette` composes for free), and its cost is bounded by
+ * `capCells` (see {@link rasterGridSpec}).
+ *
+ * Features finer than one cell are not guessed at from their size but looked at
+ * — see {@link subCellRingIsReal}. Pass `stats` to see how many there were and
+ * which way each went; it is the only window onto a decision that is otherwise
+ * invisible in the output.
+ */
+export function rasterUnionRings(
+  lines: Polyline[],
+  radius: number,
+  maxCells = RASTER_MAX_CELLS,
+  capCells = RASTER_CAP_CELLS,
+  stats?: RasterRefineStats,
+): Polyline[] {
+  const spec = rasterGridSpec(lines, radius, maxCells, capCells);
+  if (!spec) return [];
+  const { cell, gw, gh, x0, y0, effectiveRadius: r } = spec;
+  const box = { x0, y0, x1: x0 + gw * cell, y1: y0 + gh * cell };
+
+  const field = rasterizeDistanceField(lines, r, cell, gw, gh, x0, y0);
   const rings = ringsFromThreshold(
     { brightness: field, width: gw, height: gh },
     1,
@@ -578,13 +772,23 @@ export function rasterUnionRings(
     box.y1 - box.y0,
     box,
   );
-  // A ring enclosing less than one grid cell is below the sampling scale —
-  // the raster has no evidence such a feature exists (the cusp of two
-  // crossing discs reads as a one-sample hole this way). Dropping them here,
-  // where the cell size is known, is the honest statement of resolution;
-  // ringsFromThreshold itself must keep single-sample rings because in a
-  // real image a one-pixel speck is a real feature.
-  return rings.filter((ring) => Math.abs(polygonArea(ring)) > cell * cell);
+
+  // A ring enclosing at most one grid cell is below *this* grid's sampling
+  // scale, but not below the raster's: it still holds the exact segments, so
+  // each such ring is decided by re-rasterising a small window around it at a
+  // finer resolution rather than by its area (see `subCellRingIsReal`).
+  const cellArea = cell * cell;
+  const budget = { cells: REFINE_CELL_BUDGET };
+  return rings.filter((ring) => {
+    if (Math.abs(polygonArea(ring)) > cellArea) return true;
+    if (stats) stats.candidates++;
+    const real = subCellRingIsReal(lines, r, ring, cell, budget);
+    if (stats) {
+      if (real) stats.kept++;
+      else stats.dropped++;
+    }
+    return real;
+  });
 }
 
 // ── The public entry point ───────────────────────────────────────────

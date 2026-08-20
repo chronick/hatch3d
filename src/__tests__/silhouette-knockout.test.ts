@@ -376,16 +376,20 @@ describe("ringsFromThreshold", () => {
     });
   });
 
-  // ── Multi-strand junctions ────────────────────────────────────────────────
+  // ── Threshold-exact samples (the old "multi-strand junction") ─────────────
   //
-  // A sample sitting *exactly* on the threshold collapses every crossing on its
-  // incident edges onto the lattice point itself, so four strands meet there.
-  // Which incoming strand is paired with which outgoing one is a real choice:
-  // taking whichever is simply unused first can weld two lobes into a single
-  // ring that passes through the junction twice — a figure-eight, not a
-  // contour. Even-odd fill, offsetting and pen-path ordering all assume simple
-  // rings, so the pairing follows the incoming direction instead.
-  describe("multi-strand junctions", () => {
+  // A sample sitting *exactly* on the threshold used to collapse every crossing
+  // on its incident edges onto the lattice point itself, so up to four strands
+  // met at one point and the tracer had to *guess* which incoming strand paired
+  // with which outgoing one. Guess wrong and two lobes weld into a single ring
+  // that passes through the junction twice — a figure-eight, not a contour —
+  // and even-odd fill, offsetting and pen-path ordering all assume simple rings.
+  //
+  // No local rule can decide it (see the module comment on `CROSSING_EPS`): the
+  // two pinches below are the same configuration locally and want opposite
+  // pairings. The tracer therefore refuses to create the junction at all —
+  // a crossing never lands on a lattice point — and these fixtures pin that.
+  describe("threshold-exact samples never create a junction", () => {
     /** Signed (shoelace) area; sign encodes winding, magnitude the enclosure. */
     const signedArea = (ring: Polyline): number => {
       let s = 0;
@@ -416,48 +420,121 @@ describe("ringsFromThreshold", () => {
       return true;
     };
 
-    // Column 1 sits exactly on the threshold, so the lattice point (1,0) — which
-    // maps to (1.5, 0.5) in a 3x3 target box — is a four-strand junction between
-    // the lone dark corner at (0,0) and the L-shaped dark blob down the right
-    // and along the bottom.
-    const JUNCTION = [
-      [0, 0.5, 0],
-      [1, 0.5, 0],
-      [0, 0, 0],
-    ];
-    const junctionImage = image(3, 3, (x, y) => JUNCTION[y][x]);
+    /** Distinct vertices of a ring, ignoring the closing repeat. */
+    const distinctVertices = (ring: Polyline): number => {
+      const seen = new Set<string>();
+      for (const p of ring) seen.add(`${p.x},${p.y}`);
+      return seen.size;
+    };
 
-    it("pairs strands at a four-way junction into simple rings", () => {
-      const rings = ringsFromThreshold(junctionImage, 0.5, 3, 3);
-      for (const ring of rings) {
+    /**
+     * Three fields, each with at least one sample sitting exactly on the
+     * threshold, and the total signed area of the walk they contour.
+     *
+     * Signed area is the invariant worth pinning: splitting a closed walk at a
+     * repeated vertex — or welding two walks that share one — conserves it
+     * exactly, so however the tracer resolves a pinch the *total* cannot move.
+     * That makes it a check on the resolution rather than on the choice.
+     *
+     *  - **asymmetric pinch** — column 1 is exactly on the threshold, so the
+     *    lattice point (1,0) joins a lone dark corner at (0,0) to the L-shaped
+     *    dark blob down the right and along the bottom. Two lobes of *dark*
+     *    meeting at a point: it wants the walks to hug the dark side.
+     *  - **symmetric pinch** — a bright notch cut down from the top, closing to
+     *    exactly zero width at (1,0). Locally identical to the case above (dark
+     *    left and right, bright above and below) but it wants the opposite
+     *    pairing: hugging the dark side here welds the outer boundary to the
+     *    pocket around (1,1) into a figure-eight through (1.5,0.5). That pair
+     *    is why no local turn rule can be right — hence the structural fix.
+     *  - **plus** — four dark arms meeting at a threshold-exact centre: all four
+     *    crossings on the incident edges collapse onto it, and every one of the
+     *    four cells around it emits a zero-length strand. It used to come back
+     *    as a "ring" of five identical points enclosing nothing.
+     */
+    const FIXTURES = [
+      ["asymmetric pinch", [[0, 0.5, 0], [1, 0.5, 0], [0, 0, 0]], 6.25],
+      ["symmetric pinch", [[0, 0.5, 0], [0, 1, 0], [0, 0, 0]], 7.25],
+      ["plus", [[1, 0, 1], [0, 0.5, 0], [1, 0, 1]], 4.5],
+    ] as const;
+
+    const contour = (grid: readonly (readonly number[])[]) =>
+      ringsFromThreshold(image(3, 3, (x, y) => grid[y][x]), 0.5, 3, 3);
+
+    it.each(FIXTURES)("%s: every ring is simple", (_name, grid) => {
+      for (const ring of contour(grid)) {
         expect(isSimpleRing(ring), `ring: ${ring.map((p) => `${p.x},${p.y}`).join(" ")}`).toBe(true);
       }
-      // The two lobes touch only at the junction, so they are two rings.
-      expect(rings).toHaveLength(2);
     });
 
-    it("preserves the enclosed area when it re-pairs the junction", () => {
-      const rings = ringsFromThreshold(junctionImage, 0.5, 3, 3);
-      // Before the fix this was one figure-eight ring of signed area 6.25;
-      // splitting a closed walk at a repeated vertex conserves signed area, so
-      // the two simple rings must still sum to it.
-      const total = rings.reduce((s, r) => s + signedArea(r), 0);
-      expect(total).toBeCloseTo(6.25, 9);
-      for (const ring of rings) expect(Math.abs(signedArea(ring))).toBeGreaterThan(0);
+    it.each(FIXTURES)("%s: every ring is a real ring, not a degenerate speck", (_name, grid) => {
+      for (const ring of contour(grid)) {
+        expect(distinctVertices(ring), "distinct vertices").toBeGreaterThanOrEqual(3);
+        // Extent rather than area: the ring the *plus* fixture returns for its
+        // threshold-exact centre is a real diamond, but one CROSSING_EPS across,
+        // so its shoelace area underflows to zero against coordinates of order
+        // one. A zero-extent "ring" — five copies of one point, which is what
+        // the four collapsed strands used to produce — is the thing to reject.
+        const xs = ring.map((p) => p.x);
+        const ys = ring.map((p) => p.y);
+        const extent = Math.max(...xs) - Math.min(...xs) + (Math.max(...ys) - Math.min(...ys));
+        expect(extent, "bounding-box extent").toBeGreaterThan(0);
+      }
+    });
+
+    it.each(FIXTURES)("%s: conserves the walk's total signed area", (_name, grid, total) => {
+      const sum = contour(grid).reduce((s, r) => s + signedArea(r), 0);
+      // The nudge that keeps crossings off the lattice moves them by
+      // CROSSING_EPS of a cell, so the total shifts in the ninth decimal.
+      expect(sum).toBeCloseTo(total, 6);
+    });
+
+    it("splits the asymmetric pinch into the speck and the blob", () => {
+      const rings = contour(FIXTURES[0][1]);
+      expect(rings).toHaveLength(2);
+      const areas = rings.map((r) => Math.abs(signedArea(r))).sort((a, b) => a - b);
+      expect(areas[0]).toBeCloseTo(0.75, 6); // the diamond around the lone corner
+      expect(areas[1]).toBeCloseTo(5.5, 6); // the L-shaped blob
+    });
+
+    it("reads the symmetric pinch as one ring around an open notch", () => {
+      // The classifier is `dark = brightness < threshold`, so the sample sitting
+      // exactly on the threshold is *bright*: the notch stays open (by a hair)
+      // and the pocket around (1,1) is reached through it rather than being
+      // sealed off. One ring, and the fill is the same either way — see the
+      // classification checks below.
+      const rings = contour(FIXTURES[1][1]);
+      expect(rings).toHaveLength(1);
+      expect(Math.abs(signedArea(rings[0]))).toBeCloseTo(7.25, 6);
     });
 
     it("keeps the same points inside the silhouette", () => {
-      const rings = ringsFromThreshold(junctionImage, 0.5, 3, 3);
       // Sample centres map to (x+0.5, y+0.5) in a 3x3 target box. Only samples
       // strictly off the threshold are asserted — a sample sitting exactly on it
       // is a boundary point, where `pointInSilhouette` is documented undefined.
-      const dark: [number, number][] = [[0, 0], [2, 0], [2, 1], [0, 2], [1, 2], [2, 2]];
-      const bright: [number, number][] = [[0, 1]];
-      for (const [x, y] of dark) {
-        expect(pointInSilhouette({ x: x + 0.5, y: y + 0.5 }, rings), `dark ${x},${y}`).toBe(true);
-      }
-      for (const [x, y] of bright) {
-        expect(pointInSilhouette({ x: x + 0.5, y: y + 0.5 }, rings), `bright ${x},${y}`).toBe(false);
+      const cases: [string, readonly (readonly number[])[], [number, number][], [number, number][]][] =
+        [
+          ["asymmetric pinch", FIXTURES[0][1], [[0, 0], [2, 0], [2, 1], [0, 2], [1, 2], [2, 2]], [[0, 1]]],
+          [
+            "symmetric pinch",
+            FIXTURES[1][1],
+            [[0, 0], [2, 0], [0, 1], [2, 1], [0, 2], [1, 2], [2, 2]],
+            [[1, 1]],
+          ],
+          ["plus", FIXTURES[2][1], [[1, 0], [0, 1], [2, 1], [1, 2]], [[0, 0], [2, 0], [0, 2], [2, 2]]],
+        ];
+      for (const [name, grid, dark, bright] of cases) {
+        const rings = contour(grid);
+        for (const [x, y] of dark) {
+          expect(pointInSilhouette({ x: x + 0.5, y: y + 0.5 }, rings), `${name} dark ${x},${y}`).toBe(
+            true,
+          );
+        }
+        for (const [x, y] of bright) {
+          expect(
+            pointInSilhouette({ x: x + 0.5, y: y + 0.5 }, rings),
+            `${name} bright ${x},${y}`,
+          ).toBe(false);
+        }
       }
     });
   });

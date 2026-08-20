@@ -30,6 +30,7 @@ import {
   RASTER_CAP_CELLS,
   type Point,
   type Polyline,
+  type RasterRefineStats,
 } from "../operators/region-shapes";
 import { pointInSilhouette } from "../operators/silhouette-knockout";
 
@@ -345,16 +346,6 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
   });
 
   /**
-   * The one thing the raster genuinely claims: features it can *resolve*. A ring
-   * enclosing less than one grid cell is below the sampling scale — the grid has
-   * no evidence either way about it — so the boundary count is stated over rings
-   * bigger than a cell, and the sub-cell ones are pinned separately (see
-   * `CUSP_SPECKS` below) rather than swept under the assertion.
-   */
-  const resolvable = (rings: Polyline[], cell: number) =>
-    rings.filter((r) => Math.abs(polygonArea(r)) > cell * cell);
-
-  /**
    * Where two overlapping discs cross, the *exterior* has a reflex cusp: a wedge
    * (36° wide at d=19, r=10) whose tip is the circle intersection. A lattice
    * sample landing just inside that tip has all four of its 4-neighbours inside
@@ -368,32 +359,64 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
    * So this is a *sampling* artefact of the distance field at a cusp, not a
    * saddle-decider artefact, and no per-cell contour rule removes it — see the
    * `silhouette-knockout.test.ts` refutations, which pin the decider's answer on
-   * two cells of exactly this shape. It shows up in 3 of the 48 sweep positions
-   * below, always as a single sub-cell hole per cusp (|area| ≈ 0.001–0.002
-   * against a cell of ≈0.032–0.037), and the real fix belongs one level up in
-   * `rasterUnionRings`, which is the layer that knows the cell size and can
-   * refuse to report a feature finer than it.
+   * two cells of exactly this shape. It shows up at exactly these three of the
+   * 48 sweep positions below, as one sub-cell hole at each of the neck's two
+   * cusps (|area| ≈ 0.0008–0.002 against a cell of ≈0.032–0.037).
    *
-   * Listed exhaustively so that fixing it *fails* this test rather than passing
-   * quietly: if the set changes, update it deliberately.
+   * `rasterUnionRings` is the layer that can settle it, because it holds the
+   * exact segment set: it re-rasterises a window around each sub-cell candidate
+   * at `REFINE_FACTOR`× and asks whether the pocket really is enclosed. At the
+   * cusp it is not — the wedge opens out through a channel finer than the coarse
+   * cell — so the speck is dropped *on evidence*, and `stats` below pins that it
+   * went through the refinement rather than through a blanket area filter.
    */
-  const CUSP_SPECKS = new Set(["19/27", "19/63", "19.9/45"]);
+  const CUSP_SPECKS = ["19/27", "19/63", "19.9/45"] as const;
+
+  it.each(CUSP_SPECKS)("drops the cusp speck at %s on refined evidence", (pos) => {
+    const [d, deg] = pos.split("/").map(Number);
+    const pts: Polyline[] = [at(0, 0), at(d, deg)];
+    const stats: RasterRefineStats = { candidates: 0, kept: 0, dropped: 0 };
+    const rings = rasterUnionRings(pts, R, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+
+    // The refinement is what removed them: one sub-cell candidate per cusp,
+    // each examined and dropped. A blanket area filter would show up here as
+    // candidates = 0 — nothing was ever looked at.
+    expect(stats, `ring areas: ${rings.map((r) => polygonArea(r).toFixed(4))}`).toEqual({
+      candidates: 2,
+      kept: 0,
+      dropped: 2,
+    });
+    expect(rings).toHaveLength(1);
+    expect(Math.abs(polygonArea(rings[0]))).toBeCloseTo(unionArea(R, d), 0);
+
+    // …and the classification around each cusp agrees with the true geometry.
+    // The two cusps sit on the neck's midline, `out` px either side of the axis
+    // joining the centres; stepping further off the axis leaves the union, and
+    // stepping back towards it enters. Both circles are `R` from their own
+    // centre at the cusp, so both probes are exact statements about the union,
+    // not approximations of it.
+    const u = { x: Math.cos((deg * Math.PI) / 180), y: Math.sin((deg * Math.PI) / 180) };
+    const n = { x: -u.y, y: u.x };
+    const onMidline = (off: number) => ({
+      x: (d / 2) * u.x + off * n.x,
+      y: (d / 2) * u.y + off * n.y,
+    });
+    const out = Math.sqrt(R * R - (d / 2) * (d / 2)); // cusp offset from the axis
+    for (const k of [1, -1]) {
+      expect(pointInSilhouette(onMidline(k * (out - 0.5)), rings), `inside ${pos}`).toBe(true);
+      expect(pointInSilhouette(onMidline(k * (out + 0.5)), rings), `outside ${pos}`).toBe(false);
+    }
+  });
 
   it("returns one boundary ring for a near-tangent neck at an off-axis angle", () => {
     // Second regression, same shape as 17.4/2° one rotation over.
     const pts: Polyline[] = [at(0, 0), at(19, 27)];
-    const cell = rasterGridSpec(pts, R)!.cell;
     const rings = rasterUnionRings(pts, R);
-    const boundary = resolvable(rings, cell);
-    expect(boundary.length, `ring areas: ${rings.map((r) => polygonArea(r).toFixed(4))}`).toBe(1);
-    expect(Math.abs(polygonArea(boundary[0]))).toBeCloseTo(unionArea(R, 19), 0);
+    expect(rings.length, `ring areas: ${rings.map((r) => polygonArea(r).toFixed(4))}`).toBe(1);
+    expect(Math.abs(polygonArea(rings[0]))).toBeCloseTo(unionArea(R, 19), 0);
     for (const p of [{ x: 0, y: 0 }, { x: 16.9, y: 8.6 }, { x: 8.5, y: 4.3 }]) {
       expect(pointInSilhouette(p, rings)).toBe(true);
     }
-    // The cusp specks this position used to emit are now dropped inside
-    // rasterUnionRings (sub-cell rings are below the sampling scale), so the
-    // output is exactly the boundary — nothing else.
-    expect(rings.length).toBe(boundary.length);
   });
 
   it("keeps two rings when the blobs genuinely do not touch", () => {
@@ -407,39 +430,99 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
   });
 
   it("is stable as the blobs are swept through the touching point", () => {
-    // One resolvable ring while they overlap, two once they separate — never a
-    // resolvable speck in between, at any approach angle. 20px is exactly
-    // tangent, so it is excluded as a genuine tie. The angles are swept because
-    // the neck's orientation relative to the lattice is what decides which cells
-    // go saddle at all: 0°/45° are the two symmetric readings and 2°/27°/63°/88°
-    // are the lopsided ones, where a cell's saddle sits well off its centre.
-    // (Sub-cell cusp specks are a separate matter — see CUSP_SPECKS.)
+    // One ring while they overlap, two once they separate — never a speck in
+    // between, at any approach angle. 20px is exactly tangent, so it is excluded
+    // as a genuine tie. The angles are swept because the neck's orientation
+    // relative to the lattice is what decides which cells go saddle at all:
+    // 0°/45° are the two symmetric readings and 2°/27°/63°/88° are the lopsided
+    // ones, where a cell's saddle sits well off its centre.
     const angles = [0, 2, 27, 45, 63, 88];
-    const seen = new Set<string>();
+    const specked: string[] = [];
     for (const [d, want] of [
       [12, 1], [15, 1], [17.4, 1], [19, 1], [19.9, 1],
       [20.5, 2], [25, 2], [40, 2],
     ] as const) {
       for (const deg of angles) {
         const pts = [at(0, 0), at(d, deg)];
-        const cell = rasterGridSpec(pts, R)!.cell;
-        const rings = rasterUnionRings(pts, R);
+        const stats: RasterRefineStats = { candidates: 0, kept: 0, dropped: 0 };
+        const rings = rasterUnionRings(pts, R, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
         const where = `d=${d} deg=${deg}: ${rings.map((r) => polygonArea(r).toFixed(4))}`;
-        expect(resolvable(rings, cell).length, where).toBe(want);
-        // Sub-cell cusp specks (see CUSP_SPECKS) are dropped inside
-        // rasterUnionRings now — the output ring count is the resolvable count.
         expect(rings.length, where).toBe(want);
-        if (rings.length > want) seen.add(`${d}/${deg}`);
+        expect(stats.kept, `${where} kept a sub-cell ring`).toBe(0);
+        if (stats.candidates > 0) specked.push(`${d}/${deg}`);
         expect(Math.abs(polygonArea(rings[0])), where).toBeCloseTo(
           want === 1 ? unionArea(R, d) : Math.PI * R * R,
           0,
         );
       }
     }
-    // CUSP_SPECKS documents where the raster *would* speck without the
-    // sub-cell drop; with the drop in place nothing escapes.
-    expect(seen.size).toBe(0);
-    void CUSP_SPECKS;
+    // Exactly the documented cusp positions produce a sub-cell candidate at all,
+    // so a change in the raster that creates (or stops creating) them fails here
+    // rather than passing quietly.
+    expect(specked).toEqual([...CUSP_SPECKS]);
+  });
+});
+
+/**
+ * A sub-cell ring is not automatically noise. The raster holds the *exact*
+ * segment set and distance function, so when a candidate feature is finer than
+ * the grid it can go and look instead of guessing from its area — and the two
+ * cases really do differ: the cusp specks above are an artefact of sampling a
+ * wedge whose channel to the outside is finer than a cell, while the pinhole
+ * below is a genuine enclosed pocket that happens to catch a single sample.
+ *
+ * The fixture: a closed 8.2 × 8.2 square outline buffered at radius 4, with a
+ * tail stroke attached at one corner — the tail is there only to widen the
+ * drawing until the adaptive grid picks a cell of ≈0.157px, which is what makes
+ * the hole land on exactly one sample. Points further than 4px from all four
+ * sides form a real 0.2 × 0.2 pocket at the centre; the grid catches one sample
+ * inside it, and the raw contour reports it as a ring of |area| ≈ 0.020 against
+ * a cell² of ≈0.025 — sub-cell, and so a candidate.
+ *
+ * Blanket-filtering everything below a cell² deleted that ring and flipped the
+ * centre of the square from outside the silhouette to inside — a hole in the
+ * drawing filled in by the approximation.
+ */
+describe("sub-cell rings are decided on evidence, not on area alone", () => {
+  const HALF = 4.1;
+  const PINHOLE: Polyline[] = [
+    [
+      { x: -HALF, y: -HALF },
+      { x: HALF, y: -HALF },
+      { x: HALF, y: HALF },
+      { x: -HALF, y: HALF },
+      { x: -HALF, y: -HALF },
+    ],
+    [{ x: HALF, y: HALF }, { x: HALF + 14, y: HALF + 14 }],
+  ];
+
+  it("the fixture really does have a hole — the centre is 4.1px from every stroke", () => {
+    // Guards the fixture itself: if the geometry ever stops enclosing a pocket,
+    // the test below stops meaning anything.
+    const rings = derivedRegionRings(PINHOLE, { of: "n", kind: "bbox" }); // cheap sanity
+    expect(rings).toHaveLength(1);
+    expect(distToRings({ x: 0, y: 0 }, PINHOLE)).toBeCloseTo(HALF, 9);
+    expect(HALF).toBeGreaterThan(OUTLINE_BASE_RADIUS);
+  });
+
+  it("keeps a real sub-cell hole instead of filling it in", () => {
+    const stats: RasterRefineStats = { candidates: 0, kept: 0, dropped: 0 };
+    const rings = rasterUnionRings(
+      PINHOLE,
+      OUTLINE_BASE_RADIUS,
+      RASTER_MAX_CELLS,
+      RASTER_CAP_CELLS,
+      stats,
+    );
+    expect(stats).toEqual({ candidates: 1, kept: 1, dropped: 0 });
+    expect(rings).toHaveLength(2);
+    // The whole point: the centre of the square is *not* in the silhouette.
+    expect(pointInSilhouette({ x: 0, y: 0 }, rings)).toBe(false);
+    // …while the ink around it is.
+    expect(pointInSilhouette({ x: HALF, y: 0 }, rings)).toBe(true);
+    expect(pointInSilhouette({ x: 0, y: HALF }, rings)).toBe(true);
+    // …and everything outside the buffered square still is not.
+    expect(pointInSilhouette({ x: 0, y: HALF + OUTLINE_BASE_RADIUS + 1 }, rings)).toBe(false);
   });
 });
 
@@ -448,11 +531,16 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
 /**
  * Wall-clock ceiling for one region resolve on fine-detail geometry.
  *
- * Measured on the dev machine (M-series, node 24): 18–25ms for the star field
- * below, 34–41ms for a deliberately pathological 2 000-stroke saturated canvas.
- * The budget is set an order of magnitude above the measurement so machine and
- * CI variance cannot flake it — it is a guard against an accidental
- * quadratic, not a performance target.
+ * Measured on the dev machine (M-series, node 24): 22–23ms for `outline` over
+ * the star field below, 30ms for `occupied`, 50ms for a deliberately
+ * pathological 2 000-stroke saturated canvas. The budget is set several times
+ * above the measurement so machine and CI variance cannot flake it — it is a
+ * guard against an accidental quadratic, not a performance target.
+ *
+ * None of these three sheds a sub-cell ring, so none of them pays for
+ * refinement; where it does fire it is small change against the main grid —
+ * the pinhole fixture's window is 6.4k refined cells against a 38k-cell main
+ * raster, and the whole call still resolves in well under a millisecond.
  */
 const RESOLVE_BUDGET_MS = 250;
 
