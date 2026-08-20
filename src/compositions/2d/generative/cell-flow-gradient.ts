@@ -20,10 +20,15 @@
  * rounded-inset regions, two consumers (design principle #6 — compositions
  * decompose into shared components).
  *
- * **Multi-pen**: this emits a single pen for now, but each cell's fill lines
- * are emitted strictly left-to-right and contiguously, so a later pass can map
- * a cell's consecutive line runs onto a colour ramp (the reference piece is a
- * warm gradient) without re-deriving the geometry.
+ * **Multi-pen**: each cell's fill lines are emitted strictly left-to-right and
+ * contiguously, so consecutive line runs map onto a colour ramp (the reference
+ * piece is a warm gradient) without re-deriving the geometry. The optional
+ * `penCount`/`penIndex` controls turn that ordering into an actual partition:
+ * with `penCount > 1` the composition emits only the `penIndex`-th vertical
+ * slice of every cell, so N renders at the same seed reconstruct exactly the
+ * one-pen output. `cellFlowRamp` (`src/compositions/layered/demos/`) stacks
+ * those N slices as N coloured pen layers. Defaults (`penCount: 1`) disable
+ * slicing entirely, leaving the single-pen output untouched.
  *
  * Deterministic: one mulberry32 stream for the site layout, one hash-derived
  * value per cell for phase/density. No Math.random anywhere.
@@ -95,6 +100,27 @@ export function voronoiCell(sites: Pt[], i: number, bounds: Pt[]): Pt[] {
     poly = clipHalfSpace(poly, nx, ny, nx * mx + ny * my);
   }
   return poly;
+}
+
+// ── Multi-pen slicing ────────────────────────────────────────────────────────
+
+/**
+ * Which of `penCount` vertical slices a fill run at nominal x `x` belongs to,
+ * given the cell's horizontal span `[cx0, cx1]`.
+ *
+ * The run's *nominal* x is used — its pre-wave scan position — so slice
+ * boundaries are clean vertical cuts rather than wavy ones, and so the
+ * assignment is a pure function of the scan loop's own counter. Runs in the
+ * `waveAmplitude` overscan either side of the span clamp into the first/last
+ * slice, which keeps the mapping total: every run lands in exactly one slice,
+ * so the N slices partition the cell's runs with nothing dropped or doubled.
+ */
+export function penSliceIndex(x: number, cx0: number, cx1: number, penCount: number): number {
+  if (penCount <= 1) return 0;
+  const span = cx1 - cx0;
+  if (!(span > 0)) return 0;
+  const t = (x - cx0) / span;
+  return Math.min(penCount - 1, Math.max(0, Math.floor(t * penCount)));
 }
 
 function polygonCentroid(poly: Pt[]): Pt | null {
@@ -170,6 +196,13 @@ const cellFlowGradient: Composition2DDefinition = {
     seed: {
       type: "slider", label: "Seed", default: 7, min: 0, max: 9999, step: 1, group: "Layout",
     },
+    // ── Multi-pen slicing (no-op at the defaults) ──
+    penCount: {
+      type: "slider", label: "Pen Count", default: 1, min: 1, max: 8, step: 1, group: "Pens",
+    },
+    penIndex: {
+      type: "slider", label: "Pen Index", default: 0, min: 0, max: 7, step: 1, group: "Pens",
+    },
   },
 
   generate({ width, height, values }) {
@@ -183,6 +216,16 @@ const cellFlowGradient: Composition2DDefinition = {
     const phaseVariation = values.phaseVariation as number;
     const outline = values.outline as boolean;
     const seed = Math.round(values.seed as number);
+
+    // Multi-pen slicing. `penCount <= 1` (the default) is the untouched
+    // single-pen path: no filtering, no reordering, no extra allocation.
+    const penCount = Math.max(1, Math.round((values.penCount as number) ?? 1));
+    const penIndex = Math.min(penCount - 1, Math.max(0, Math.round((values.penIndex as number) ?? 0)));
+    const slicing = penCount > 1;
+    // The heavy cell outline belongs to one pen only, or N pens would each
+    // redraw it. It goes to the last (darkest) pen, matching the reference's
+    // near-black border.
+    const drawOutline = outline && (!slicing || penIndex === penCount - 1);
 
     const x0 = margin;
     const y0 = margin;
@@ -228,7 +271,7 @@ const cellFlowGradient: Composition2DDefinition = {
       const ring = insetAndRoundPolygon(cell, gutter / 2, cornerRadius);
       if (ring.length < 3) continue;
 
-      if (outline) {
+      if (drawOutline) {
         for (let pass = 0; pass < OUTLINE_PASSES; pass++) {
           const r = pass === 0 ? ring : insetAndRoundPolygon(cell, gutter / 2 + pass * OUTLINE_PASS_INSET, cornerRadius);
           if (r.length < 3) continue;
@@ -252,9 +295,14 @@ const cellFlowGradient: Composition2DDefinition = {
       const spacing = lineSpacing * (1 + (hash01(seed, i * 2 + 2) - 0.5) * 2 * CELL_DENSITY_JITTER);
 
       const raw: Pt[][] = [];
+      // Slice assignment per emitted raw line, parallel to `raw`. Only filled
+      // when slicing is on.
+      const rawSlice: number[] = [];
       let lineIndex = 0;
-      // Left-to-right: consecutive lines stay adjacent in the output so a
-      // future multi-pen pass can walk them as a colour ramp.
+      // Left-to-right: consecutive lines stay adjacent in the output so the
+      // multi-pen pass can walk them as a colour ramp. `lineIndex` advances on
+      // every scan position regardless of slicing, so each line keeps the same
+      // phase it would have had in the single-pen render.
       for (let x = cx0 - waveAmplitude; x <= cx1 + waveAmplitude; x += spacing) {
         const phase = cellPhase + phaseVariation * lineIndex;
         const line: Pt[] = [];
@@ -266,11 +314,18 @@ const cellFlowGradient: Composition2DDefinition = {
           });
           if (yy >= cy1) break;
         }
-        if (line.length >= 2) raw.push(line);
+        if (line.length >= 2) {
+          raw.push(line);
+          if (slicing) rawSlice.push(penSliceIndex(x, cx0, cx1, penCount));
+        }
         lineIndex++;
       }
 
-      polylines.push(...clipPolylinesToSilhouette(raw, [ring], "inside"));
+      // Identity (same array object) on the single-pen path — the geometry
+      // handed to the clipper is bit-for-bit what it was before slicing existed.
+      const selected = slicing ? raw.filter((_, i) => rawSlice[i] === penIndex) : raw;
+
+      polylines.push(...clipPolylinesToSilhouette(selected, [ring], "inside"));
     }
 
     return polylines;

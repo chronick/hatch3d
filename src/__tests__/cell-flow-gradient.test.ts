@@ -46,6 +46,9 @@ describe("cell-flow-gradient metadata", () => {
       "lineSpacing",
       "margin",
       "outline",
+      // Multi-pen slicing — no-ops at their defaults, see cell-flow-ramp.test.ts.
+      "penCount",
+      "penIndex",
       "phaseVariation",
       "seed",
       "waveAmplitude",

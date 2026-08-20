@@ -66,6 +66,7 @@ import truchetMaze from "../src/compositions/2d/patterns/truchet-maze.js";
 import waveInterference from "../src/compositions/2d/patterns/wave-interference.js";
 
 // Layered compositions (multi-composition umbrella)
+import cellFlowRamp from "../src/compositions/layered/demos/cell-flow-ramp.js";
 import phyllotaxisIsoblocks from "../src/compositions/layered/demos/phyllotaxis-isoblocks.js";
 import twoPenOffset from "../src/compositions/layered/demos/two-pen-offset.js";
 
@@ -84,7 +85,7 @@ const allCompositions: CompositionDefinition[] = [
   recursiveSubdivision,
   spirograph, truchetMaze, waveInterference,
   // Layered
-  phyllotaxisIsoblocks, twoPenOffset,
+  cellFlowRamp, phyllotaxisIsoblocks, twoPenOffset,
 ];
 
 export function loadCompositions(): void {
