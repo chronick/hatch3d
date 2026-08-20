@@ -254,6 +254,23 @@ describe("regionHatch — terminates on rings far from the origin", () => {
     expect(lines.length).toBeLessThanOrEqual(11);
   });
 
+  it("never emits two strokes on the same scanline", () => {
+    // Termination was fixed by indexing (`first + i * pitch`), but indexing does
+    // not make the terms *distinct*: at y ≈ 1e16 the float64 lattice is 2 units
+    // coarse, so a pitch of 1 asks for 33 scanlines and gets 17 addresses. The
+    // duplicates are indistinguishable strokes drawn on top of each other — the
+    // plotter re-inks the same line and the SVG carries dead geometry.
+    const big = 1e16;
+    expect(big + 1).toBe(big); // the premise: pitch 1 is below one ULP here
+    const ring: Pt[] = [
+      { x: 0, y: big }, { x: 100, y: big }, { x: 100, y: big + 32 }, { x: 0, y: big + 32 },
+    ];
+    const lines = hatchRegion([ring], 0, 1);
+    expect(lines.length).toBeGreaterThan(0);
+    const ys = lines.map((l) => l[0].y);
+    expect(new Set(ys).size, `ys: ${ys.join(",")}`).toBe(ys.length);
+  });
+
   it("still throws on a genuinely runaway pitch rather than emitting millions", () => {
     const ring: Pt[] = [
       { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 1000 }, { x: 0, y: 1000 },

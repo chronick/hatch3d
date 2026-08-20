@@ -415,14 +415,14 @@ const MS_SADDLE_JOINED: Record<number, number[][]> = {
  *
  * **Saddles.** A cell whose two dark corners are diagonally opposite (cases 5
  * and 10) has two valid contourings, and picking one blindly is a real
- * topology bug: on a narrow neck — two overlapping buffered blobs, the tangent
- * band along the top of a disc — the wrong reading pinches the boundary and
- * sheds spurious specks beside the true ring. It is disambiguated the standard
- * asymptotic way: the bilinear interpolant's value at the cell centre is the
- * mean of the four corners, so if that mean is dark the dark corners connect
- * through the centre, otherwise they separate (equivalently: the bright pair
- * connects). Both readings emit two segments, so a saddle cell contributes two
- * strands to the chaining pass rather than one.
+ * topology bug: a one-sample-wide diagonal feature either comes apart into a
+ * chain of disjoint diamonds or welds shut across a gap, depending which way the
+ * guess falls. It is disambiguated by the
+ * standard **asymptotic decider**: the bilinear interpolant's own saddle value,
+ * `(a·d - b·c) / (a - b - c + d)` over threshold-shifted corners, decides which
+ * diagonal is connected (derivation on `cellSegments` below). Both readings emit
+ * two segments, so a saddle cell contributes two strands to the chaining pass
+ * rather than one.
  *
  * `box` places the result somewhere other than the origin — the grid maps onto
  * `[box.x0, box.x1] x [box.y0, box.y1]` instead of `[0, targetW] x [0,
@@ -471,14 +471,56 @@ export function ringsFromThreshold(
   const key = (p: Point) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`;
 
   /**
-   * The contouring of one cell, saddles resolved. For cases 5 and 10 the
-   * bilinear interpolant at the cell centre is the mean of the four corners:
-   * a dark centre joins the dark diagonal, a bright one separates it.
+   * The contouring of one cell, saddles resolved by the **asymptotic decider**.
+   *
+   * Write the corners shifted by the threshold — `a` = TL, `b` = TR, `c` = BL,
+   * `d` = BR, each `sample - threshold`, so "dark" is exactly "negative". Over
+   * the unit cell (x right, y down) the bilinear interpolant is
+   *
+   * ```text
+   * f(x,y) = a(1-x)(1-y) + b·x(1-y) + c(1-x)y + d·xy
+   *        = a + (b-a)x + (c-a)y + (a-b-c+d)xy
+   * ```
+   *
+   * Its only stationary point is a saddle, at `x = (a-c)/D`, `y = (a-b)/D` with
+   * `D = a - b - c + d`; substituting back and collecting terms leaves
+   *
+   * ```text
+   * f_saddle = (a·d - b·c) / D
+   * ```
+   *
+   * The two contour branches meet at that saddle, so the diagonal whose sign
+   * matches `f_saddle` is the connected one. Dark is the negative side, so the
+   * dark diagonal joins through the centre exactly when `f_saddle < 0` — that
+   * is, when `sign(a·d - b·c) !== sign(D)`. Comparing the two signs rather than
+   * multiplying keeps the test exact for tiny corner offsets.
+   *
+   * The old reading — "is the mean of the four corners dark?" — is `f` at the
+   * cell *centre*, which is only the saddle when the cell is symmetric. On a
+   * lopsided cell the saddle drifts off-centre and the mean gets the topology
+   * backwards in both directions: `[0, .7; .7, .49]` (mean 0.4725, joins) is
+   * genuinely separated, `[.3, .89; .52, .3]` (mean 0.5025, separates) is
+   * genuinely joined. Lopsided cells are the common case anywhere the contrast
+   * across a feature is uneven, and each one the mean gets wrong is a ring
+   * gained or lost.
+   *
+   * `f_saddle` is exactly zero (or `D` is, putting the saddle at infinity) only
+   * for a degenerate cell — a perfect checkerboard, or a corner sitting exactly
+   * on the threshold. Neither reading is more true there, so the tie defaults to
+   * *separated*, the table's own entry: two specks that a later pass can weld
+   * are cheaper to reason about than a join the field does not support.
    */
   const cellSegments = (cx: number, cy: number, idx: number): number[][] => {
     if (idx !== 5 && idx !== 10) return MS_TABLE[idx];
-    const centre = (at(cx, cy) + at(cx + 1, cy) + at(cx + 1, cy + 1) + at(cx, cy + 1)) / 4;
-    return centre < threshold ? MS_SADDLE_JOINED[idx] : MS_TABLE[idx];
+    const a = at(cx, cy) - threshold;              // TL
+    const b = at(cx + 1, cy) - threshold;          // TR
+    const c = at(cx, cy + 1) - threshold;          // BL
+    const d = at(cx + 1, cy + 1) - threshold;      // BR
+    const num = a * d - b * c;                     // f_saddle · D
+    const den = a - b - c + d;                     // D
+    if (num === 0 || den === 0) return MS_TABLE[idx];   // degenerate tie
+    const darkJoined = num < 0 !== den < 0;             // f_saddle < 0
+    return darkJoined ? MS_SADDLE_JOINED[idx] : MS_TABLE[idx];
   };
 
   type Seg = { a: Point; b: Point };
@@ -522,12 +564,63 @@ export function ringsFromThreshold(
   const used = new Array<boolean>(segs.length).fill(false);
   const rings: Polyline[] = [];
 
-  /** The next unused strand leaving point `p`, or undefined if the chain ends. */
-  const nextFrom = (p: Point): number | undefined => {
+  /**
+   * How far you must sweep, from the direction you came *back* along, before you
+   * meet the outgoing strand — counter-clockwise on screen, in (0, 2π].
+   *
+   * Every segment is emitted with the dark side on its right, so sweeping this
+   * way and taking the *smallest* angle is the sharpest available right-hand
+   * turn: the walk hugs the dark region instead of cutting across it. A
+   * straight-through continuation sits at exactly π, a left turn beyond it, and
+   * doubling back along the strand you arrived on lands at 2π — last resort,
+   * where it belongs. A degenerate (zero-length) strand has no direction and
+   * scores `Infinity`, which leaves the caller's first-unused pick standing.
+   */
+  const sweepAngle = (inDx: number, inDy: number, outDx: number, outDy: number): number => {
+    if ((inDx === 0 && inDy === 0) || (outDx === 0 && outDy === 0)) return Infinity;
+    const rx = -inDx;
+    const ry = -inDy;
+    const dot = rx * outDx + ry * outDy;
+    const cross = rx * outDy - ry * outDx; // > 0 is a clockwise (right) turn
+    const a = Math.atan2(-cross, dot);
+    return a > 0 ? a : a + Math.PI * 2;
+  };
+
+  /**
+   * The next unused strand leaving point `p`, or undefined if the chain ends.
+   *
+   * Where only one strand leaves — every ordinary point on a contour — this is
+   * just that strand. At a **junction** it is a real choice: a sample sitting
+   * exactly on the threshold collapses all the crossings on its incident edges
+   * onto the lattice point itself, so two strands arrive and two leave. Taking
+   * whichever is unused first welds the two lobes into a single ring that passes
+   * through the junction twice — a figure-eight, not a contour, and every
+   * consumer downstream (even-odd fill, offsetting, pen ordering) assumes simple
+   * rings. Turning as sharply as the orientation allows resolves it the way a
+   * contour-follower should: the lobes come back as two rings that touch at a
+   * point, which is what the field actually says.
+   */
+  const nextFrom = (p: Point, inDx: number, inDy: number): number | undefined => {
     const bucket = startIndex.get(key(p));
     if (!bucket) return undefined;
-    for (const i of bucket) if (!used[i]) return i;
-    return undefined;
+    let best: number | undefined;
+    let bestSweep = Infinity;
+    const sweepOf = (i: number) =>
+      sweepAngle(inDx, inDy, segs[i].b.x - segs[i].a.x, segs[i].b.y - segs[i].a.y);
+    for (const i of bucket) {
+      if (used[i]) continue;
+      if (best === undefined) {
+        best = i; // scored lazily: an ordinary point never pays for the angle
+        continue;
+      }
+      if (bestSweep === Infinity) bestSweep = sweepOf(best);
+      const sweep = sweepOf(i);
+      if (sweep < bestSweep) {
+        best = i;
+        bestSweep = sweep;
+      }
+    }
+    return best;
   };
 
   for (let s = 0; s < segs.length; s++) {
@@ -538,7 +631,7 @@ export function ringsFromThreshold(
       used[i] = true;
       const seg = segs[i];
       ring.push({ x: mapX(seg.a.x), y: mapY(seg.a.y) });
-      const next = nextFrom(seg.b);
+      const next = nextFrom(seg.b, seg.b.x - seg.a.x, seg.b.y - seg.a.y);
       if (next === undefined) {
         // Chain ends: closed loop back to the start, or an unpaired chain.
         ring.push({ x: mapX(seg.b.x), y: mapY(seg.b.y) });

@@ -5,6 +5,7 @@ import {
   knockout,
   ringsFromSVGPath,
   ringsFromThreshold,
+  type Point,
   type Polyline,
 } from "../operators/silhouette-knockout";
 
@@ -294,36 +295,63 @@ describe("ringsFromThreshold", () => {
   // ── Saddle cases (marching-squares 5 / 10) ──────────────────────────────
   //
   // A cell with two diagonally opposite dark corners has two valid readings.
-  // The tracer picks between them from the cell centre — the mean of the four
-  // corners, which is what the bilinear interpolant evaluates to there. These
-  // 2×2 images *are* one saddle cell (plus the bright padding ring), so each
-  // case is decided in isolation: a dark centre must join the diagonal into
-  // one ring, a bright centre must leave two.
-  describe("saddle cells are disambiguated by the cell centre", () => {
+  // The tracer picks between them with the asymptotic decider — the sign of the
+  // bilinear interpolant at its own saddle point, `(a·d - b·c)/(a - b - c + d)`
+  // over threshold-shifted corners. These 2×2 images *are* one saddle cell (plus
+  // the bright padding ring), so each case is decided in isolation: a dark saddle
+  // must join the diagonal into one ring, a bright one must leave two.
+  //
+  // The first four cases are symmetric, where the saddle sits at the centre and
+  // the old corner-mean reading agrees; the two after them are not, and are
+  // where the two deciders part company.
+  describe("saddle cells are disambiguated by the asymptotic decider", () => {
     /** 2×2 image laid out [TL, TR, BL, BR]. */
     const saddle = (tl: number, tr: number, bl: number, br: number) =>
       image(2, 2, (x, y) => (y === 0 ? (x === 0 ? tl : tr) : x === 0 ? bl : br));
 
-    it("joins the dark diagonal when the centre is dark (case 10: TL/BR)", () => {
-      // mean = 0.45 < 0.5 → centre is dark → TL and BR are one region.
+    it("joins the dark diagonal when the saddle is dark (case 10: TL/BR)", () => {
+      // Symmetric, so the saddle is the centre: 0.45 < 0.5 → TL and BR are one
+      // region. (Formally: num = 0.09, den = -1.8, so f_saddle = -0.05.)
       const rings = ringsFromThreshold(saddle(0, 0.9, 0.9, 0), 0.5, 100, 100);
       expect(rings).toHaveLength(1);
     });
 
-    it("joins the dark diagonal when the centre is dark (case 5: TR/BL)", () => {
+    it("joins the dark diagonal when the saddle is dark (case 5: TR/BL)", () => {
       const rings = ringsFromThreshold(saddle(0.9, 0, 0, 0.9), 0.5, 100, 100);
       expect(rings).toHaveLength(1);
     });
 
-    it("separates the dark diagonal when the centre is bright (case 10)", () => {
-      // Same corner classification, mean = 0.7 > 0.5 → two disjoint specks.
+    it("separates the dark diagonal when the saddle is bright (case 10)", () => {
+      // Same corner classification, saddle = 0.7 > 0.5 → two disjoint specks.
       const rings = ringsFromThreshold(saddle(0.4, 1, 1, 0.4), 0.5, 100, 100);
       expect(rings).toHaveLength(2);
     });
 
-    it("separates the dark diagonal when the centre is bright (case 5)", () => {
+    it("separates the dark diagonal when the saddle is bright (case 5)", () => {
       const rings = ringsFromThreshold(saddle(1, 0.4, 0.4, 1), 0.5, 100, 100);
       expect(rings).toHaveLength(2);
+    });
+
+    // ── Refutations of the corner-mean decider ────────────────────────────
+    //
+    // The mean of the four corners is the bilinear value at the cell *centre*,
+    // which is not where the surface saddles unless the cell is symmetric. On
+    // a lopsided cell the saddle point drifts off-centre and the two deciders
+    // disagree — both of these were found by the reviewer, and the mean gets
+    // both backwards.
+
+    it("separates a lopsided saddle the corner mean wrongly joins", () => {
+      // mean = 0.4725 < 0.5, so the mean decider calls the centre dark and
+      // joins TL to BR. The saddle value is +0.035/0.91 > 0: bright. Separate.
+      const rings = ringsFromThreshold(saddle(0, 0.7, 0.7, 0.49), 0.5, 100, 100);
+      expect(rings).toHaveLength(2);
+    });
+
+    it("joins a lopsided saddle the corner mean wrongly separates", () => {
+      // mean = 0.5025 > 0.5, so the mean decider calls the centre bright and
+      // splits TL from BR. The saddle value is 0.0322/-0.81 < 0: dark. Join.
+      const rings = ringsFromThreshold(saddle(0.3, 0.89, 0.52, 0.3), 0.5, 100, 100);
+      expect(rings).toHaveLength(1);
     });
 
     it("keeps every ring closed in both readings", () => {
@@ -339,12 +367,98 @@ describe("ringsFromThreshold", () => {
       // A 1-px-wide diagonal stripe is nothing but saddle cells: each has one
       // dark corner on the stripe and its diagonal partner on the next row's.
       // Before the decider it came apart into a chain of disjoint diamonds.
-      // Threshold 0.6 puts the centre mean (0.5) on the dark side; at exactly
-      // 0.5 the cell is a tie and the tracer separates it, which is the right
-      // reading of a checkerboard.
+      // Threshold 0.6 puts the saddle (-0.1) on the dark side; at exactly 0.5
+      // every such cell is a perfect checkerboard, `a·d - b·c` is exactly zero,
+      // and the documented tie default separates it — the right reading.
       const img = image(24, 24, (x, y) => (x === y ? 0 : 1));
       expect(ringsFromThreshold(img, 0.6, 100, 100)).toHaveLength(1);
       expect(ringsFromThreshold(img, 0.5, 100, 100).length).toBeGreaterThan(1);
+    });
+  });
+
+  // ── Multi-strand junctions ────────────────────────────────────────────────
+  //
+  // A sample sitting *exactly* on the threshold collapses every crossing on its
+  // incident edges onto the lattice point itself, so four strands meet there.
+  // Which incoming strand is paired with which outgoing one is a real choice:
+  // taking whichever is simply unused first can weld two lobes into a single
+  // ring that passes through the junction twice — a figure-eight, not a
+  // contour. Even-odd fill, offsetting and pen-path ordering all assume simple
+  // rings, so the pairing follows the incoming direction instead.
+  describe("multi-strand junctions", () => {
+    /** Signed (shoelace) area; sign encodes winding, magnitude the enclosure. */
+    const signedArea = (ring: Polyline): number => {
+      let s = 0;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        s += ring[j].x * ring[i].y - ring[i].x * ring[j].y;
+      }
+      return s / 2;
+    };
+
+    /**
+     * True when the closed ring never touches itself: no point is visited twice
+     * except the closing repeat of the first, and consecutive repeats (which are
+     * degenerate zero-length steps, not self-touches).
+     */
+    const isSimpleRing = (ring: Polyline): boolean => {
+      const pts = ring.slice();
+      const last = pts[pts.length - 1];
+      if (pts.length > 1 && last.x === pts[0].x && last.y === pts[0].y) pts.pop();
+      const seen = new Set<string>();
+      let prev: Point | undefined;
+      for (const p of pts) {
+        if (prev && prev.x === p.x && prev.y === p.y) continue; // degenerate step
+        const k = `${p.x},${p.y}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        prev = p;
+      }
+      return true;
+    };
+
+    // Column 1 sits exactly on the threshold, so the lattice point (1,0) — which
+    // maps to (1.5, 0.5) in a 3x3 target box — is a four-strand junction between
+    // the lone dark corner at (0,0) and the L-shaped dark blob down the right
+    // and along the bottom.
+    const JUNCTION = [
+      [0, 0.5, 0],
+      [1, 0.5, 0],
+      [0, 0, 0],
+    ];
+    const junctionImage = image(3, 3, (x, y) => JUNCTION[y][x]);
+
+    it("pairs strands at a four-way junction into simple rings", () => {
+      const rings = ringsFromThreshold(junctionImage, 0.5, 3, 3);
+      for (const ring of rings) {
+        expect(isSimpleRing(ring), `ring: ${ring.map((p) => `${p.x},${p.y}`).join(" ")}`).toBe(true);
+      }
+      // The two lobes touch only at the junction, so they are two rings.
+      expect(rings).toHaveLength(2);
+    });
+
+    it("preserves the enclosed area when it re-pairs the junction", () => {
+      const rings = ringsFromThreshold(junctionImage, 0.5, 3, 3);
+      // Before the fix this was one figure-eight ring of signed area 6.25;
+      // splitting a closed walk at a repeated vertex conserves signed area, so
+      // the two simple rings must still sum to it.
+      const total = rings.reduce((s, r) => s + signedArea(r), 0);
+      expect(total).toBeCloseTo(6.25, 9);
+      for (const ring of rings) expect(Math.abs(signedArea(ring))).toBeGreaterThan(0);
+    });
+
+    it("keeps the same points inside the silhouette", () => {
+      const rings = ringsFromThreshold(junctionImage, 0.5, 3, 3);
+      // Sample centres map to (x+0.5, y+0.5) in a 3x3 target box. Only samples
+      // strictly off the threshold are asserted — a sample sitting exactly on it
+      // is a boundary point, where `pointInSilhouette` is documented undefined.
+      const dark: [number, number][] = [[0, 0], [2, 0], [2, 1], [0, 2], [1, 2], [2, 2]];
+      const bright: [number, number][] = [[0, 1]];
+      for (const [x, y] of dark) {
+        expect(pointInSilhouette({ x: x + 0.5, y: y + 0.5 }, rings), `dark ${x},${y}`).toBe(true);
+      }
+      for (const [x, y] of bright) {
+        expect(pointInSilhouette({ x: x + 0.5, y: y + 0.5 }, rings), `bright ${x},${y}`).toBe(false);
+      }
     });
   });
 });

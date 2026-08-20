@@ -571,13 +571,20 @@ export function rasterUnionRings(
   // closes correctly.
   for (let i = 0; i < field.length; i++) field[i] = Math.sqrt(field[i]) / r;
 
-  return ringsFromThreshold(
+  const rings = ringsFromThreshold(
     { brightness: field, width: gw, height: gh },
     1,
     box.x1 - box.x0,
     box.y1 - box.y0,
     box,
   );
+  // A ring enclosing less than one grid cell is below the sampling scale —
+  // the raster has no evidence such a feature exists (the cusp of two
+  // crossing discs reads as a one-sample hole this way). Dropping them here,
+  // where the cell size is known, is the honest statement of resolution;
+  // ringsFromThreshold itself must keep single-sample rings because in a
+  // real image a one-pixel speck is a real feature.
+  return rings.filter((ring) => Math.abs(polygonArea(ring)) > cell * cell);
 }
 
 // ── The public entry point ───────────────────────────────────────────

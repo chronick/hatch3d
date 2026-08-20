@@ -94,9 +94,20 @@ export function hatchRegion(rings: Pt[][], angleDeg: number, pitch: number): Pt[
         Math.min(Math.floor(span / pitch) + 1, MAX_SCANLINES + 1)
       : 0;
 
+  // Indexing terminates, but it does not make the terms *distinct*. Far from the
+  // origin the float64 lattice is coarser than the pitch — at y ≈ 1e16 the gap
+  // between representable doubles is 2, so pitch 1 asks for 33 scanlines and
+  // gets 17 addresses — and the repeats are the same line drawn over itself: a
+  // pen that re-inks a stroke, and dead geometry in the SVG. Emit each address
+  // once. Sane inputs never trip it (consecutive terms differ by a whole pitch),
+  // so the byte-for-byte output at ordinary magnitudes is unchanged.
+  let prevY = NaN;
+
   for (let i = 0; i < scanCount; i++) {
     const y = first + i * pitch;
     if (y > maxY) break; // rounding may push the final term just past the end
+    if (y === prevY) continue; // representationally identical to the last scanline
+    prevY = y;
     const xs: number[] = [];
     for (const ring of rot) {
       const n = ring.length;

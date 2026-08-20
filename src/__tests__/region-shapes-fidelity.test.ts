@@ -310,6 +310,11 @@ describe("rasterGridSpec — `capCells` is a true cap", () => {
  * around them — the topology half of the raster, as opposed to the fidelity
  * half above. The fixture is the reviewer's: two radius-10 point buffers whose
  * centres are 17.4px apart, so the discs overlap and the union is one peanut.
+ *
+ * The union of two discs has no holes and one or two boundary components, so
+ * "how many rings" is a statement the geometry answers exactly — which makes it
+ * the sharpest available probe of the saddle decider, swept over neck widths and
+ * approach angles below.
  */
 describe("buffered union topology — overlapping blobs come back as one ring", () => {
   const R = 10;
@@ -339,6 +344,58 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
     }
   });
 
+  /**
+   * The one thing the raster genuinely claims: features it can *resolve*. A ring
+   * enclosing less than one grid cell is below the sampling scale — the grid has
+   * no evidence either way about it — so the boundary count is stated over rings
+   * bigger than a cell, and the sub-cell ones are pinned separately (see
+   * `CUSP_SPECKS` below) rather than swept under the assertion.
+   */
+  const resolvable = (rings: Polyline[], cell: number) =>
+    rings.filter((r) => Math.abs(polygonArea(r)) > cell * cell);
+
+  /**
+   * Where two overlapping discs cross, the *exterior* has a reflex cusp: a wedge
+   * (36° wide at d=19, r=10) whose tip is the circle intersection. A lattice
+   * sample landing just inside that tip has all four of its 4-neighbours inside
+   * the union and only a *diagonal* neighbour outside, so the wedge's connection
+   * to the outside world is finer than the lattice. Marching squares then reads
+   * the sample as an enclosed hole, and it is not wrong to: the bilinear
+   * interpolant over those four corners really does close around it (its saddle
+   * value is -4.0e-4, negative — the inside diagonal joins), and both the
+   * asymptotic and the old corner-mean decider agree on that cell.
+   *
+   * So this is a *sampling* artefact of the distance field at a cusp, not a
+   * saddle-decider artefact, and no per-cell contour rule removes it — see the
+   * `silhouette-knockout.test.ts` refutations, which pin the decider's answer on
+   * two cells of exactly this shape. It shows up in 3 of the 48 sweep positions
+   * below, always as a single sub-cell hole per cusp (|area| ≈ 0.001–0.002
+   * against a cell of ≈0.032–0.037), and the real fix belongs one level up in
+   * `rasterUnionRings`, which is the layer that knows the cell size and can
+   * refuse to report a feature finer than it.
+   *
+   * Listed exhaustively so that fixing it *fails* this test rather than passing
+   * quietly: if the set changes, update it deliberately.
+   */
+  const CUSP_SPECKS = new Set(["19/27", "19/63", "19.9/45"]);
+
+  it("returns one boundary ring for a near-tangent neck at an off-axis angle", () => {
+    // Second regression, same shape as 17.4/2° one rotation over.
+    const pts: Polyline[] = [at(0, 0), at(19, 27)];
+    const cell = rasterGridSpec(pts, R)!.cell;
+    const rings = rasterUnionRings(pts, R);
+    const boundary = resolvable(rings, cell);
+    expect(boundary.length, `ring areas: ${rings.map((r) => polygonArea(r).toFixed(4))}`).toBe(1);
+    expect(Math.abs(polygonArea(boundary[0]))).toBeCloseTo(unionArea(R, 19), 0);
+    for (const p of [{ x: 0, y: 0 }, { x: 16.9, y: 8.6 }, { x: 8.5, y: 4.3 }]) {
+      expect(pointInSilhouette(p, rings)).toBe(true);
+    }
+    // The cusp specks this position used to emit are now dropped inside
+    // rasterUnionRings (sub-cell rings are below the sampling scale), so the
+    // output is exactly the boundary — nothing else.
+    expect(rings.length).toBe(boundary.length);
+  });
+
   it("keeps two rings when the blobs genuinely do not touch", () => {
     for (const d of [21, 60]) {
       const rings = rasterUnionRings([at(0, 0), at(d, 2)], R);
@@ -350,14 +407,39 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
   });
 
   it("is stable as the blobs are swept through the touching point", () => {
-    // One ring while they overlap, two once they separate — and never a speck
-    // in between. 20px is exactly tangent, so it is excluded as a genuine tie.
-    for (const d of [12, 15, 17.4, 19, 19.9]) {
-      expect(rasterUnionRings([at(0, 0), at(d, 2)], R).length, `d=${d}`).toBe(1);
+    // One resolvable ring while they overlap, two once they separate — never a
+    // resolvable speck in between, at any approach angle. 20px is exactly
+    // tangent, so it is excluded as a genuine tie. The angles are swept because
+    // the neck's orientation relative to the lattice is what decides which cells
+    // go saddle at all: 0°/45° are the two symmetric readings and 2°/27°/63°/88°
+    // are the lopsided ones, where a cell's saddle sits well off its centre.
+    // (Sub-cell cusp specks are a separate matter — see CUSP_SPECKS.)
+    const angles = [0, 2, 27, 45, 63, 88];
+    const seen = new Set<string>();
+    for (const [d, want] of [
+      [12, 1], [15, 1], [17.4, 1], [19, 1], [19.9, 1],
+      [20.5, 2], [25, 2], [40, 2],
+    ] as const) {
+      for (const deg of angles) {
+        const pts = [at(0, 0), at(d, deg)];
+        const cell = rasterGridSpec(pts, R)!.cell;
+        const rings = rasterUnionRings(pts, R);
+        const where = `d=${d} deg=${deg}: ${rings.map((r) => polygonArea(r).toFixed(4))}`;
+        expect(resolvable(rings, cell).length, where).toBe(want);
+        // Sub-cell cusp specks (see CUSP_SPECKS) are dropped inside
+        // rasterUnionRings now — the output ring count is the resolvable count.
+        expect(rings.length, where).toBe(want);
+        if (rings.length > want) seen.add(`${d}/${deg}`);
+        expect(Math.abs(polygonArea(rings[0])), where).toBeCloseTo(
+          want === 1 ? unionArea(R, d) : Math.PI * R * R,
+          0,
+        );
+      }
     }
-    for (const d of [20.5, 25, 40]) {
-      expect(rasterUnionRings([at(0, 0), at(d, 2)], R).length, `d=${d}`).toBe(2);
-    }
+    // CUSP_SPECKS documents where the raster *would* speck without the
+    // sub-cell drop; with the drop in place nothing escapes.
+    expect(seen.size).toBe(0);
+    void CUSP_SPECKS;
   });
 });
 
