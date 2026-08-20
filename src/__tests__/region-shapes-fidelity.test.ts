@@ -25,9 +25,11 @@ import {
   polygonArea,
   rasterGridSpec,
   rasterUnionRings,
+  ESCALATE_FACTOR,
   OUTLINE_BASE_RADIUS,
   RASTER_MAX_CELLS,
   RASTER_CAP_CELLS,
+  REFINE_BUDGET_PER_COARSE_CELL,
   REFINE_CELL_BUDGET,
   REFINE_FACTOR,
   REFINE_PAD_CELLS,
@@ -142,7 +144,17 @@ const freshStats = (): RasterRefineStats => ({
   dropped: 0,
   keptUnrefined: 0,
   replaced: 0,
+  escalated: false,
+  fineCandidates: 0,
 });
+
+/**
+ * The stats of a call that stayed on the per-window path — every fixture in
+ * this file except the dense 170 × 170 lattice at the bottom. Spelled as a
+ * spread so the `toEqual`s below keep saying what they said before the
+ * escalation fields existed: nothing escalated, and there was no fine grid.
+ */
+const SPARSE_PATH = { escalated: false, fineCandidates: 0 } as const;
 
 /** Best of `reps` timed runs, after a warm-up call for JIT and allocation. */
 function timeBest(run: () => unknown, reps = 3): number {
@@ -427,6 +439,9 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
       dropped: 2,
       keptUnrefined: 0,
       replaced: 0,
+      // Two candidates against a million-cell allowance: nowhere near the
+      // density that would make a whole-extent re-raster the cheaper tool.
+      ...SPARSE_PATH,
     });
     expect(rings).toHaveLength(1);
     expect(Math.abs(polygonArea(rings[0]))).toBeCloseTo(unionArea(R, d), 0);
@@ -504,6 +519,7 @@ describe("buffered union topology — overlapping blobs come back as one ring", 
       // A component that leaves its window has no closed contour inside it, so
       // these two keeps stay on their coarse rings (cf. the pinhole below).
       replaced: 0,
+      ...SPARSE_PATH,
     });
 
     // Three structural rings — the box's outer skin, the cavity inside it, the
@@ -670,6 +686,7 @@ describe.each([4.05, 4.1])("sub-cell rings are decided on evidence — half %s",
       dropped: 0,
       keptUnrefined: 0,
       replaced: 1,
+      ...SPARSE_PATH,
     });
   });
 
@@ -759,6 +776,13 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
 
     expect(stats.candidates).toBe(N * N);
     expect(stats.dropped).toBe(0);
+    // This density is the last one the per-window path can still carry: 3 136
+    // windows of 82² = 21.1M refined cells against a 34.1M allowance, so the
+    // escalation trigger (demand > allowance) does not fire and every
+    // assertion below is about the per-window path. The 170 × 170 fixture at
+    // the bottom of this file is the same shape one step past that line.
+    expect(stats.escalated).toBe(false);
+    expect(stats.fineCandidates).toBe(0);
     // The grid-proportional budget covers this density in full — every hole is
     // examined and every kept ring is the refined, correctly-registered one.
     expect(stats.keptUnrefined).toBe(0);
@@ -783,6 +807,7 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
     expect(stats.candidates).toBeGreaterThanOrEqual(N * N);
     expect(stats.keptUnrefined).toBe(0);
     expect(stats.dropped).toBe(0);
+    expect(stats.escalated).toBe(false);
     for (let i = 0; i < 64; i++) {
       const p = holeCentre((i * 617) % (N * N));
       expect(pointInSilhouette(p, rings), `hole at ${p.x},${p.y}`).toBe(false);
@@ -816,12 +841,143 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
     // machine (M-series, node 24) against the same 250ms ceiling — the guard is
     // bbox-prefiltered, so this is where an accidental quadratic would show.
     const ms = timeBest(() => rasterUnionRings(LATTICE, RADIUS), 2);
-    // Full-correctness refinement of all 3 136 windows costs ~1.1s here —
+    // Full-correctness refinement of all 3 136 windows costs ~1.24s here —
     // a deliberate trade (review round-5): the fixed budget was faster but
     // left 1 715 real holes misclassified. This ceiling is per-fixture and
     // generous; the 250ms bound still guards the non-adversarial fixtures,
     // and linear scaling in refined windows is the property being pinned.
+    //
+    // It is also, measurably, the expensive way to be right at this density:
+    // the 170 × 170 fixture below is 9× the candidates and resolves in ~330ms
+    // because it escalates. This one sits at 62% of its allowance, so it does
+    // not, and the trigger is deliberately a cost *ceiling* rather than a cost
+    // *optimum* — no sparse-path fixture changes meaning to buy this one speed.
     expect(ms, `dense lattice took ${ms.toFixed(1)}ms`).toBeLessThan(2000);
+  });
+});
+
+/**
+ * Plotter-material density — the case per-window refinement cannot reach at any
+ * budget, and the one that forces escalation (review round-6).
+ *
+ * The fixture is the lattice above scaled up: pitch 20 over a 3 400px extent —
+ * 342 crossing strokes, 28 900 pockets — outlined at radius 4. The default cap
+ * gives 6.66px cells, so the widened effective radius is 6.66 and each pocket is
+ * 6.69px across: one cell, and so a sub-cell candidate 28 899 times over.
+ *
+ * The per-window path cannot carry that, and not by a tunable margin. A window
+ * is the candidate's span plus two cells of padding on every side, sampled 16×
+ * finer — ~5 600 cells for a compact one — while the candidates themselves sit
+ * one per nine coarse cells. Demand is therefore ~600× the whole grid, against
+ * an allowance that is 128× it: 162M cells wanted, 34.2M available. Measured
+ * before this change: 6 116 candidates refined, **22 783 preserved unrefined**,
+ * and because an unrefined coarse ring is displaced by up to a cell — the whole
+ * width of the feature here — **166 of 256 sampled pocket centres came back as
+ * ink**, each one analytically 10px from the nearest stroke against a 6.66px
+ * radius. It took 10.1s to get that wrong.
+ *
+ * Raising the budget does not fix it: the windows *overlap*, so the same paper
+ * is re-rasterised once per neighbour. Escalation drops the per-candidate
+ * question entirely and rasters the whole extent at `ESCALATE_FACTOR`× once —
+ * at which resolution a pocket is four fine cells across, not one, so there is
+ * nothing sub-cell left to ask about (`fineCandidates: 0`) and the contour is
+ * simply right. Measured after: 0 of 256 misclassified, 330ms.
+ */
+describe("a candidate field too dense to refine window-by-window escalates", () => {
+  const PITCH = 20;
+  const N = 170;
+  const RADIUS = 4;
+  const LATTICE: Polyline[] = Array.from({ length: 2 * (N + 1) }, (_, i) => {
+    const k = Math.floor(i / 2) * PITCH;
+    const end = N * PITCH;
+    return i % 2 === 0
+      ? [{ x: 0, y: k }, { x: end, y: k }]
+      : [{ x: k, y: 0 }, { x: k, y: end }];
+  });
+  const holeCentre = (i: number): Point => ({
+    x: (Math.floor(i / N) + 0.5) * PITCH,
+    y: ((i % N) + 0.5) * PITCH,
+  });
+
+  it("the fixture really is past the per-window path's density ceiling", () => {
+    // Guards the fixture: if it ever stops exhausting the allowance it stops
+    // exercising escalation, and the test below would pass on the sparse path.
+    const spec = rasterGridSpec(LATTICE, RADIUS)!;
+    const allowance = Math.max(
+      REFINE_CELL_BUDGET,
+      REFINE_BUDGET_PER_COARSE_CELL * spec.gw * spec.gh,
+    );
+    // One window per pocket, each the pocket's ~1 cell plus 2 cells of padding
+    // either side, at REFINE_FACTOR× — a floor on the true demand.
+    const window = ((1 + 2 * REFINE_PAD_CELLS) * REFINE_FACTOR) ** 2;
+    expect(N * N * window).toBeGreaterThan(allowance);
+
+    // …and every pocket is unambiguously real: its centre is 10px from the
+    // nearest stroke against a 6.66px effective radius, and its walls are
+    // 6.66px of solid ink.
+    expect(distToRings(holeCentre(0), LATTICE)).toBeCloseTo(PITCH / 2, 9);
+    expect(spec.effectiveRadius).toBeLessThan(PITCH / 2);
+    // …and about one *coarse* cell across, which is what makes it a candidate…
+    const pocket = PITCH - 2 * spec.effectiveRadius;
+    expect(pocket / spec.cell).toBeGreaterThan(0.5);
+    expect(pocket / spec.cell).toBeLessThan(1.5);
+    // …and comfortably more than one *fine* cell across, which is what makes
+    // escalating a fix rather than a smaller version of the same problem.
+    expect(pocket / (spec.cell / ESCALATE_FACTOR)).toBeGreaterThan(3);
+  });
+
+  it("escalates once, and registers every pocket where it actually is", () => {
+    const stats = freshStats();
+    const rings = rasterUnionRings(LATTICE, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+
+    // The coarse grid saw the density — one sub-cell candidate per pocket, bar
+    // the odd one whose contour came out a hair over a cell² and went straight
+    // through as an ordinary ring (28 899 of 28 900 here).
+    expect(stats.escalated).toBe(true);
+    expect(stats.candidates).toBeGreaterThan(N * N - 4);
+    expect(stats.candidates).toBeLessThanOrEqual(N * N);
+    // …and at 4× there is nothing sub-cell left to ask about, so no window is
+    // opened at all: the escalated grid resolves the pockets outright.
+    expect(stats.fineCandidates).toBe(0);
+    expect(stats.kept + stats.dropped + stats.keptUnrefined).toBe(0);
+    // Nothing preserved-unrefined (the round-5 failure) and nothing deleted
+    // (the round-4 one).
+    expect(stats.keptUnrefined).toBe(0);
+    expect(stats.dropped).toBe(0);
+
+    // One outer boundary plus one ring per pocket — every hole present, exactly
+    // once, with nothing filled in and nothing invented.
+    expect(rings).toHaveLength(1 + N * N);
+
+    // The finding itself: a deterministic 256-centre sample, every one of which
+    // is 10px from the nearest stroke and so paper. 166 of these read as ink
+    // before escalation existed.
+    let ink = 0;
+    for (let i = 0; i < 256; i++) {
+      const p = holeCentre((i * 617) % (N * N));
+      if (pointInSilhouette(p, rings)) ink++;
+    }
+    expect(ink, `${ink}/256 pocket centres classified as ink`).toBe(0);
+
+    // …and the ink between the pockets still reads as ink.
+    for (const p of [
+      { x: PITCH, y: PITCH },
+      { x: PITCH / 2, y: 40 * PITCH },
+      { x: 100 * PITCH, y: 137.5 * PITCH },
+    ]) {
+      expect(pointInSilhouette(p, rings), `wall at ${p.x},${p.y}`).toBe(true);
+    }
+    expect(pointInSilhouette({ x: -RADIUS - 2, y: -RADIUS - 2 }, rings)).toBe(false);
+  });
+
+  it("costs less than the per-window path it replaces, not more", () => {
+    // 10.1s before (162M refined cells demanded, 34.2M spent, 22 783 pockets
+    // left misregistered); ~330ms after, for one 2 068² raster and a contour.
+    // The ceiling is the same generous per-fixture one the 56 × 56 lattice
+    // carries — what is being pinned is that escalation is the *cheap* path, so
+    // a regression to per-window refinement at this density fails here.
+    const ms = timeBest(() => rasterUnionRings(LATTICE, RADIUS), 1);
+    expect(ms, `dense 170x170 lattice took ${ms.toFixed(1)}ms`).toBeLessThan(2000);
   });
 });
 

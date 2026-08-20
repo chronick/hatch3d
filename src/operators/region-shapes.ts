@@ -75,6 +75,13 @@ export const RASTER_MAX_CELLS = 192;
  * a bounded price instead of an unbounded one. A caller may name its own
  * `capCells` — smaller or larger — and that value wins outright; see
  * {@link rasterGridSpec}.
+ *
+ * One drawing shape buys past it deliberately: when the union's *features* are
+ * about a cell across and there are tens of thousands of them, `rasterUnionRings`
+ * re-rasters the whole extent {@link ESCALATE_FACTOR}× finer rather than examine
+ * each one, so the raster it actually allocates is up to `ESCALATE_FACTOR²`
+ * times this — still bounded, by {@link ESCALATE_MAX_CELLS}, and *cheaper* than
+ * the per-window refinement it replaces.
  */
 export const RASTER_CAP_CELLS = 512;
 /**
@@ -612,12 +619,64 @@ export const REFINE_WINDOW_CELLS = 1 << 16;
  * adversarial 3 136-hole lattice a 2^20 cap left 1 715 real holes classifying
  * as ink despite every ring being "preserved". The budget therefore scales as
  * `REFINE_BUDGET_PER_COARSE_CELL x` the coarse grid, with the fixed value as a
- * floor — refinement is a bounded multiple of work already done, and in
- * practice exhaustion is unreachable outside adversarial input.
+ * floor — refinement is a bounded multiple of work already done.
+ *
+ * **And exhausting it is now a signal, not just an outcome.** Round-6 showed a
+ * density where no allowance helps, because the windows overlap and the demand
+ * grows ~600× the grid: the budget is therefore consulted *before* any window
+ * opens, and a candidate set that would exhaust it escalates to a whole-extent
+ * fine raster instead (see {@link ESCALATE_FACTOR}). What remains here is the
+ * genuine last resort — a fine pass that still exhausts, which fail-preserves
+ * exactly as described above.
  */
 export const REFINE_CELL_BUDGET = 1 << 20;
 /** Refined-cell allowance per coarse grid cell (see {@link REFINE_CELL_BUDGET}). */
 export const REFINE_BUDGET_PER_COARSE_CELL = 128;
+/**
+ * How much finer the *escalated* whole-extent raster is than the coarse one —
+ * the answer to per-window refinement's density ceiling.
+ *
+ * Per-window refinement is the right tool for a handful of sub-cell features on
+ * an otherwise coarse-resolvable drawing. It is the wrong tool at plotter
+ * material density, and not by a tunable margin: a window is `(span + 2·PAD)·
+ * FACTOR` cells on a side — ~5.6k cells for a compact candidate — so a drawing
+ * whose candidates sit one per few coarse cells demands *hundreds* of times the
+ * whole grid in refinement. The reviewer's 170×170 pocket lattice (pitch 20,
+ * radius 4, 342 strokes over a 3 400px extent) is exactly that: 28 899
+ * candidates × ~5.6k = 162M refined cells against a 34.2M allowance, so 22 783
+ * genuine pockets were preserved unrefined — and a preserved-unrefined coarse
+ * ring is displaced by up to a cell, which on a one-cell pocket is the whole
+ * feature. 166 of 256 sampled pocket centres classified as ink.
+ *
+ * No budget fixes that, because the demand is quadratic in the wrong place: the
+ * refinement windows *overlap*, so the same paper is re-rasterised once per
+ * neighbour. When that is what the drawing looks like, the cheap thing is to
+ * stop asking about candidates one at a time and simply raster the whole extent
+ * finer — 16 fine cells per coarse cell, once, covering every candidate at
+ * ~1/10 of what refining them individually would have cost.
+ *
+ * 4 is chosen against what escalation has to achieve: it is triggered by a
+ * *dense* field of sub-cell features, and a feature dense enough to trigger it
+ * is at most ~1 coarse cell across (a sparse field of hairline slivers stays
+ * under the budget and never gets here), so 4× puts ≥4 fine cells across it —
+ * comfortably out of sub-cell territory, with the same margin the coarse grid
+ * gives an ordinary feature. Anything that *is* still sub-cell at 4× is rare by
+ * construction and is handled by the ordinary per-window pass against the fine
+ * grid, which is why there is no second escalation.
+ */
+export const ESCALATE_FACTOR = 4;
+/**
+ * Fine cells one escalation may allocate — its memory bound, and the reason
+ * escalation cannot be triggered into an out-of-memory by an exotic `capCells`.
+ *
+ * At the default cap the fine grid is `4 · (512 + 6) = 2 072` cells a side:
+ * 4.3M cells of `Float32Array` (17 MB) plus the contouring pass's edge table
+ * (~34 MB of `Int32Array`), so ~51 MB transient — measured 2 068² on the
+ * reviewer's fixture. A caller who names a much larger `capCells` has priced
+ * *its* grid, not sixteen of them, so past this ceiling the call stays on the
+ * per-window path and fail-preserves exactly as it does today.
+ */
+export const ESCALATE_MAX_CELLS = (ESCALATE_FACTOR * (RASTER_CAP_CELLS + 6)) ** 2;
 /**
  * Coarse cells of slack when asking whether a refined flood's escape point has
  * reached the *global* exterior (see {@link escapeLeavesTheFeature}).
@@ -635,13 +694,24 @@ export const REFINE_BUDGET_PER_COARSE_CELL = 128;
  */
 export const REFINE_DRAIN_SLACK_CELLS = 1;
 
-/** What `rasterUnionRings` did with the sub-cell rings it found, for tests. */
+/**
+ * What `rasterUnionRings` did with the sub-cell rings it found, for tests.
+ *
+ * `candidates` is always the *coarse* grid's sub-cell count — what the drawing
+ * looks like at the resolution {@link rasterGridSpec} picked, observed before
+ * the escalation decision is taken. Everything after it describes the pass that
+ * actually ran, which is the coarse one unless `escalated`:
+ *
+ * ```text
+ * kept + dropped + keptUnrefined === escalated ? fineCandidates : candidates
+ * ```
+ */
 export interface RasterRefineStats {
-  /** Rings enclosing at most one cell — the ones sent for refinement. */
+  /** Rings enclosing at most one *coarse* cell — the sub-cell features found. */
   candidates: number;
-  /** …of those, the ones the refined field confirmed as real features. */
+  /** …of those (or of `fineCandidates`), the ones confirmed as real features. */
   kept: number;
-  /** …and the ones it showed to be sampling artefacts. */
+  /** …and the ones the refined field showed to be sampling artefacts. */
   dropped: number;
   /**
    * …and the ones kept *without* being looked at, because the refinement budget
@@ -649,12 +719,28 @@ export interface RasterRefineStats {
    * the raw contour, so these are keeps, not drops.
    */
   keptUnrefined: number;
-  /** …of `kept`, how many had their coarse ring replaced by the refined one. */
+  /** …of `kept`, how many had their contour ring replaced by the refined one. */
   replaced: number;
+  /**
+   * Whether refining the coarse candidates one window at a time would have cost
+   * more than the whole call's allowance, so the entire extent was re-rastered
+   * at {@link ESCALATE_FACTOR}× instead and the rings come off *that* grid.
+   */
+  escalated: boolean;
+  /**
+   * Sub-cell candidates on the escalated fine grid — the residue that is finer
+   * than a *fine* cell and so still needs a window. Rare by construction (see
+   * {@link ESCALATE_FACTOR}); 0 when nothing escalated.
+   */
+  fineCandidates: number;
 }
 
-/** The main raster, as the refinement pass needs to consult it. */
-interface CoarseGrid {
+/**
+ * The grid the rings being refined came off — the coarse raster, or, once the
+ * call has escalated, the fine one. Either way it is the refinement pass's one
+ * source of truth about the drawing as a whole.
+ */
+interface ContourGrid {
   /** Normalised distance field: `< 1` is ink. */
   field: Float32Array;
   cell: number;
@@ -713,6 +799,11 @@ function globalOutsideMask(field: Float32Array, gw: number, gh: number): Uint8Ar
  * the coarse grid — the one thing here that knows about the drawing as a whole —
  * is what says:
  *
+ * ("The coarse grid" below is the grid the candidate's ring came off — the
+ * escalated fine one, on a call that escalated. Either way it is the one thing
+ * in scope that knows about the drawing as a whole, and it is always coarser
+ * than the refinement window being decided.)
+ *
  *  - **A pocket of paper** is disqualified only by draining to the **global
  *    exterior**. Paper that is itself enclosed is part of some hole, and a hole
  *    reached through a corridor finer than a cell is still a hole, so an escape
@@ -733,7 +824,7 @@ function escapeLeavesTheFeature(
   px: number,
   py: number,
   wantInside: boolean,
-  g: CoarseGrid,
+  g: ContourGrid,
 ): boolean {
   const cx = Math.floor((px - g.x0) / g.cell);
   const cy = Math.floor((py - g.y0) / g.cell);
@@ -767,6 +858,41 @@ interface RefineResult {
    * since a component running out of the window has no closed contour inside it.
    */
   refined: Polyline | null;
+}
+
+/** Where and how finely one candidate's refinement window will be sampled. */
+interface RefineWindow {
+  /** The candidate's own bounds, unpadded — where its seed cells can be. */
+  bounds: BBox;
+  x0: number;
+  y0: number;
+  gw: number;
+  gh: number;
+  /** Refined cell size: the contouring grid's cell over {@link REFINE_FACTOR}. */
+  rcell: number;
+  /** Refined cells this window costs — exactly what it debits from the allowance. */
+  cells: number;
+}
+
+/**
+ * The window {@link refineSubCellRing} would open for a candidate: its bbox plus
+ * {@link REFINE_PAD_CELLS} cells on every side, sampled {@link REFINE_FACTOR}×
+ * finer. Null when the ring's bounds are not finite.
+ *
+ * Split out from the refinement itself because the escalation decision is
+ * *"what would refining every candidate one window at a time actually cost?"* —
+ * a question with an exact answer that is cheap to total up, and which an
+ * estimate ("candidates × a typical window") would turn into a guess right where
+ * the budget is about to be either honoured or abandoned.
+ */
+function refineWindow(ring: Polyline, cell: number): RefineWindow | null {
+  const bounds = ringBounds(ring);
+  if (!Number.isFinite(bounds.xMin) || !Number.isFinite(bounds.yMin)) return null;
+  const pad = REFINE_PAD_CELLS * cell;
+  const rcell = cell / REFINE_FACTOR;
+  const gw = Math.max(3, Math.ceil((bounds.xMax - bounds.xMin + 2 * pad) / rcell));
+  const gh = Math.max(3, Math.ceil((bounds.yMax - bounds.yMin + 2 * pad) / rcell));
+  return { bounds, x0: bounds.xMin - pad, y0: bounds.yMin - pad, gw, gh, rcell, cells: gw * gh };
 }
 
 /**
@@ -835,7 +961,7 @@ function refineSubCellRing(
   lines: Polyline[],
   radius: number,
   ring: Polyline,
-  grid: CoarseGrid,
+  grid: ContourGrid,
   budget: { cells: number },
 ): RefineResult {
   const nothing: RefineResult = { outcome: "drop", refined: null };
@@ -846,28 +972,13 @@ function refineSubCellRing(
   // paper (a hole), positive a speck of ink (an island).
   const wantInside = area > 0;
 
-  let xMin = Infinity;
-  let yMin = Infinity;
-  let xMax = -Infinity;
-  let yMax = -Infinity;
-  for (const p of ring) {
-    if (p.x < xMin) xMin = p.x;
-    if (p.x > xMax) xMax = p.x;
-    if (p.y < yMin) yMin = p.y;
-    if (p.y > yMax) yMax = p.y;
-  }
-  if (!Number.isFinite(xMin) || !Number.isFinite(yMin)) return nothing;
+  const win = refineWindow(ring, grid.cell);
+  if (!win) return nothing;
+  const { x0, y0, gw, gh, rcell, cells: windowCells } = win;
+  const { xMin, yMin, xMax, yMax } = win.bounds;
 
-  const cell = grid.cell;
-  const pad = REFINE_PAD_CELLS * cell;
-  const rcell = cell / REFINE_FACTOR;
-  const x0 = xMin - pad;
-  const y0 = yMin - pad;
-  const gw = Math.max(3, Math.ceil((xMax - xMin + 2 * pad) / rcell));
-  const gh = Math.max(3, Math.ceil((yMax - yMin + 2 * pad) / rcell));
   // A ring can be sub-cell in *area* and still span many cells (a hairline
   // sliver between two blobs), so the window is not bounded by the trigger.
-  const windowCells = gw * gh;
   // Too wide to be worth looking at — but a wide window is this candidate's
   // problem, not the call's, so it does not spend anyone else's allowance.
   if (windowCells > REFINE_WINDOW_CELLS) return { outcome: "unrefined", refined: null };
@@ -1029,13 +1140,18 @@ function ringTouchesBox(ring: Polyline, box: BBox): boolean {
  * a grid — but it is stable, dependency-free, handles holes and disjoint blobs
  * correctly (each comes back as its own ring, which the even-odd
  * `pointInSilhouette` composes for free), and its cost is bounded by
- * `capCells` (see {@link rasterGridSpec}).
+ * `capCells` (see {@link rasterGridSpec}) — or, on a drawing dense enough to
+ * escalate, by {@link ESCALATE_MAX_CELLS}.
  *
  * Features finer than one cell are not guessed at from their size but looked at
  * — see {@link refineSubCellRing} — and a confirmed one is re-drawn at the
- * resolution it was confirmed at. Pass `stats` to see how many there were and
- * which way each went; it is the only window onto a decision that is otherwise
- * invisible in the output.
+ * resolution it was confirmed at. Where the drawing is *made* of such features
+ * — a plotter lattice whose every pocket is about a cell across — looking at
+ * them one window at a time is the wrong tool, and the call re-rasters the whole
+ * extent at {@link ESCALATE_FACTOR}× instead. Pass `stats` to see how many
+ * candidates there were, which way each went, and which of the two paths ran;
+ * it is the only window onto a decision that is otherwise invisible in the
+ * output.
  */
 export function rasterUnionRings(
   lines: Polyline[],
@@ -1047,9 +1163,76 @@ export function rasterUnionRings(
   const spec = rasterGridSpec(lines, radius, maxCells, capCells);
   if (!spec) return [];
   const { cell, gw, gh, x0, y0, effectiveRadius: r } = spec;
-  const box = { x0, y0, x1: x0 + gw * cell, y1: y0 + gh * cell };
 
-  const field = rasterizeDistanceField(lines, r, cell, gw, gh, x0, y0);
+  // The refinement allowance for the *call*, sized against the coarse grid (see
+  // REFINE_CELL_BUDGET). Escalating does not raise it and does not spend it:
+  // the decision is taken before any window is opened, so the fine pass
+  // inherits the whole allowance for whatever residue is still sub-cell there.
+  const budget = {
+    cells: Math.max(REFINE_CELL_BUDGET, REFINE_BUDGET_PER_COARSE_CELL * gw * gh),
+  };
+
+  // Per-window refinement has a *density* ceiling, not just a cost: windows
+  // overlap, so a candidate field dense enough to exhaust the allowance
+  // re-rasterises the same paper once per neighbour and then preserves the
+  // remainder unrefined — positionally untrustworthy on features this size.
+  // When the exact total says that is where this drawing is heading, raster the
+  // whole extent finer once instead. Escalation is depth-1 by construction: the
+  // fine pass runs the ordinary per-window path, and if *that* exhausts (it
+  // should not — see ESCALATE_FACTOR) it fail-preserves exactly as before.
+  const fgw = gw * ESCALATE_FACTOR;
+  const fgh = gh * ESCALATE_FACTOR;
+  // Block-scoped, with the sparse path returning from inside it, so the coarse
+  // field and its rings are collectable before the fine grid is allocated: a
+  // drawing that escalates has tens of thousands of coarse rings, and none of
+  // them survives the decision.
+  {
+    const coarse = contourGrid(lines, r, cell, gw, gh, x0, y0);
+    if (stats) stats.candidates += coarse.candidates;
+    if (coarse.demand <= budget.cells || fgw * fgh > ESCALATE_MAX_CELLS) {
+      return refineCandidates(lines, r, cell, gw, gh, x0, y0, coarse, budget, stats);
+    }
+  }
+
+  if (stats) stats.escalated = true;
+  const fineCell = cell / ESCALATE_FACTOR;
+  // Same origin and same physical extent (fgw · cell/F === gw · cell), so the
+  // fine grid keeps the coarse one's border padding and its `effectiveRadius`:
+  // escalation changes how finely the union is sampled, never which union.
+  const fine = contourGrid(lines, r, fineCell, fgw, fgh, x0, y0);
+  if (stats) stats.fineCandidates += fine.candidates;
+  return refineCandidates(lines, r, fineCell, fgw, fgh, x0, y0, fine, budget, stats);
+}
+
+/** One resolution's worth of contouring, plus what refining it would cost. */
+interface ContourPass {
+  field: Float32Array;
+  rings: Polyline[];
+  /** Parallel to `rings`: 1 where the ring encloses at most one cell. */
+  subCell: Uint8Array;
+  /** How many of those there are. */
+  candidates: number;
+  /**
+   * Refined cells the per-window path would spend on them — the exact total, not
+   * an estimate, and the number the escalation decision turns on. Candidates
+   * that never debit the allowance (degenerate rings, and windows already too
+   * wide to open) are excluded, so this is what would really be charged.
+   */
+  demand: number;
+}
+
+/** Rasterise the buffered union at one resolution and contour it. */
+function contourGrid(
+  lines: Polyline[],
+  radius: number,
+  cell: number,
+  gw: number,
+  gh: number,
+  x0: number,
+  y0: number,
+): ContourPass {
+  const box = { x0, y0, x1: x0 + gw * cell, y1: y0 + gh * cell };
+  const field = rasterizeDistanceField(lines, radius, cell, gw, gh, x0, y0);
   const rings = ringsFromThreshold(
     { brightness: field, width: gw, height: gh },
     1,
@@ -1060,24 +1243,54 @@ export function rasterUnionRings(
 
   // A ring enclosing at most one grid cell is below *this* grid's sampling
   // scale, but not below the raster's: it still holds the exact segments, so
-  // each such ring is decided by re-rasterising a small window around it at a
-  // finer resolution rather than by its area (see `refineSubCellRing`).
+  // each such ring can be decided by looking rather than by its area.
   const cellArea = cell * cell;
-  const budget = {
-    cells: Math.max(REFINE_CELL_BUDGET, REFINE_BUDGET_PER_COARSE_CELL * gw * gh),
-  };
-  let grid: CoarseGrid | null = null; // built once, and only if anything asks
+  const subCell = new Uint8Array(rings.length);
+  let candidates = 0;
+  let demand = 0;
+  for (let i = 0; i < rings.length; i++) {
+    const area = polygonArea(rings[i]);
+    if (Math.abs(area) > cellArea) continue;
+    subCell[i] = 1;
+    candidates++;
+    if (area === 0) continue; // dropped before a window is ever opened
+    const win = refineWindow(rings[i], cell);
+    if (!win || win.cells > REFINE_WINDOW_CELLS) continue; // never spends the allowance
+    demand += win.cells;
+  }
+  return { field, rings, subCell, candidates, demand };
+}
+
+/**
+ * Decide each sub-cell candidate of a contoured grid by re-rasterising a window
+ * around it (see {@link refineSubCellRing}), and substitute the refined contour
+ * for the drawn one wherever that cannot disturb a sibling.
+ */
+function refineCandidates(
+  lines: Polyline[],
+  radius: number,
+  cell: number,
+  gw: number,
+  gh: number,
+  x0: number,
+  y0: number,
+  pass: ContourPass,
+  budget: { cells: number },
+  stats?: RasterRefineStats,
+): Polyline[] {
+  const { field, rings, subCell } = pass;
+  let grid: ContourGrid | null = null; // built once, and only if anything asks
 
   const out: Polyline[] = [];
   const swaps: { index: number; refined: Polyline }[] = [];
-  for (const ring of rings) {
-    if (Math.abs(polygonArea(ring)) > cellArea) {
+  for (let i = 0; i < rings.length; i++) {
+    const ring = rings[i];
+    if (!subCell[i]) {
       out.push(ring);
       continue;
     }
-    if (stats) stats.candidates++;
     grid ??= { field, cell, gw, gh, x0, y0, outside: globalOutsideMask(field, gw, gh) };
-    const verdict = refineSubCellRing(lines, r, ring, grid, budget);
+    const verdict = refineSubCellRing(lines, radius, ring, grid, budget);
     if (verdict.outcome === "drop") {
       if (stats) stats.dropped++;
       continue;
@@ -1090,18 +1303,26 @@ export function rasterUnionRings(
     out.push(ring);
   }
 
-  // Substitute the refined contour for the coarse one wherever that cannot
+  // Substitute the refined contour for the drawn one wherever that cannot
   // disturb a sibling.
   //
   // Rings composed by even-odd fill only mean anything while they do not cross,
   // and a refined ring is a contour of a *different* grid than its siblings, so
   // near a shared boundary the two resolutions can in principle disagree by up
-  // to a coarse cell and cross. They cannot disagree anywhere else: both are
-  // contours of the same exact distance function, and away from a boundary that
-  // function is nowhere near the threshold. So the guard is proximity, not
-  // containment — a refined ring is used unless some other output ring passes
-  // within one coarse cell of its bounds, in which case the coarse ring stands
-  // (visible as `kept` without `replaced` in the stats).
+  // to a cell and cross. They cannot disagree anywhere else: both are contours
+  // of the same exact distance function, and away from a boundary that function
+  // is nowhere near the threshold. So the guard is proximity, not containment —
+  // a refined ring is used unless some other output ring passes within one cell
+  // of its bounds, in which case the drawn ring stands (visible as `kept`
+  // without `replaced` in the stats).
+  //
+  // The guard is written against whichever grid this pass ran on. On the
+  // escalated path every *drawn* ring comes off one uniform fine field, so the
+  // resolutions the guard exists to keep apart only ever meet at a residual
+  // fine-sub-cell substitution — rare by construction (see ESCALATE_FACTOR),
+  // which is why it is nearly always vacuous there rather than why it could be
+  // dropped: a refined window is 16× finer than *its* grid on either path, so
+  // the concern is unchanged in kind.
   if (swaps.length > 0) {
     const bounds = out.map((ring) => ringBounds(ring));
     for (const { index, refined } of swaps) {
