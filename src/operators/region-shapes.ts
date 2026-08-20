@@ -605,8 +605,19 @@ export const REFINE_WINDOW_CELLS = 1 << 16;
  * The budget is one-shot rather than a per-candidate quota: the first window
  * that will not fit ends refinement for the whole call, so the outcome does not
  * depend on the order rings happen to come off the contouring pass.
+ *
+ * **Sizing is proportional to the coarse raster, not fixed.** A fixed cap
+ * fails functionally on dense hole fields: a kept-but-unrefined coarse ring is
+ * positionally untrustworthy (displaced by up to a cell), so on the reviewer's
+ * adversarial 3 136-hole lattice a 2^20 cap left 1 715 real holes classifying
+ * as ink despite every ring being "preserved". The budget therefore scales as
+ * `REFINE_BUDGET_PER_COARSE_CELL x` the coarse grid, with the fixed value as a
+ * floor — refinement is a bounded multiple of work already done, and in
+ * practice exhaustion is unreachable outside adversarial input.
  */
 export const REFINE_CELL_BUDGET = 1 << 20;
+/** Refined-cell allowance per coarse grid cell (see {@link REFINE_CELL_BUDGET}). */
+export const REFINE_BUDGET_PER_COARSE_CELL = 128;
 /**
  * Coarse cells of slack when asking whether a refined flood's escape point has
  * reached the *global* exterior (see {@link escapeLeavesTheFeature}).
@@ -1052,7 +1063,9 @@ export function rasterUnionRings(
   // each such ring is decided by re-rasterising a small window around it at a
   // finer resolution rather than by its area (see `refineSubCellRing`).
   const cellArea = cell * cell;
-  const budget = { cells: REFINE_CELL_BUDGET };
+  const budget = {
+    cells: Math.max(REFINE_CELL_BUDGET, REFINE_BUDGET_PER_COARSE_CELL * gw * gh),
+  };
   let grid: CoarseGrid | null = null; // built once, and only if anything asks
 
   const out: Polyline[] = [];

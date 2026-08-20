@@ -695,8 +695,14 @@ describe.each([4.05, 4.1])("sub-cell rings are decided on evidence — half %s",
 });
 
 /**
- * A dense field of genuine sub-cell holes — the case where "over budget" and
- * "not real" have to be different answers.
+ * A dense field of genuine sub-cell holes — the case that sized the budget.
+ *
+ * Two review rounds shaped this: first "over budget" was read as "not real"
+ * and 2 977 of 3 136 real holes were deleted; then fail-preserve kept the
+ * ring *count* right but a kept-unrefined coarse ring is displaced by up to a
+ * cell, so on an adversarial variant 1 715 hole centres still classified as
+ * ink. Positional truth needs refinement, so the budget now scales with the
+ * coarse grid (REFINE_BUDGET_PER_COARSE_CELL) and this density refines fully.
  *
  * The fixture is a 20px grid of strokes buffered at 8.8, which leaves a 56 × 56
  * lattice of 2.4 × 2.4 pockets — 3 136 holes that are unambiguously there, each
@@ -747,24 +753,40 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
     );
   });
 
-  it("keeps every real hole once the budget runs out", () => {
+  it("refines every real hole under the grid-proportional budget", () => {
     const stats = freshStats();
     const rings = rasterUnionRings(LATTICE, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
 
     expect(stats.candidates).toBe(N * N);
     expect(stats.dropped).toBe(0);
-    expect(stats.kept + stats.keptUnrefined).toBe(stats.candidates);
-    // The budget really did bind — otherwise this fixture proves nothing about
-    // what happens when it does.
-    expect(stats.kept).toBeGreaterThan(0);
-    expect(stats.keptUnrefined).toBeGreaterThan(stats.kept);
+    // The grid-proportional budget covers this density in full — every hole is
+    // examined and every kept ring is the refined, correctly-registered one.
+    expect(stats.keptUnrefined).toBe(0);
+    expect(stats.kept).toBe(stats.candidates);
+    expect(stats.replaced).toBe(stats.candidates);
     // One outer boundary plus one ring per hole: nothing was filled in.
     expect(rings).toHaveLength(1 + N * N);
 
-    // The holes that *were* refined come back as the pocket itself, 2.4 × 2.4.
+    // Refined holes come back as the pocket itself, 2.4 × 2.4.
     const exact = rings.filter((r) => Math.abs(Math.abs(polygonArea(r)) - POCKET ** 2) < 0.05);
-    expect(exact.length).toBeGreaterThanOrEqual(stats.replaced);
-    expect(stats.replaced).toBe(stats.kept);
+    expect(exact.length).toBe(N * N);
+  });
+
+  it("stays correct when a remote point reshapes the adaptive grid (review round-5 repro)", () => {
+    // One independent dot far outside the lattice cannot affect the 3 136
+    // analytic holes — it only changes the adaptive cell size. Under the fixed
+    // budget this left 1 715 hole centres classifying as ink (misregistered
+    // unrefined coarse rings); proportional sizing refines them all.
+    const stats = freshStats();
+    const withRemote = [...LATTICE, [{ x: 560, y: 1200 }]];
+    const rings = rasterUnionRings(withRemote, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+    expect(stats.candidates).toBeGreaterThanOrEqual(N * N);
+    expect(stats.keptUnrefined).toBe(0);
+    expect(stats.dropped).toBe(0);
+    for (let i = 0; i < 64; i++) {
+      const p = holeCentre((i * 617) % (N * N));
+      expect(pointInSilhouette(p, rings), `hole at ${p.x},${p.y}`).toBe(false);
+    }
   });
 
   it("classifies the lattice correctly — paper in the holes, ink in the walls", () => {
@@ -794,7 +816,12 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
     // machine (M-series, node 24) against the same 250ms ceiling — the guard is
     // bbox-prefiltered, so this is where an accidental quadratic would show.
     const ms = timeBest(() => rasterUnionRings(LATTICE, RADIUS), 2);
-    expect(ms, `dense lattice took ${ms.toFixed(1)}ms`).toBeLessThan(RESOLVE_BUDGET_MS);
+    // Full-correctness refinement of all 3 136 windows costs ~1.1s here —
+    // a deliberate trade (review round-5): the fixed budget was faster but
+    // left 1 715 real holes misclassified. This ceiling is per-fixture and
+    // generous; the 250ms bound still guards the non-adversarial fixtures,
+    // and linear scaling in refined windows is the property being pinned.
+    expect(ms, `dense lattice took ${ms.toFixed(1)}ms`).toBeLessThan(2000);
   });
 });
 
