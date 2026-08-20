@@ -97,6 +97,21 @@ width).
 - **`penUpTravelMm`** — a rough plot-efficiency signal. High pen-up travel
   relative to `arcLengthMm` means `vpype linesort` will help a lot at prep time.
 
+### InkSight — the same report, in a browser
+
+InkSight is the drag-and-drop face of `stats`: drop a hatch3d SVG and get the
+page/drawable summary, totals, a per-layer table, the density grid as a
+heatmap, the plottability warnings, the full `StatsReport` JSON (copyable — the
+form an agent consumes), and a rendered thumbnail as a multimodal cross-check.
+Everything runs client-side; nothing is uploaded.
+
+It is a second Vite page in this repo (`inksight/index.html` +
+`src/inksight/`), so the deployed site serves it at **`/hatch3d/inksight/`**
+(locally: `npm run dev` → `/hatch3d/inksight/`). It imports `analyzeSvg` from
+`src/stats/analyze.ts` directly — identical numbers to `npm run stats`, same
+scope limits, same errors on non-hatch3d SVGs. Plot-time estimation and
+pen-travel (vpype-grade) modelling stay deferred.
+
 ## `stats:diff` — variability across variants
 
 Given N rendered SVG variants of a composition, computes two variability metrics
