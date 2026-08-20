@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { useHistory } from "./hooks/useHistory";
 import { useRenderWorker } from "./hooks/useRenderWorker";
-import type { CameraParams } from "./workers/render-worker.types";
+import type { CameraParams, LayerGroupResult } from "./workers/render-worker.types";
 import { SURFACES } from "./surfaces";
 import {
   compositionRegistry,
@@ -29,6 +29,7 @@ import { configHash } from "./utils/config-hash";
 import { exportPng, PNG_THEMES } from "./utils/export-png";
 import { sendToQueue, isPrintQueueEnabled } from "./utils/print-queue-client";
 import { clipSVGPath, type Rect } from "./utils/clip";
+import { buildLayeredSVGContent, type ExportLayout } from "./scene/svg-output";
 import { useHashRoute } from "./hooks/useHashRoute";
 import {
   getPresetsForComposition,
@@ -122,6 +123,110 @@ function loadState(): typeof DEFAULTS {
 }
 
 const INITIAL = loadState();
+
+/** Everything the browser download path needs to serialize an export. */
+export interface BrowserExportInput {
+  /** Flat (non-layered) render output, in viewport px. */
+  svgPaths: string[];
+  /** Layered render output, in viewport px. Non-empty wins over `svgPaths`. */
+  layerGroups?: LayerGroupResult[];
+  layout: ExportLayout;
+  margin: number;
+  /** Extra inset applied inside the margin (double-border style). */
+  clipInset: number;
+  strokeWidth: number;
+  /** Decorative border paths, already in page-mm. */
+  borderPaths: string[];
+}
+
+/** Convert a viewport-px dash length to page-mm, at the export's 2dp precision. */
+function toDashMm(px: number, scale: number): number {
+  return Number((px * scale).toFixed(2));
+}
+
+/** The preview border, emitted as its own top-level group in page-mm space. */
+function borderGroupSVG(borderPaths: string[], strokeWidth: number): string {
+  if (borderPaths.length === 0) return "";
+  return `\n  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">\n    ${borderPaths
+    .map((d) => `<path d="${d}"/>`)
+    .join("\n    ")}\n  </g>`;
+}
+
+/**
+ * Build the SVG string the browser downloads (also the source for PNG export
+ * and the print queue).
+ *
+ * Unlike the CLI, the browser bakes the page transform into the path data
+ * (`clipSVGPath` applies translate+scale and clips to the margin rect) so that
+ * off-paper geometry never reaches the plotter. Layered exports then hand the
+ * baked paths to the *shared* serializer in `scene/svg-output.ts` under an
+ * identity layout, so browser downloads carry the same Inkscape layer
+ * convention (`xmlns:inkscape`, top-level `inkscape:groupmode="layer"` groups,
+ * sequential `N-name` labels, `data-passes`) that `render --scene` emits and
+ * vpype's `read_multilayer_svg` needs.
+ */
+// Exported for src/__tests__/app-export-layers.test.ts — a pure serializer that
+// lives next to the component that owns the export UI. Fast refresh only
+// complains about the extra export; the function holds no component state.
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildBrowserExportSVG(input: BrowserExportInput): string {
+  const { svgPaths, layerGroups, layout, margin, clipInset, strokeWidth, borderPaths } = input;
+  const { pageW, pageH, contentW, contentH, scale, cx, cy } = layout;
+
+  // Clip paths to the margin boundary so plotters don't draw off-paper
+  const clipRect: Rect = {
+    xMin: margin + clipInset,
+    yMin: margin + clipInset,
+    xMax: margin + contentW - clipInset,
+    yMax: margin + contentH - clipInset,
+  };
+  const transform = { cx, cy, scale };
+
+  if (layerGroups && layerGroups.length > 0) {
+    // Bake the page transform into the path data, then serialize with the
+    // shared builder under an identity transform (paths are already page-mm).
+    const bakedGroups: LayerGroupResult[] = layerGroups
+      .map((lg) => ({
+        ...lg,
+        svgPaths: lg.svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect)),
+        // Dash lengths are viewport px; baked paths are page-mm.
+        dash: lg.dash
+          ? ([toDashMm(lg.dash[0], scale), toDashMm(lg.dash[1], scale)] as [number, number])
+          : undefined,
+      }))
+      .filter((lg) => lg.svgPaths.length > 0);
+
+    const bakedLayout: ExportLayout = {
+      pageW,
+      pageH,
+      contentW: contentW - clipInset * 2,
+      contentH: contentH - clipInset * 2,
+      scale: 1,
+      cx: 0,
+      cy: 0,
+    };
+    const layered = buildLayeredSVGContent(
+      bakedGroups,
+      bakedLayout,
+      margin + clipInset,
+      strokeWidth,
+    );
+    const border = borderGroupSVG(borderPaths, strokeWidth);
+    if (!border) return layered;
+    const close = layered.lastIndexOf("\n</svg>");
+    return `${layered.slice(0, close)}${border}\n</svg>`;
+  }
+
+  const clippedPaths = svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
+  const body = `    ${clippedPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}`;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
+  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">
+${body}
+  </g>${borderGroupSVG(borderPaths, strokeWidth)}
+</svg>`;
+}
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -700,58 +805,19 @@ export default function App() {
   }, [is2d, compositionKey, fileHash]);
 
   // Build SVG content string (shared between SVG and PNG export)
-  const buildSVGContent = useCallback(() => {
-    const { pageW, pageH, contentW, contentH, scale, cx, cy } = exportLayout;
-
-    // Clip paths to the margin boundary so plotters don't draw off-paper
-    const clipRect: Rect = {
-      xMin: margin + clipInset,
-      yMin: margin + clipInset,
-      xMax: margin + contentW - clipInset,
-      yMax: margin + contentH - clipInset,
-    };
-    const transform = { cx, cy, scale };
-
-    const escAttr = (s: string) =>
-      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
-
-    let body: string;
-    if (layerGroups && layerGroups.length > 0) {
-      // Per-layer <g> groups, each with its own stroke style (pen layer).
-      body = layerGroups
-        .map((lg, i) => {
-          const clipped = lg.svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
-          if (clipped.length === 0) return "";
-          const idAttr = ` id="${escAttr(lg.name ?? `layer-${i}`)}"`;
-          const strokeAttr = lg.color ? ` stroke="${escAttr(lg.color)}"` : "";
-          // Path coordinates are baked to page-mm by clipSVGPath, so
-          // width/dash convert alongside: width is relative to the global
-          // stroke width; dash values are viewport px × scale.
-          const widthAttr =
-            lg.widthScale !== undefined
-              ? ` stroke-width="${(strokeWidth * lg.widthScale).toFixed(3)}"`
-              : "";
-          const dashAttr = lg.dash
-            ? ` stroke-dasharray="${lg.dash.map((d) => (d * scale).toFixed(2)).join(" ")}"`
-            : "";
-          const opacityAttr = lg.opacity !== undefined ? ` opacity="${lg.opacity}"` : "";
-          const paths = clipped.map((d) => `<path d="${d}"/>`).join("\n      ");
-          return `    <g${idAttr}${strokeAttr}${widthAttr}${dashAttr}${opacityAttr}>\n      ${paths}\n    </g>`;
-        })
-        .filter(Boolean)
-        .join("\n");
-    } else {
-      const clippedPaths = svgPaths.flatMap((d) => clipSVGPath(d, transform, clipRect));
-      body = `    ${clippedPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}`;
-    }
-
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm" viewBox="0 0 ${pageW} ${pageH}">
-  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">
-${body}
-  </g>${previewBorderPaths.length > 0 ? `\n  <g fill="none" stroke="black" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">\n    ${previewBorderPaths.map((d) => `<path d="${d}"/>`).join("\n    ")}\n  </g>` : ""}
-</svg>`;
-  }, [svgPaths, layerGroups, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths]);
+  const buildSVGContent = useCallback(
+    () =>
+      buildBrowserExportSVG({
+        svgPaths,
+        layerGroups,
+        layout: exportLayout,
+        margin,
+        clipInset,
+        strokeWidth,
+        borderPaths: previewBorderPaths,
+      }),
+    [svgPaths, layerGroups, exportLayout, margin, clipInset, strokeWidth, previewBorderPaths],
+  );
 
   // Export SVG
   const handleExportSVG = useCallback(() => {
