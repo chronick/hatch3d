@@ -284,6 +284,93 @@ describe("DSL → graph", () => {
     expect(tr.scale).toBe(2);
   });
 
+  // ── Region vocabulary in the DSL ──
+  //
+  // `kind:` / `offsetPx:` / `cornerRadius:` used to be parsed and dropped on the
+  // floor: the reviewer's call below rendered a legacy convex hull with no
+  // error at all. These pin the lowering to the graph's `regionOf` form.
+
+  it("lowers regionHatch region args to a regionOf node", () => {
+    const src = `
+      g = lineA()
+      h = regionHatch(g, kind: occupied, offsetPx: 6, angle: 45, pitch: 3)
+      out(h @ "#111")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    parsePatchDoc(doc); // the widened node must validate
+    const rh = doc.nodes.find((n) => n.op === "regionHatch") as {
+      from?: string;
+      regionOf?: { of: string; kind: string; offsetPx?: number; cornerRadius?: number };
+      angleDeg: number; pitch: number;
+    };
+    expect(rh.regionOf).toEqual({ of: "g", kind: "occupied", offsetPx: 6 });
+    expect(rh.from).toBeUndefined(); // not the legacy hull form
+    expect(rh.angleDeg).toBe(45);
+    expect(rh.pitch).toBe(3);
+  });
+
+  it("keeps the legacy regionHatch hull form when no region args are given", () => {
+    const doc = compileDSL(`g = lineA()\nh = regionHatch(g, angle: 30, pitch: 5)\nout(h @ "#111")`, { id: "t" });
+    parsePatchDoc(doc);
+    const rh = doc.nodes.find((n) => n.op === "regionHatch") as { from?: string; regionOf?: unknown };
+    expect(rh.from).toBe("g");
+    expect(rh.regionOf).toBeUndefined();
+  });
+
+  it("defaults kind to hull, so offsetPx alone grows the legacy region", () => {
+    const doc = compileDSL(`g = lineA()\nh = regionHatch(g, offsetPx: -4, angle: 0, pitch: 2)\nout(h @ "#111")`, { id: "t" });
+    parsePatchDoc(doc);
+    const rh = doc.nodes.find((n) => n.op === "regionHatch") as { regionOf?: { kind: string; offsetPx?: number } };
+    expect(rh.regionOf).toEqual({ of: "g", kind: "hull", offsetPx: -4 });
+  });
+
+  it("lowers clip region args (and mode) the same way", () => {
+    const src = `
+      g = lineA()
+      m = lineA()
+      c = clip(g, by: m, kind: bbox, cornerRadius: 18, mode: outside)
+      out(c @ "#111")
+    `;
+    const doc = compileDSL(src, { id: "t" });
+    parsePatchDoc(doc);
+    const clip = doc.nodes.find((n) => n.op === "clip") as {
+      from: string; hullOf?: string; mode?: string;
+      regionOf?: { of: string; kind: string; cornerRadius?: number };
+    };
+    expect(clip.from).toBe("g");
+    expect(clip.regionOf).toEqual({ of: "m", kind: "bbox", cornerRadius: 18 });
+    expect(clip.hullOf).toBeUndefined();
+    expect(clip.mode).toBe("outside");
+  });
+
+  it("rejects an unknown region kind by name", () => {
+    expect(() => compileDSL(`g = lineA()\nh = regionHatch(g, kind: blob, angle: 0, pitch: 2)\nout(h @ "#111")`, { id: "t" }))
+      .toThrow(/unknown region kind "blob"/);
+  });
+
+  it("rejects a bad clip mode", () => {
+    expect(() => compileDSL(`g = lineA()\nc = clip(g, by: g, mode: sideways)\nout(c @ "#111")`, { id: "t" }))
+      .toThrow(/"mode" must be inside or outside/);
+  });
+
+  // ── Stray named arguments are errors, not silent no-ops ──
+
+  it("rejects a misspelled named arg, naming the op and the arg", () => {
+    expect(() => compileDSL(`g = lineA()\nh = regionHatch(g, offsetPX: 6, angle: 45, pitch: 3)\nout(h @ "#111")`, { id: "t" }))
+      .toThrow(/regionHatch\(\.\.\.\) got unknown argument "offsetPX"/);
+  });
+
+  it("lists every stray arg on any operator", () => {
+    expect(() => compileDSL(`g = lineA()\nt = transform(g, rotate: 5, wobble: 2, squish: 3)\nout(t @ "#111")`, { id: "t" }))
+      .toThrow(/transform\(\.\.\.\) got unknown arguments "wobble", "squish"/);
+  });
+
+  it("still takes any named arg on a generator (they are composition params)", () => {
+    const doc = compileDSL(`g = lineA(anything: 3, whatever: 4)\nout(g @ "#111")`, { id: "t" });
+    const gen = doc.nodes.find((n) => n.op === "generator") as { params?: Record<string, unknown> };
+    expect(gen.params).toEqual({ anything: 3, whatever: 4 });
+  });
+
   it("rejects a malformed translate tuple", () => {
     expect(() => compileDSL(`g = lineA()\nt = transform(g, translate: [10])\nout(t @ "#111")`, { id: "t" }))
       .toThrow(/must be \[x, y\]/);

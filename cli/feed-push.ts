@@ -398,27 +398,33 @@ const FEED_PRESETS: FeedPreset[] = [
 ];
 
 // ── CLI args ──
+//
+// Parsing, the composition-registry load and the --help / --list-presets exits
+// all live in functions called only from the entry-point guard at the bottom.
+// Importing this module (the serializer unit tests do) must therefore have no
+// observable effect: no argv reading, no console output, no process.exit.
 
-const { values: args } = parseArgs({
-  options: {
-    count: { type: "string", short: "n", default: "3" },
-    composition: { type: "string", short: "c" },
-    "dry-run": { type: "boolean", default: false },
-    "list-presets": { type: "boolean", default: false },
-    "save-local": { type: "string" },
-    scale: { type: "string", default: "4" },
-    "no-preferences": { type: "boolean", default: false },
-    exploration: { type: "string", default: "0.2" },
-    brief: { type: "string", short: "b" },
-    queue: { type: "boolean", short: "q", default: false },
-    help: { type: "boolean", short: "h", default: false },
-  },
-  strict: false,
-});
+/** Parse process.argv into the flag set main() consumes. */
+function parseCliArgs() {
+  return parseArgs({
+    options: {
+      count: { type: "string", short: "n", default: "3" },
+      composition: { type: "string", short: "c" },
+      "dry-run": { type: "boolean", default: false },
+      "list-presets": { type: "boolean", default: false },
+      "save-local": { type: "string" },
+      scale: { type: "string", default: "4" },
+      "no-preferences": { type: "boolean", default: false },
+      exploration: { type: "string", default: "0.2" },
+      brief: { type: "string", short: "b" },
+      queue: { type: "boolean", short: "q", default: false },
+      help: { type: "boolean", short: "h", default: false },
+    },
+    strict: false,
+  }).values;
+}
 
-loadCompositions();
-
-if (args.help) {
+function printHelp(): void {
   console.log(`
 hatch3d feed-push — render and push plotter art to feed app
 
@@ -435,16 +441,14 @@ Options:
   -q, --queue            Also add items to the print queue
   -h, --help             Show this help
   `);
-  process.exit(0);
 }
 
-if (args["list-presets"]) {
+function printPresets(): void {
   console.log(`\n${FEED_PRESETS.length} curated presets:\n`);
   for (const p of FEED_PRESETS) {
     console.log(`  ${p.composition.padEnd(20)} "${p.name}" — ${p.description}`);
     console.log(`  ${"".padEnd(20)} tags: ${p.tags.join(", ")}`);
   }
-  process.exit(0);
 }
 
 // ── Feed API client ──
@@ -642,6 +646,21 @@ function selectPresets(count: number, forceComposition?: string): FeedPreset[] {
 // ── Main ──
 
 async function main(): Promise<void> {
+  const args = parseCliArgs();
+
+  if (args.help) {
+    printHelp();
+    return;
+  }
+
+  if (args["list-presets"]) {
+    printPresets();
+    return;
+  }
+
+  // Only now, once we know we are actually rendering, pull in every composition.
+  loadCompositions();
+
   const count = Math.min(parseInt(args.count || "3"), 10);
   const scale = parseInt(args.scale || "4");
   const dryRun = args["dry-run"] ?? false;

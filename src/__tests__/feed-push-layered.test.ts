@@ -201,3 +201,46 @@ describe("test hygiene", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Importing a CLI must be inert. feed-push.ts used to parse process.argv, load
+ * the whole composition registry and `process.exit(0)` on --help at *module
+ * scope*, before the import.meta.url entry-point guard ever ran — so importing
+ * it from a test could print usage and kill the runner, depending on the argv
+ * it happened to see. All of that now lives inside main(); this pins it.
+ */
+describe("module import purity", () => {
+  it("importing the module reads no argv, prints nothing and never exits", async () => {
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation(((code?: number) => {
+        throw new Error(`process.exit(${code}) at import time`);
+      }) as never);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const realArgv = process.argv;
+    // argv that WOULD print usage and exit 0 if module scope still parsed it.
+    // argv[1] is deliberately not this module, so the entry-point guard is false.
+    process.argv = [realArgv[0], "/not/the/entry/point.ts", "--help", "--list-presets"];
+
+    try {
+      vi.resetModules();
+      const first = await import("../../cli/feed-push");
+      vi.resetModules();
+      const second = await import("../../cli/feed-push");
+
+      expect(typeof first.serializeRenderResult).toBe("function");
+      expect(typeof second.serializeRenderResult).toBe("function");
+      expect(exitSpy).not.toHaveBeenCalled();
+      expect(logSpy).not.toHaveBeenCalled();
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      process.argv = realArgv;
+      exitSpy.mockRestore();
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      vi.resetModules();
+    }
+  });
+});

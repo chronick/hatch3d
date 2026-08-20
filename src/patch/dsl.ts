@@ -17,9 +17,23 @@
  * sdf, blend, distort, cull, thin, regionHatch, transform, clip, pen. Any other
  * fn name is a composition (generator node). For operators, the first positional
  * arg is the input node (`from`). Array literals (`translate: [10, -4]`) work.
+ *
+ * Region vocabulary (regionHatch / clip) — the DSL spelling of the graph's
+ * `regionOf` form (see regions.ts). Adding any of `kind:`, `offsetPx:` or
+ * `cornerRadius:` turns the region source into a derived region:
+ *
+ *   h = regionHatch(g, kind: occupied, offsetPx: 6, angle: 45, pitch: 3)
+ *   c = clip(g, by: mask, kind: bbox, cornerRadius: 18, mode: outside)
+ *
+ * Without them, `regionHatch(g, …)` keeps its legacy `from: g` (≡ hull) and
+ * `clip(g, by: m)` its `hullOf: m`, so existing scripts compile identically.
+ *
+ * Unknown named arguments are an error, not a silent no-op: every op declares
+ * the keys it reads and anything left over throws, naming the op and the arg.
  */
 
 import type { PatchNode, PatchDoc } from "./graph.js";
+import type { RegionOfSpec } from "../operators/region-shapes.js";
 
 const OPERATOR_OPS = new Set([
   "simplexScalar", "simplexVector", "density", "gradient", "sdf", "directional", "luminance", "blend", "distort", "cull", "thin", "resample", "regionHatch", "transform", "clip", "pen",
@@ -79,6 +93,9 @@ function parseArgs(argStr: string): Arg[] {
   });
 }
 
+/** The four derived-region kinds, as spelled in the DSL's `kind:` argument. */
+const REGION_KINDS = new Set<RegionOfSpec["kind"]>(["bbox", "hull", "outline", "occupied"]);
+
 function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
   const named = new Map<string, ArgValue>();
   const positional: ArgValue[] = [];
@@ -86,59 +103,133 @@ function buildNode(id: string, fn: string, args: Arg[]): PatchNode {
     if (a.key) named.set(a.key, a.value);
     else positional.push(a.value);
   }
+  // Every named key an op looks at is recorded, whether or not it was supplied.
+  // Whatever is left over at the end was never consumed by anything — a typo or
+  // an unsupported option — and the guard below refuses to ignore it silently.
+  const consumed = new Set<string>();
+  const has = (k: string): boolean => { consumed.add(k); return named.has(k); };
+  const get = (k: string): ArgValue | undefined => { consumed.add(k); return named.get(k); };
   const req = (k: string): ArgValue => {
-    if (!named.has(k)) throw new Error(`patch DSL: ${fn}(...) missing required arg "${k}"`);
+    if (!has(k)) throw new Error(`patch DSL: ${fn}(...) missing required arg "${k}"`);
     return named.get(k)!;
   };
-  const from = () => String(positional[0] ?? named.get("from") ?? err(`${fn}(...) needs an input node`));
+  const from = () => String(positional[0] ?? get("from") ?? err(`${fn}(...) needs an input node`));
   const asTuple = (v: ArgValue, k: string): [number, number] => {
     if (!Array.isArray(v) || v.length !== 2) throw new Error(`patch DSL: ${fn}(...) "${k}" must be [x, y]`);
     return [v[0], v[1]];
   };
-
-  if (!OPERATOR_OPS.has(fn)) {
-    // Generator: any composition id. All args are params.
-    const params: Record<string, unknown> = {};
-    for (const [k, v] of named) params[k] = v;
-    return { op: "generator", id, composition: fn, ...(Object.keys(params).length ? { params } : {}) };
-  }
-  switch (fn) {
-    case "simplexScalar": return { op: "simplexScalar", id, scale: Number(req("scale")), seed: Number(req("seed")) };
-    case "simplexVector": return { op: "simplexVector", id, scale: Number(req("scale")), seed: Number(req("seed")) };
-    case "density": return { op: "density", id, from: from(), cell: Number(req("cell")) };
-    case "gradient": return { op: "gradient", id, from: from() };
-    case "sdf": return { op: "sdf", id, from: from() };
-    case "directional": return { op: "directional", id, from: from(), dir: asTuple(req("dir"), "dir") };
-    case "luminance": return {
-      op: "luminance", id,
-      image: String(positional[0] ?? req("image")),
-      invert: String(named.get("invert")) === "true",
-    };
-    case "blend": return {
-      op: "blend", id,
-      a: String(positional[0] ?? req("a")),
-      b: String(positional[1] ?? req("b")),
-      mode: (named.has("mode") ? String(named.get("mode")) : "add") as "add" | "mul" | "max" | "min" | "mix",
-      mix: named.has("mix") ? Number(named.get("mix")) : 0.5,
-    };
-    case "distort": return { op: "distort", id, from: from(), by: String(req("by")), amp: Number(req("amp")) };
-    case "cull": return { op: "cull", id, from: from(), by: String(req("by")), min: Number(req("min")), max: Number(req("max")) };
-    case "thin": return { op: "thin", id, from: from(), by: String(req("by")), strength: Number(req("strength")) };
-    case "resample": return { op: "resample", id, from: from(), step: Number(req("step")) };
-    case "regionHatch": return { op: "regionHatch", id, from: from(), angleDeg: Number(req("angle")), pitch: Number(req("pitch")) };
-    case "transform": {
-      const node: PatchNode = { op: "transform", id, from: from() };
-      if (named.has("translate")) node.translate = asTuple(named.get("translate")!, "translate");
-      if (named.has("rotate")) node.rotateDeg = Number(named.get("rotate"));
-      if (named.has("scale")) {
-        const s = named.get("scale")!;
-        node.scale = Array.isArray(s) ? asTuple(s, "scale") : Number(s);
-      }
-      return node;
+  const asNumber = (v: ArgValue | undefined, k: string): number => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) throw new Error(`patch DSL: ${fn}(...) "${k}" must be a number`);
+    return n;
+  };
+  /**
+   * Lower the region vocabulary (`kind:` / `offsetPx:` / `cornerRadius:`) onto a
+   * region source id. Returns null when none of them is present, which is the
+   * signal to emit the legacy hull spelling instead and keep old scripts
+   * byte-identical.
+   */
+  const regionOfSpec = (of: string): RegionOfSpec | null => {
+    const kindGiven = has("kind");
+    const offsetGiven = has("offsetPx");
+    const cornerGiven = has("cornerRadius");
+    if (!kindGiven && !offsetGiven && !cornerGiven) return null;
+    // `hull` is the default so `offsetPx:` alone means "the legacy hull, grown".
+    const kind = kindGiven ? String(get("kind")) : "hull";
+    if (!REGION_KINDS.has(kind as RegionOfSpec["kind"])) {
+      throw new Error(`patch DSL: ${fn}(...) unknown region kind "${kind}" (expected ${[...REGION_KINDS].join(", ")})`);
     }
-    case "clip": return { op: "clip", id, from: from(), hullOf: String(req("by")) };
-    case "pen": return { op: "pen", id, from: from(), ...(named.has("color") ? { color: String(named.get("color")) } : {}), ...(named.has("name") ? { name: String(named.get("name")) } : {}), ...(named.has("width") ? { width: Number(named.get("width")) } : {}) };
-    default: throw new Error(`patch DSL: unknown operator "${fn}"`);
+    return {
+      of,
+      kind: kind as RegionOfSpec["kind"],
+      ...(offsetGiven ? { offsetPx: asNumber(get("offsetPx"), "offsetPx") } : {}),
+      ...(cornerGiven ? { cornerRadius: asNumber(get("cornerRadius"), "cornerRadius") } : {}),
+    };
+  };
+
+  const node = buildOp();
+  const stray = [...named.keys()].filter((k) => !consumed.has(k));
+  if (stray.length > 0) {
+    throw new Error(
+      `patch DSL: ${fn}(...) got unknown argument${stray.length > 1 ? "s" : ""} ${stray.map((k) => `"${k}"`).join(", ")}`,
+    );
+  }
+  return node;
+
+  /** The op-specific construction; every named arg it reads goes through has/get/req. */
+  function buildOp(): PatchNode {
+    if (!OPERATOR_OPS.has(fn)) {
+      // Generator: any composition id. All args are params, so nothing is stray.
+      const params: Record<string, unknown> = {};
+      for (const [k, v] of named) { consumed.add(k); params[k] = v; }
+      return { op: "generator", id, composition: fn, ...(Object.keys(params).length ? { params } : {}) };
+    }
+    switch (fn) {
+      case "simplexScalar": return { op: "simplexScalar", id, scale: Number(req("scale")), seed: Number(req("seed")) };
+      case "simplexVector": return { op: "simplexVector", id, scale: Number(req("scale")), seed: Number(req("seed")) };
+      case "density": return { op: "density", id, from: from(), cell: Number(req("cell")) };
+      case "gradient": return { op: "gradient", id, from: from() };
+      case "sdf": return { op: "sdf", id, from: from() };
+      case "directional": return { op: "directional", id, from: from(), dir: asTuple(req("dir"), "dir") };
+      case "luminance": return {
+        op: "luminance", id,
+        image: String(positional[0] ?? req("image")),
+        invert: String(get("invert")) === "true",
+      };
+      case "blend": return {
+        op: "blend", id,
+        a: String(positional[0] ?? req("a")),
+        b: String(positional[1] ?? req("b")),
+        mode: (has("mode") ? String(get("mode")) : "add") as "add" | "mul" | "max" | "min" | "mix",
+        mix: has("mix") ? Number(get("mix")) : 0.5,
+      };
+      case "distort": return { op: "distort", id, from: from(), by: String(req("by")), amp: Number(req("amp")) };
+      case "cull": return { op: "cull", id, from: from(), by: String(req("by")), min: Number(req("min")), max: Number(req("max")) };
+      case "thin": return { op: "thin", id, from: from(), by: String(req("by")), strength: Number(req("strength")) };
+      case "resample": return { op: "resample", id, from: from(), step: Number(req("step")) };
+      case "regionHatch": {
+        // The region source is the positional input (or `from:`); the region
+        // vocabulary, when present, promotes it from "the hull of X" to a
+        // derived region of X.
+        const of = from();
+        const region = regionOfSpec(of);
+        return {
+          op: "regionHatch", id,
+          ...(region ? { regionOf: region } : { from: of }),
+          angleDeg: Number(req("angle")), pitch: Number(req("pitch")),
+        };
+      }
+      case "transform": {
+        const node: PatchNode = { op: "transform", id, from: from() };
+        if (has("translate")) node.translate = asTuple(get("translate")!, "translate");
+        if (has("rotate")) node.rotateDeg = Number(get("rotate"));
+        if (has("scale")) {
+          const s = get("scale")!;
+          node.scale = Array.isArray(s) ? asTuple(s, "scale") : Number(s);
+        }
+        return node;
+      }
+      case "clip": {
+        // `by:` names the region source — same vocabulary as regionHatch, so a
+        // rounded bbox or an offset silhouette clips exactly what it hatches.
+        const by = String(req("by"));
+        const region = regionOfSpec(by);
+        return {
+          op: "clip", id, from: from(),
+          ...(region ? { regionOf: region } : { hullOf: by }),
+          ...(has("mode") ? { mode: clipMode(String(get("mode"))) } : {}),
+        };
+      }
+      case "pen": return { op: "pen", id, from: from(), ...(has("color") ? { color: String(get("color")) } : {}), ...(has("name") ? { name: String(get("name")) } : {}), ...(has("width") ? { width: Number(get("width")) } : {}) };
+      default: throw new Error(`patch DSL: unknown operator "${fn}"`);
+    }
+  }
+
+  function clipMode(m: string): "inside" | "outside" {
+    if (m !== "inside" && m !== "outside") {
+      throw new Error(`patch DSL: ${fn}(...) "mode" must be inside or outside (got "${m}")`);
+    }
+    return m;
   }
 }
 
