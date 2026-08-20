@@ -67,7 +67,7 @@ same functions the CLI does.
 | `op:clip` | Clip a subtree to (or away from) a region — polygon, hull, or a derived `regionOf` | ✅ |
 | `op:emphasis` | Weighted mask: thin a subtree to `weight` inside a region | ✅ |
 | `op:mask` | Mask a subtree by another node's convex hull (shorthand for `op:clip` + `hullOf`) | ✅ |
-| `op:region-hatch` | Hatch-fill a region at angle/pitch | ✅ |
+| `op:region-hatch` | Hatch-fill a region at angle/pitch — polygon, hull, or derived `regionOf` (non-convex + holes, even-odd) | ✅ |
 | `op:field-distort` | Displace a subtree by a noise/flow field | ✅ |
 | `op:image-luminance` | Deflect a subtree's scanlines by an image's brightness (isolinePortrait) | ✅ |
 
@@ -135,9 +135,11 @@ rounded-rectangle idiom. It is a **no-op** for `outline`/`occupied`: the
 buffered union already rounds its own corners by construction, and layering a
 second approximation on top of the first would only add error.
 
-`outline`/`occupied` rasterise onto a grid at most 192 cells across
-(`RASTER_MAX_CELLS` in `src/operators/region-shapes.ts`), so they are cheap and
-resolution-bounded but not pixel-exact. They correctly return several rings for
+`outline`/`occupied` contour an exact distance-to-segment field on a
+radius-adaptive grid (192–512 cells across, scaled to the stroke radius —
+see `rasterGridSpec` in `src/operators/region-shapes.ts`), accurate to about
+0.2 cell; sub-cell stroke radii are widened to one cell so thin strokes stay
+connected. They correctly return several rings for
 disjoint blobs and for holes — the even-odd rule composes them.
 
 ### Document order is render order
@@ -328,12 +330,10 @@ the round trip.
   several generators into one pen would need a `merge` node.
 - **`op:field-distort` `field: "flow"`** — currently always lowers to simplex;
   a flow-field source is a follow-up.
-- **`regionOf` on `op:region-hatch`** — region-hatch still takes only a polygon
-  or a node's hull. Hatching a rounded-inset or offset-silhouette region wants
-  the same reference; it needs the patch `regionHatch` node widened first.
 - **`op:mask` stays hull-only** — it is the shorthand; `op:clip` carries the
   full region vocabulary, and two ways to say the same thing would be worse for
   an agent-authored IR than one short form and one general one.
-- **Exact silhouette offsetting** — `outline`/`occupied` are a rasterised
-  buffered union, not a true Minkowski sum. Exact polygon offsetting of
-  arbitrary concave geometry is the follow-up if the approximation ever shows.
+- **Exact Minkowski offsetting** — `outline`/`occupied` now use an exact
+  distance field on a radius-adaptive grid (192–512 cells, ~0.2-cell worst
+  error), which is accurate enough for plotting; a true Minkowski sum remains
+  unbuilt if sub-cell exactness is ever needed.
