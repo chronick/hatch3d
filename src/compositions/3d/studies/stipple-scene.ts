@@ -12,10 +12,26 @@ import type { Composition3DDefinition, LayerConfig } from "../../types";
  * hidden-line occlusion path handles it with no special casing.
  *
  * CAMERA: the scene reads best from a slightly low three-quarter view
- * (roughly theta ≈ 0.7 rad, phi ≈ 1.25 rad, dist ≈ 22). Camera state is
+ * (roughly theta ≈ 0.7 rad, phi ≈ 1.25 rad, dist ≈ 10). Camera state is
  * owned by the app shell, not by compositions — `CompositionPreset.values`
  * carries only controls/macros/hatchGroups — so this cannot be shipped as
  * a preset. Set it in the viewer.
+ *
+ * SCENE SCALE — every default here is sized so the whole scene stays inside
+ * the renderer's camera orbit. Cameras orbit the origin at `dist` and look at
+ * it, so their eye plane sits at distance `dist` from the origin: a point P is
+ * in front of the camera iff |P| < dist, for every orbit angle. `projection.ts`
+ * does no near-plane clipping, so geometry that falls behind the eye plane goes
+ * through a sign-flipped perspective divide and projects to coordinates
+ * millions of pixels out — a single stipple dot straddling that plane draws as
+ * a solid line clear across the page.
+ *
+ * The ground quad's corners are the far point of this scene, at
+ * `groundSize * sqrt(2)`. The headless CLI orbits at dist 8 by default, which
+ * is what the `groundSize` cap and the defaults below are sized against; the
+ * rest of the 3D library lives inside radius ~4 for the same reason. Raising
+ * `groundSize` past the cap, or driving the camera closer than the scene
+ * radius, reintroduces the artifact.
  */
 
 // ── Shadow geometry (exported, pure, testable) ──
@@ -230,6 +246,19 @@ export function faceDensity(
 
 const DEG = Math.PI / 180;
 
+/**
+ * Largest ground half-extent that keeps the scene inside the renderer's
+ * default camera orbit (see SCENE SCALE at the top of this file).
+ *
+ * The ground corners are the far point of the scene, at `groundSize *
+ * sqrt(2)`. The headless CLI orbits at dist 8, so 5 * sqrt(2) ≈ 7.07 leaves
+ * ~0.9 world units of clearance in front of the eye plane. `layers()` clamps
+ * to this rather than trusting the caller: a value past it does not merely
+ * look wrong, it puts ground geometry behind the camera, where the
+ * unclipped perspective divide draws stipple dots as page-crossing lines.
+ */
+export const MAX_GROUND_SIZE = 5;
+
 interface Face {
   name: string;
   normal: [number, number, number];
@@ -363,9 +392,9 @@ const stippleScene: Composition3DDefinition = {
     shadowSoftness: {
       type: "slider",
       label: "Shadow Softness",
-      default: 0.5,
+      default: 0.22,
       min: 0.01,
-      max: 4,
+      max: 1.8,
       step: 0.01,
       group: "Light",
     },
@@ -381,19 +410,21 @@ const stippleScene: Composition3DDefinition = {
     stippleDensity: {
       type: "slider",
       label: "Stipple Density",
-      default: 14,
-      min: 3,
-      max: 45,
+      // Dots per *world* unit — the reciprocal of a length, so it scales
+      // inversely with the scene scale (see SCENE SCALE above).
+      default: 31.5,
+      min: 7,
+      max: 100,
       step: 0.5,
       group: "Stipple",
     },
     dotSize: {
       type: "slider",
       label: "Dot Size",
-      default: 0.03,
-      min: 0.004,
-      max: 0.15,
-      step: 0.002,
+      default: 0.014,
+      min: 0.002,
+      max: 0.07,
+      step: 0.001,
       group: "Stipple",
     },
     dotShape: {
@@ -418,37 +449,41 @@ const stippleScene: Composition3DDefinition = {
     slabWidth: {
       type: "slider",
       label: "Slab Width",
-      default: 1.4,
-      min: 0.2,
-      max: 6,
-      step: 0.05,
+      default: 0.6,
+      min: 0.1,
+      max: 2.6,
+      step: 0.02,
       group: "Slab",
     },
     slabHeight: {
       type: "slider",
       label: "Slab Height",
-      default: 5.2,
-      min: 0.5,
-      max: 14,
-      step: 0.1,
+      default: 2.3,
+      min: 0.25,
+      max: 6,
+      step: 0.05,
       group: "Slab",
     },
     slabDepth: {
       type: "slider",
       label: "Slab Depth",
-      default: 0.6,
-      min: 0.1,
-      max: 4,
-      step: 0.05,
+      default: 0.25,
+      min: 0.05,
+      max: 1.8,
+      step: 0.02,
       group: "Slab",
     },
     groundSize: {
       type: "slider",
       label: "Ground Size",
-      default: 9,
-      min: 3,
-      max: 24,
-      step: 0.5,
+      // Capped at MAX_GROUND_SIZE: the ground corners sit at groundSize *
+      // sqrt(2) from the origin, and that has to stay inside the camera orbit
+      // (see SCENE SCALE above). 5 * sqrt(2) ≈ 7.07, comfortably inside the
+      // headless CLI's default orbit of 8.
+      default: 4,
+      min: 1.5,
+      max: 5,
+      step: 0.25,
       group: "Ground",
     },
     ambientNear: {
@@ -497,16 +532,16 @@ const stippleScene: Composition3DDefinition = {
         controls: {
           lightAzimuth: 200,
           lightElevation: 14,
-          shadowSoftness: 1.2,
+          shadowSoftness: 0.53,
           shadowStrength: 0.95,
-          stippleDensity: 16,
-          dotSize: 0.03,
+          stippleDensity: 36,
+          dotSize: 0.014,
           dotShape: "point",
           seed: 7,
-          slabWidth: 1.2,
-          slabHeight: 6,
-          slabDepth: 0.5,
-          groundSize: 14,
+          slabWidth: 0.53,
+          slabHeight: 2.7,
+          slabDepth: 0.22,
+          groundSize: 5,
           ambientNear: 0.06,
           ambientFar: 0.4,
           slabLitTone: 0.08,
@@ -521,16 +556,16 @@ const stippleScene: Composition3DDefinition = {
         controls: {
           lightAzimuth: 250,
           lightElevation: 72,
-          shadowSoftness: 0.2,
+          shadowSoftness: 0.09,
           shadowStrength: 0.85,
-          stippleDensity: 20,
-          dotSize: 0.022,
+          stippleDensity: 45,
+          dotSize: 0.01,
           dotShape: "point",
           seed: 21,
-          slabWidth: 1.6,
-          slabHeight: 4.4,
-          slabDepth: 0.8,
-          groundSize: 8,
+          slabWidth: 0.71,
+          slabHeight: 1.95,
+          slabDepth: 0.36,
+          groundSize: 3.5,
           ambientNear: 0.05,
           ambientFar: 0.3,
           slabLitTone: 0.06,
@@ -547,12 +582,12 @@ const stippleScene: Composition3DDefinition = {
       return typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
     };
 
-    const slabWidth = num("slabWidth", 1.4);
-    const slabHeight = num("slabHeight", 5.2);
-    const slabDepth = num("slabDepth", 0.6);
-    const groundSize = num("groundSize", 9);
-    const density = num("stippleDensity", 14);
-    const dotSize = num("dotSize", 0.03);
+    const slabWidth = num("slabWidth", 0.6);
+    const slabHeight = num("slabHeight", 2.3);
+    const slabDepth = num("slabDepth", 0.25);
+    const groundSize = Math.min(num("groundSize", 4), MAX_GROUND_SIZE);
+    const density = num("stippleDensity", 31.5);
+    const dotSize = num("dotSize", 0.014);
     const seed = Math.round(num("seed", 7));
     const shape = (v.dotShape as "point" | "cross") ?? "point";
 
@@ -562,7 +597,7 @@ const stippleScene: Composition3DDefinition = {
       slabHeight,
       lightAzimuth: num("lightAzimuth", 235) * DEG,
       lightElevation: num("lightElevation", 38) * DEG,
-      softness: num("shadowSoftness", 0.5),
+      softness: num("shadowSoftness", 0.22),
     };
 
     const litTone = num("slabLitTone", 0.1);

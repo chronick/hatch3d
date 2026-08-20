@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
+import * as THREE from "three";
 import stippleScene, {
+  MAX_GROUND_SIZE,
   lightVector,
   shadowOffset,
   shadowPolygon,
@@ -12,6 +14,7 @@ import stippleScene, {
 import type { Composition3DDefinition, ControlDef } from "../compositions/types";
 import { SURFACES } from "../surfaces";
 import { generateUVHatchLines } from "../hatch";
+import { projectPolylines } from "../projection";
 
 const DEG = Math.PI / 180;
 
@@ -169,6 +172,99 @@ describe("stippleScene layers()", () => {
     const b = layersWith();
     expect(a.map((l) => l.params)).toEqual(b.map((l) => l.params));
     expect(a.map((l) => l.hatch.stipple)).toEqual(b.map((l) => l.hatch.stipple));
+  });
+});
+
+// ── vault-3bkv6 regression: scene scale vs camera orbit ──
+//
+// The renderer's cameras orbit the origin at `dist` and look at it, so the eye
+// plane sits `dist` from the origin: a point P is in front of the camera iff
+// |P| < dist, at every orbit angle. `projectPolylines` does no near-plane
+// clipping, so a stipple dot straddling that plane goes through a sign-flipped
+// perspective divide and projects to a segment millions of pixels long, which
+// draws as a solid line across the page. stippleScene originally shipped with
+// groundSize 9 — corners at 12.7 — while the headless CLI orbits at 8, putting
+// ~5% of the ground behind the eye.
+const CLI_CAMERA = { theta: 0.6, phi: 0.35, dist: 8, width: 800, height: 800 };
+
+function cliCamera() {
+  const { theta, phi, dist, width, height } = CLI_CAMERA;
+  const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 100);
+  camera.position.set(
+    dist * Math.sin(theta) * Math.cos(phi),
+    dist * Math.sin(phi),
+    dist * Math.cos(theta) * Math.cos(phi),
+  );
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+  return camera;
+}
+
+function stippleGeometry(overrides: Record<string, unknown> = {}) {
+  return layersWith(overrides).map((l) => ({
+    layer: l,
+    polylines: generateUVHatchLines(SURFACES[l.surface].fn, l.params ?? {}, l.hatch),
+  }));
+}
+
+describe("stipple scene stays inside the camera orbit (vault-3bkv6)", () => {
+  it("every emitted point sits closer to the origin than the default camera orbit", () => {
+    for (const seed of [7, 21, 404, 9999]) {
+      for (const shape of ["point", "cross"] as const) {
+        for (const { layer, polylines } of stippleGeometry({ seed, dotShape: shape })) {
+          for (const pl of polylines) {
+            for (const p of pl) {
+              expect(
+                p.length(),
+                `${layer.group} seed=${seed} shape=${shape} point ${p.toArray()}`,
+              ).toBeLessThan(CLI_CAMERA.dist);
+            }
+          }
+        }
+      }
+    }
+  });
+
+  it("no projected stipple mark stretches into a stroke at the default CLI camera", () => {
+    const camera = cliCamera();
+    // A dot at this scene's scale projects to ~1-6 px on an 800 px canvas.
+    // The bug produced 4.45 million. 40 px is a wide net that still cannot be
+    // reached by a correctly projected mark.
+    const MAX_SCREEN_PX = 40;
+    for (const seed of [7, 21, 404]) {
+      for (const { layer, polylines } of stippleGeometry({ seed })) {
+        const projected = projectPolylines(
+          polylines,
+          camera,
+          CLI_CAMERA.width,
+          CLI_CAMERA.height,
+        );
+        for (const pl of projected) {
+          let len = 0;
+          for (let i = 1; i < pl.length; i++) {
+            len += Math.hypot(pl[i].x - pl[i - 1].x, pl[i].y - pl[i - 1].y);
+          }
+          expect(Number.isFinite(len)).toBe(true);
+          expect(len, `${layer.group} seed=${seed}`).toBeLessThan(MAX_SCREEN_PX);
+        }
+      }
+    }
+  });
+
+  it("clamps an oversized groundSize rather than emitting geometry behind the camera", () => {
+    // The pre-fix default. Anything past MAX_GROUND_SIZE has to be clamped:
+    // the corners would otherwise land outside the camera orbit.
+    const ground = layersWith({ groundSize: 9 }).find((l) => l.group === "Ground")!;
+    const corners = [0, 1].flatMap((i) => [ground.params![`p0${i}x`], ground.params![`p1${i}x`]]);
+    expect(Math.max(...corners.map(Math.abs))).toBeCloseTo(MAX_GROUND_SIZE, 9);
+    expect(MAX_GROUND_SIZE * Math.SQRT2).toBeLessThan(CLI_CAMERA.dist);
+  });
+
+  it("the declared groundSize range cannot express a scene outside the orbit", () => {
+    const groundSize = stippleScene.controls!.groundSize as { max: number };
+    expect(groundSize.max).toBeLessThanOrEqual(MAX_GROUND_SIZE);
+    expect(groundSize.max * Math.SQRT2).toBeLessThan(CLI_CAMERA.dist);
   });
 });
 

@@ -94,6 +94,17 @@ export interface HatchParams {
  * Each kept dot is emitted as a tiny mark oriented along the surface tangents
  * at that point, so it sits on the surface and is occluded like any other
  * polyline.
+ *
+ * INVARIANT — every emitted mark is exactly `dotSize` long in world units.
+ * Tangents are normalized before scaling, and candidates whose surface sample
+ * or tangent is non-finite are dropped rather than emitted, so a degenerate
+ * surface can never leak a NaN vertex or an over-long segment downstream.
+ *
+ * Note that a bounded *world* length is not by itself a bounded *screen*
+ * length: `projectPolylines` does no near-plane clipping, so a mark straddling
+ * the camera's eye plane still projects to an unbounded segment. Keeping a
+ * composition's geometry inside the camera orbit is the caller's job — see the
+ * scene-scale note in `compositions/3d/studies/stipple-scene.ts`.
  */
 export function generateStippleDots(
   surfaceFn: SurfaceFn,
@@ -142,13 +153,20 @@ export function generateStippleDots(
       }
 
       const p0 = surfaceFn(u, v, surfaceParams);
+      // A surface that blows up at this sample (NaN/Infinity from a division
+      // or a log at a domain edge) would otherwise emit a mark with non-finite
+      // vertices, which survives all the way into the SVG path data.
+      if (!Number.isFinite(p0.x) || !Number.isFinite(p0.y) || !Number.isFinite(p0.z)) continue;
+
       const pu = surfaceFn(Math.min(uRange[1], u + eps), v, surfaceParams);
       const pv = surfaceFn(u, Math.min(vRange[1], v + eps), surfaceParams);
 
-      // Tangent along u (normalized to world units), with a stable fallback
+      // Tangent along u (normalized to world units), with a stable fallback.
+      // The fallback also covers a non-finite finite-difference step, which
+      // would otherwise poison tLen and scale the mark to NaN.
       let tux = pu.x - p0.x, tuy = pu.y - p0.y, tuz = pu.z - p0.z;
       let tLen = Math.sqrt(tux * tux + tuy * tuy + tuz * tuz);
-      if (tLen < 1e-9) {
+      if (!(tLen >= 1e-9) || !Number.isFinite(tLen)) {
         tux = 1; tuy = 0; tuz = 0;
       } else {
         tux /= tLen; tuy /= tLen; tuz /= tLen;
@@ -162,7 +180,7 @@ export function generateStippleDots(
       if (shape === "cross") {
         let tvx = pv.x - p0.x, tvy = pv.y - p0.y, tvz = pv.z - p0.z;
         tLen = Math.sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
-        if (tLen < 1e-9) {
+        if (!(tLen >= 1e-9) || !Number.isFinite(tLen)) {
           tvx = 0; tvy = 1; tvz = 0;
         } else {
           tvx /= tLen; tvy /= tLen; tvz /= tLen;

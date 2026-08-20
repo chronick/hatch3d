@@ -1,8 +1,16 @@
 import { describe, it, expect } from "vitest";
+import * as THREE from "three";
 import { SURFACES } from "../surfaces";
 import { generateUVHatchLines, generateStippleDots, type HatchParams } from "../hatch";
 
 const surface = SURFACES.hyperboloid;
+
+/** Total world-space arc length of a polyline. */
+function worldLength(polyline: THREE.Vector3[]): number {
+  let len = 0;
+  for (let i = 1; i < polyline.length; i++) len += polyline[i].distanceTo(polyline[i - 1]);
+  return len;
+}
 
 describe("stipple mode is purely additive", () => {
   it("params without `stipple` still produce swept line families", () => {
@@ -74,6 +82,55 @@ describe("stipple mode emits many short polylines", () => {
     });
     // gridU = round(40 * 0.5) = 20, gridV = 40
     expect(halfU).toHaveLength(20 * 40);
+  });
+});
+
+describe("stipple mark length is bounded in world units", () => {
+  // Regression guard for vault-3bkv6: a stipple dot is a *mark*, never a
+  // stroke. Any dot longer than a small multiple of dotSize is a defect —
+  // a degenerate tangent, a domain-edge finite difference that blew up, or a
+  // non-stipple polyline leaking into the dot field. The bound is generous
+  // (5x) so it only fires on genuine blowups, not on rounding.
+  const surfaces = ["hyperboloid", "rectFace", "torus", "conoid", "canopy"] as const;
+
+  it.each(surfaces)("every dot on %s stays within 5x dotSize, across seeds and shapes", (key) => {
+    const sf = SURFACES[key];
+    for (const seed of [1, 7, 42, 1234]) {
+      for (const shape of ["point", "cross"] as const) {
+        for (const dotSize of [0.004, 0.03, 0.15]) {
+          const dots = generateUVHatchLines(sf.fn, sf.defaults, {
+            stipple: { dotsPerUnit: 24, dotSize, shape, seed },
+          });
+          expect(dots.length).toBeGreaterThan(0);
+          for (const d of dots) {
+            const len = worldLength(d);
+            expect(Number.isFinite(len)).toBe(true);
+            expect(len, `${key} seed=${seed} shape=${shape} dotSize=${dotSize}`).toBeLessThanOrEqual(
+              dotSize * 5,
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it("holds at the UV domain edges, where the tangent finite difference is clamped", () => {
+    // Sampling a sliver hard against u = 1 and v = 1 forces every finite
+    // difference to clamp against the domain edge.
+    for (const range of [
+      [0.999, 1],
+      [0, 0.001],
+    ] as [number, number][]) {
+      const dots = generateStippleDots(
+        surface.fn,
+        surface.defaults,
+        { dotsPerUnit: 2000, dotSize: 0.02, shape: "cross", seed: 3 },
+        range,
+        range,
+      );
+      expect(dots.length).toBeGreaterThan(0);
+      for (const d of dots) expect(worldLength(d)).toBeLessThanOrEqual(0.02 * 5);
+    }
   });
 });
 
@@ -189,6 +246,26 @@ describe("generateStippleDots direct API", () => {
       expect(Number.isFinite(mid.x)).toBe(true);
       expect(Number.isFinite(mid.y)).toBe(true);
       expect(Number.isFinite(mid.z)).toBe(true);
+    }
+  });
+
+  it("works on a surface that returns non-finite points without emitting NaN vertices", () => {
+    // A surface that blows up on half its domain. Every dot it does emit must
+    // still be finite — a NaN vertex would flow straight into the SVG path.
+    const exploding = (u: number, v: number) =>
+      new THREE.Vector3(u, v > 0.5 ? Number.NaN : v, 1 / (u - 0.5));
+    const dots = generateStippleDots(
+      exploding,
+      {},
+      { dotsPerUnit: 25, dotSize: 0.02, shape: "cross", seed: 4 },
+      [0, 1],
+      [0, 1],
+    );
+    expect(dots.length).toBeGreaterThan(0);
+    for (const d of dots) {
+      for (const p of d) {
+        expect(Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)).toBe(true);
+      }
     }
   });
 
