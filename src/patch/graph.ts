@@ -26,8 +26,15 @@ import {
   directionalField,
 } from "./signals.js";
 import { fieldDistort, fieldCull, fieldThin, transformGeometry, clipGeometry, clipGeometryToRings, emphasisMask, resampleGeometry } from "./operators.js";
-import { RegionOfSchema, regionFormCount, resolveRegionRings, type RegionRef } from "./regions.js";
-import { hatchPolygon } from "./region-hatch.js";
+import {
+  RegionRefShape,
+  regionFormCount,
+  resolveRegionRings,
+  hatchRegionFormCount,
+  hatchRegionRef,
+  type RegionRef,
+} from "./regions.js";
+import { hatchRegion } from "./region-hatch.js";
 import { compositionRegistry } from "../compositions/registry.js";
 import { is2DComposition, isLayeredComposition } from "../compositions/types.js";
 import type { LayeredLayer, HatchGroupConfig } from "../compositions/types.js";
@@ -78,12 +85,8 @@ const TransformNode = z.object({
 }).strict();
 const ClipNode = z.object({
   op: z.literal("clip"), ...NodeBase, from: z.string(),
-  /** Clip to the hull of another node's geometry... */
-  hullOf: z.string().optional(),
-  /** ...or to an explicit polygon... */
-  polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
-  /** ...or to a derived region of another node (bbox/hull/outline/occupied). */
-  regionOf: RegionOfSchema.optional(),
+  /** Clip to a region: another node's hull, an explicit polygon, or a derived region. */
+  ...RegionRefShape,
   /** Keep what is inside the region (default) or what is outside it. */
   mode: z.enum(["inside", "outside"]).optional(),
 }).strict().refine(
@@ -92,9 +95,8 @@ const ClipNode = z.object({
 );
 const EmphasisNode = z.object({
   op: z.literal("emphasis"), ...NodeBase, from: z.string(),
-  hullOf: z.string().optional(),
-  polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
-  regionOf: RegionOfSchema.optional(),
+  /** The masked zone, in the shared region vocabulary. */
+  ...RegionRefShape,
   /** Fraction of ink kept inside the masked zone: 1 = untouched, 0 = clipped away. */
   weight: z.number().min(0).max(1),
   /** Whether the masked zone is the region's inside (default) or its outside. */
@@ -105,15 +107,19 @@ const EmphasisNode = z.object({
 );
 const RegionHatchNode = z.object({
   op: z.literal("regionHatch"), ...NodeBase,
-  /** Region = the convex hull of another node's geometry... */
+  /**
+   * The original spelling: hatch the convex hull of another node's geometry.
+   * Kept as an alias of `hullOf` (same resolution path), so every patch and DSL
+   * document written before the region vocabulary keeps rendering identically.
+   */
   from: z.string().optional(),
-  /** ...or an explicit closed polygon. Exactly one of from/polygon. */
-  polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
+  /** …or any of the shared region forms (hullOf / polygon / regionOf). */
+  ...RegionRefShape,
   angleDeg: z.number(),
   pitch: z.number().positive(),
 }).strict().refine(
-  (n) => (n.from == null) !== (n.polygon == null),
-  { message: "regionHatch needs exactly one of `from` or `polygon`" },
+  (n) => hatchRegionFormCount(n) === 1,
+  { message: "regionHatch needs exactly one of `from`, `hullOf`, `polygon` or `regionOf`" },
 );
 const PenNode = z.object({
   op: z.literal("pen"), ...NodeBase, from: z.string(),
@@ -220,8 +226,11 @@ function nodeReferences(node: PatchNode): NodeRef[] {
       add(node.regionOf?.of, "region", "regionOf.of", ["regionOf", "of"]);
       break;
     case "regionHatch":
-      // regionHatch's `from` *is* a region reference — it hatches that node's hull.
+      // Every regionHatch input is a region reference — `from` is the legacy
+      // spelling of `hullOf`, and the region is what gets filled.
       add(node.from, "region", "from", ["from"]);
+      add(node.hullOf, "region", "hullOf", ["hullOf"]);
+      add(node.regionOf?.of, "region", "regionOf.of", ["regionOf", "of"]);
       break;
     case "repeat":
       add(node.thread, "geometry", "thread", ["thread"]);
@@ -508,16 +517,11 @@ function evalNode(node: PatchNode, env: Env, page: PatchDoc["page"], camera: Pat
       break;
     }
     case "regionHatch": {
-      let polygon: { x: number; y: number }[];
-      if (node.polygon) {
-        polygon = node.polygon.map(([x, y]) => ({ x, y }));
-      } else if (node.from) {
-        const g = asGeometry(ref(env, node.from, `regionHatch(${node.from})`), `regionHatch(${node.from})`);
-        polygon = convexHull(g.flat());
-      } else {
-        throw new Error(`patch: regionHatch "${node.id}" needs a "from" node or an explicit polygon.`);
-      }
-      env.set(node.id, hatchPolygon(polygon, node.angleDeg, node.pitch));
+      // Same region resolution as clip / emphasis, so a rounded-rect bbox or an
+      // offset silhouette hatches exactly the area it would have clipped. The
+      // fill is even-odd over the whole ring set, so holes stay empty.
+      const rings = regionRings(hatchRegionRef(node), env, `regionHatch "${node.id}"`);
+      env.set(node.id, hatchRegion(rings, node.angleDeg, node.pitch));
       break;
     }
     case "pen":

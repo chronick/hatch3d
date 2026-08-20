@@ -56,13 +56,13 @@ export function sceneToPatch(doc: SceneDoc): PatchDoc {
         return node.id;
       }
       case "op:region-hatch": {
-        const region = node.region;
-        if ("hullOf" in region) {
-          const srcId = lowerRegionSource(region.hullOf, node.id);
-          nodes.push({ op: "regionHatch", id: node.id, from: srcId, ...hatchArgs(node.hatch) });
-        } else {
-          nodes.push({ op: "regionHatch", id: node.id, polygon: region.polygon, ...hatchArgs(node.hatch) });
-        }
+        // Same lowering as op:clip / op:emphasis — a region-hatch fills exactly
+        // the area a clip with the same region would have kept.
+        nodes.push({
+          op: "regionHatch", id: node.id,
+          ...lowerRegion(node.region, node.id),
+          ...hatchArgs(node.hatch),
+        });
         return node.id;
       }
       case "op:image-luminance": {

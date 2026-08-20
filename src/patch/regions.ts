@@ -39,11 +39,45 @@ export const RegionOfSchema = z
   })
   .strict();
 
+/**
+ * The three region fields as a zod shape, so every region-taking node (clip,
+ * emphasis, regionHatch) declares exactly the same wire form. Spread it into
+ * the node object and pair it with `.refine(regionFormCount(n) === 1)`.
+ */
+export const RegionRefShape = {
+  /** The convex hull of another node's geometry (≡ `regionOf` kind `"hull"`). */
+  hullOf: z.string().optional(),
+  /** An explicit closed polygon, in canvas px. */
+  polygon: z.array(z.tuple([z.number(), z.number()])).optional(),
+  /** A derived region of another node (bbox / hull / outline / occupied). */
+  regionOf: RegionOfSchema.optional(),
+};
+
 /** The three mutually exclusive region forms a clip / emphasis node accepts. */
 export interface RegionRef {
   hullOf?: string;
   polygon?: [number, number][];
   regionOf?: RegionOfSpec;
+}
+
+/**
+ * A region reference that also accepts `regionHatch`'s original `from: X`
+ * spelling. `from` predates the region vocabulary and means "the convex hull of
+ * X" — i.e. exactly `hullOf: X` — so it is normalised rather than resolved
+ * separately (see {@link hatchRegionRef}).
+ */
+export interface HatchRegionRef extends RegionRef {
+  from?: string;
+}
+
+/** How many region forms a regionHatch node carries, counting `from`. */
+export function hatchRegionFormCount(n: HatchRegionRef): number {
+  return (n.from != null ? 1 : 0) + regionFormCount(n);
+}
+
+/** Normalise a regionHatch node's region to the shared three-form reference. */
+export function hatchRegionRef(n: HatchRegionRef): RegionRef {
+  return n.from != null ? { hullOf: n.from } : n;
 }
 
 /** How many of the three region forms a node carries (must be exactly one). */

@@ -126,10 +126,8 @@ export const RegionHatchNodeSchema = z
   .object({
     type: z.literal("op:region-hatch"),
     ...OperatorBase,
-    region: z.union([
-      z.object({ polygon: z.array(z.tuple([z.number(), z.number()])) }).strict(),
-      z.object({ hullOf: z.string() }).strict(),
-    ]),
+    /** The area to fill — the same region vocabulary op:clip / op:emphasis use. */
+    region: RegionRefSchema,
     hatch: z.record(z.string(), z.unknown()),
   })
   .strict();
@@ -350,7 +348,7 @@ export interface MaskNode {
 export interface RegionHatchNode {
   type: "op:region-hatch";
   id: string;
-  region: { polygon: [number, number][] } | { hullOf: string };
+  region: RegionRef;
   hatch: Record<string, unknown>;
 }
 
