@@ -44,6 +44,7 @@ import kmeansHullCity from "../src/compositions/2d/generative/kmeans-hull-city.j
 import inkVortex from "../src/compositions/2d/generative/ink-vortex.js";
 import isoWoodBlocks from "../src/compositions/2d/generative/iso-wood-blocks.js";
 import meshLineart from "../src/compositions/2d/generative/mesh-lineart.js";
+import noiseGridCircles from "../src/compositions/2d/generative/noise-grid-circles.js";
 import perlinWorms from "../src/compositions/2d/generative/perlin-worms.js";
 import photoHalftone from "../src/compositions/2d/generative/photo-halftone.js";
 import reactionDiffusion from "../src/compositions/2d/generative/reaction-diffusion.js";
@@ -54,6 +55,7 @@ import voronoiTexture from "../src/compositions/2d/generative/voronoi-texture.js
 import waterArcos from "../src/compositions/2d/generative/water-arcos.js";
 import weightedStippling from "../src/compositions/2d/generative/weighted-stippling.js";
 import opArtSphere from "../src/compositions/2d/optical/op-art-sphere.js";
+import concentricGridDisorder from "../src/compositions/2d/patterns/concentric-grid-disorder.js";
 import guillocheRosette from "../src/compositions/2d/patterns/guilloche-rosette.js";
 import hilbertFill from "../src/compositions/2d/patterns/hilbert-fill.js";
 import moireCircles from "../src/compositions/2d/patterns/moire-circles.js";
@@ -75,8 +77,11 @@ const allCompositions: CompositionDefinition[] = [
   // 2D
   cellFlowGradient, contourMap, differentialGrowth, flowField, flowRaster, glyphDensityField, silhouetteField, strataTriptych, turmiteTrails, gearMeshTruchet, starTilingOrnament, stippleScene, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
   meshLineart, perlinWorms, photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor,
+  contourMap, differentialGrowth, flowField, grainsGlitchCA, inkVortex, isoWoodBlocks, kmeansHullCity,
+  meshLineart, noiseGridCircles, perlinWorms, photoHalftone, reactionDiffusion, sentinelTerrain, strangeAttractor,
   tspArt, voronoiTexture, waterArcos, weightedStippling,
-  opArtSphere, guillocheRosette, hilbertFill, moireCircles, penroseTiling, recursiveSubdivision,
+  opArtSphere, concentricGridDisorder, guillocheRosette, hilbertFill, moireCircles, penroseTiling,
+  recursiveSubdivision,
   spirograph, truchetMaze, waveInterference,
   // Layered
   phyllotaxisIsoblocks, twoPenOffset,

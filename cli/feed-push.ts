@@ -783,6 +783,7 @@ async function main(): Promise<void> {
           tags: preset.tags,
           ...(generatedPresets?.[i]?.brief ? { brief: generatedPresets[i].brief } : {}),
           ...(generatedPresets?.[i]?.source ? { source: generatedPresets[i].source } : {}),
+          ...(generatedPresets?.[i]?.parentId ? { parentId: generatedPresets[i].parentId } : {}),
           ...(preset.seedRef ? { seedRef: preset.seedRef } : {}),
         },
         available_actions: ["accept", "reject", "evolve", "defer"],

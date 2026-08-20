@@ -11,7 +11,7 @@ This is the full creative pipeline for designing and implementing a new hatch3d 
 
 ### Phase 1: Research (Researcher Agent)
 
-1. **Parse the user's concept**: Extract the theme, technique references, constraints, and desired output type (2d/3d).
+1. **Parse the user's concept**: Extract the theme, technique references, constraints, and desired output type (2d/3d). If the user supplies a liner influence-brief path (`~/git/liner/output/briefs/*.md`, from liner's `/influence-brief --target hatch3d`), read it first — its concepts, generative takeaways, repro hints, and scene sketch are grounded corpus material and take precedence over fresh research.
 
 2. **Quick research pass** (skip with `--skip-research` if the topic is well-covered in `docs/techniques/`):
    - Read relevant technique docs from `docs/techniques/`

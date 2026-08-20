@@ -217,6 +217,7 @@ npm run render -- --scene examples/scenes/draw-around.scene.json   -o draw-aroun
 npm run render -- --scene examples/scenes/emphasis-halo.scene.json -o halo.svg
 ```
 
+
 ### `op:image-luminance` — the isolinePortrait motif
 
 Deflects a child subtree's scanlines by an image's brightness — the corpus's

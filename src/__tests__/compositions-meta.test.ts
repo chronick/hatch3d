@@ -87,7 +87,7 @@ describe("All compositions have valid metadata", () => {
           const result = (comp as Composition2DDefinition).generate({
             width: 800,
             height: 800,
-            values: getDefaults(comp),
+            values: getTestValues(comp),
           });
           expect(Array.isArray(result)).toBe(true);
           // Each entry should be an array of {x, y} points
@@ -98,7 +98,7 @@ describe("All compositions have valid metadata", () => {
               expect(typeof pt.y).toBe("number");
             }
           }
-        });
+        }, GENERATE_TIMEOUT_MS);
       } else {
         it("3D composition has a layers function", () => {
           expect(typeof (comp as Composition3DDefinition).layers).toBe("function");
@@ -130,6 +130,50 @@ function getDefaults(comp: Composition3DDefinition | Composition2DDefinition): R
     result[key] = ctrl.type === "image" ? null : ctrl.default;
   }
   return result;
+}
+
+/**
+ * Compute-scale overrides for compositions whose *default* control values make
+ * `generate()` run for seconds — an unavoidable cost of their algorithms, not a
+ * bug. This suite only checks output *shape* (an array of {x, y} polylines), so
+ * running those at a smaller simulation scale exercises exactly the same code
+ * paths (seeding, simulation loop, contour extraction, chaining) in a fraction
+ * of the time. Only the size/iteration knobs are overridden; every other default
+ * still comes from the composition itself.
+ *
+ * Without this, reactionDiffusion alone took ~6s at its defaults (150x150 grid x
+ * 5000 Gray-Scott iterations = 112M cell updates) and blew vitest's 5s default
+ * timeout whenever the machine was loaded by the rest of the parallel suite;
+ * kmeansHullCity (~3.1s, its own embedded reaction-diffusion border) was next in
+ * line. Values below are the control minimums, and still yield >1000 polylines
+ * each.
+ */
+const HEAVY_COMPOSITION_SCALE: Record<string, Record<string, unknown>> = {
+  reactionDiffusion: { gridResolution: 80, iterations: 1000 },
+  kmeansHullCity: { rdGridResolution: 60, rdIterations: 400 },
+};
+
+/**
+ * Generous per-test timeout for the 2D generate check. Scoped to this one case
+ * rather than raised globally: even scaled down, these are the only tests in the
+ * suite doing real numeric work, and they run alongside every other test file.
+ */
+const GENERATE_TIMEOUT_MS = 20000;
+
+/** Control values used to smoke-test a 2D composition's generate() */
+function getTestValues(comp: Composition2DDefinition): Record<string, unknown> {
+  const values = getDefaults(comp);
+  const overrides = HEAVY_COMPOSITION_SCALE[comp.id];
+  if (!overrides) return values;
+  for (const [key, value] of Object.entries(overrides)) {
+    // Guard against the map silently rotting if a control is ever renamed.
+    expect(
+      comp.controls && key in comp.controls,
+      `HEAVY_COMPOSITION_SCALE["${comp.id}"] overrides unknown control "${key}"`,
+    ).toBe(true);
+    values[key] = value;
+  }
+  return values;
 }
 
 describe("sentinelTerrain3D crossHatchShadow", () => {
