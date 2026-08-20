@@ -1173,13 +1173,18 @@ export function rasterUnionRings(
   };
 
   // Per-window refinement has a *density* ceiling, not just a cost: windows
-  // overlap, so a candidate field dense enough to exhaust the allowance
-  // re-rasterises the same paper once per neighbour and then preserves the
-  // remainder unrefined — positionally untrustworthy on features this size.
-  // When the exact total says that is where this drawing is heading, raster the
-  // whole extent finer once instead. Escalation is depth-1 by construction: the
-  // fine pass runs the ordinary per-window path, and if *that* exhausts (it
-  // should not — see ESCALATE_FACTOR) it fail-preserves exactly as before.
+  // overlap, so a candidate field dense enough re-rasterises the same paper
+  // once per neighbour. The decision is therefore COST-OPTIMAL, not
+  // allowance-gated: both paths do the full job, so take whichever is cheaper —
+  // the exact per-window total, or one whole-extent fine pass (fgw x fgh
+  // cells). Comparing against the allowance instead was review-round-7's bug:
+  // blank extent (a remote stray point) inflated the grid-proportional
+  // allowance and suppressed escalation while the same candidates went
+  // unrefined. Blank extent raises the fine pass's cost too, but it can never
+  // make per-window look affordable when it is not — demand is unchanged by
+  // empty space. Escalation is depth-1 by construction: the fine pass runs the
+  // ordinary per-window path, and if *that* exhausts (it should not — see
+  // ESCALATE_FACTOR) it fail-preserves exactly as before.
   const fgw = gw * ESCALATE_FACTOR;
   const fgh = gh * ESCALATE_FACTOR;
   // Block-scoped, with the sparse path returning from inside it, so the coarse
@@ -1189,7 +1194,7 @@ export function rasterUnionRings(
   {
     const coarse = contourGrid(lines, r, cell, gw, gh, x0, y0);
     if (stats) stats.candidates += coarse.candidates;
-    if (coarse.demand <= budget.cells || fgw * fgh > ESCALATE_MAX_CELLS) {
+    if (coarse.demand <= fgw * fgh || fgw * fgh > ESCALATE_MAX_CELLS) {
       return refineCandidates(lines, r, cell, gw, gh, x0, y0, coarse, budget, stats);
     }
   }

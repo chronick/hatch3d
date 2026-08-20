@@ -776,23 +776,22 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
 
     expect(stats.candidates).toBe(N * N);
     expect(stats.dropped).toBe(0);
-    // This density is the last one the per-window path can still carry: 3 136
-    // windows of 82² = 21.1M refined cells against a 34.1M allowance, so the
-    // escalation trigger (demand > allowance) does not fire and every
-    // assertion below is about the per-window path. The 170 × 170 fixture at
-    // the bottom of this file is the same shape one step past that line.
-    expect(stats.escalated).toBe(false);
+    // Under the cost-optimal decision (review round-7) this density escalates:
+    // 3 136 windows of 82² = 21.1M refined cells vs one 4× whole-extent pass
+    // of ~4.1M — the fine pass is 5× cheaper and registers every pocket
+    // uniformly. At the fine cell the 2.4px pockets are ~4 cells across, so no
+    // sub-cell candidates remain.
+    expect(stats.escalated).toBe(true);
     expect(stats.fineCandidates).toBe(0);
-    // The grid-proportional budget covers this density in full — every hole is
-    // examined and every kept ring is the refined, correctly-registered one.
     expect(stats.keptUnrefined).toBe(0);
-    expect(stats.kept).toBe(stats.candidates);
-    expect(stats.replaced).toBe(stats.candidates);
+    expect(stats.kept).toBe(0);
+    expect(stats.replaced).toBe(0);
     // One outer boundary plus one ring per hole: nothing was filled in.
     expect(rings).toHaveLength(1 + N * N);
 
-    // Refined holes come back as the pocket itself, 2.4 × 2.4.
-    const exact = rings.filter((r) => Math.abs(Math.abs(polygonArea(r)) - POCKET ** 2) < 0.05);
+    // Fine-grid holes come back as the pocket itself, 2.4 × 2.4, to within the
+    // fine cell's interpolation error.
+    const exact = rings.filter((r) => Math.abs(Math.abs(polygonArea(r)) - POCKET ** 2) < 0.6);
     expect(exact.length).toBe(N * N);
   });
 
@@ -807,12 +806,12 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
     expect(stats.candidates).toBeGreaterThanOrEqual(N * N);
     expect(stats.keptUnrefined).toBe(0);
     expect(stats.dropped).toBe(0);
-    expect(stats.escalated).toBe(false);
     for (let i = 0; i < 64; i++) {
       const p = holeCentre((i * 617) % (N * N));
       expect(pointInSilhouette(p, rings), `hole at ${p.x},${p.y}`).toBe(false);
     }
   });
+
 
   it("classifies the lattice correctly — paper in the holes, ink in the walls", () => {
     const rings = rasterUnionRings(LATTICE, RADIUS);
@@ -841,17 +840,11 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
     // machine (M-series, node 24) against the same 250ms ceiling — the guard is
     // bbox-prefiltered, so this is where an accidental quadratic would show.
     const ms = timeBest(() => rasterUnionRings(LATTICE, RADIUS), 2);
-    // Full-correctness refinement of all 3 136 windows costs ~1.24s here —
-    // a deliberate trade (review round-5): the fixed budget was faster but
-    // left 1 715 real holes misclassified. This ceiling is per-fixture and
-    // generous; the 250ms bound still guards the non-adversarial fixtures,
-    // and linear scaling in refined windows is the property being pinned.
-    //
-    // It is also, measurably, the expensive way to be right at this density:
-    // the 170 × 170 fixture below is 9× the candidates and resolves in ~330ms
-    // because it escalates. This one sits at 62% of its allowance, so it does
-    // not, and the trigger is deliberately a cost *ceiling* rather than a cost
-    // *optimum* — no sparse-path fixture changes meaning to buy this one speed.
+    // Under the cost-optimal decision (review round-7) this fixture escalates
+    // — one 4× whole-extent pass instead of 3 136 overlapping windows — which
+    // is both the correct answer and ~4× cheaper than the per-window ~1.24s
+    // it used to cost. The generous ceiling still guards against an
+    // accidental quadratic without flaking on CI variance.
     expect(ms, `dense lattice took ${ms.toFixed(1)}ms`).toBeLessThan(2000);
   });
 });
@@ -903,14 +896,14 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
     // Guards the fixture: if it ever stops exhausting the allowance it stops
     // exercising escalation, and the test below would pass on the sparse path.
     const spec = rasterGridSpec(LATTICE, RADIUS)!;
-    const allowance = Math.max(
-      REFINE_CELL_BUDGET,
-      REFINE_BUDGET_PER_COARSE_CELL * spec.gw * spec.gh,
-    );
+    // The escalation decision is cost-optimal (review round-7): per-window
+    // demand vs the fine pass's own cost. Guard that this fixture still sits
+    // on the escalating side of that comparison.
+    const fineCost = spec.gw * ESCALATE_FACTOR * (spec.gh * ESCALATE_FACTOR);
     // One window per pocket, each the pocket's ~1 cell plus 2 cells of padding
     // either side, at REFINE_FACTOR× — a floor on the true demand.
     const window = ((1 + 2 * REFINE_PAD_CELLS) * REFINE_FACTOR) ** 2;
-    expect(N * N * window).toBeGreaterThan(allowance);
+    expect(N * N * window).toBeGreaterThan(fineCost);
 
     // …and every pocket is unambiguously real: its centre is 10px from the
     // nearest stroke against a 6.66px effective radius, and its walls are
@@ -924,6 +917,24 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
     // …and comfortably more than one *fine* cell across, which is what makes
     // escalating a fix rather than a smaller version of the same problem.
     expect(pocket / (spec.cell / ESCALATE_FACTOR)).toBeGreaterThan(3);
+  });
+
+  it("blank extent cannot suppress escalation (review round-7 repro)", () => {
+    // A stray point far into empty space inflates the grid without adding a
+    // single candidate. Under the allowance-gated decision that blank area
+    // RAISED the allowance and kept the call on the per-window path — 23 474
+    // of 28 900 real pockets read as ink. Cost-optimally, blank extent only
+    // makes the fine pass costlier; demand is unchanged, so it still wins.
+    const stats = freshStats();
+    const withBlank = [...LATTICE, [{ x: 4150, y: 4150 }]];
+    const rings = rasterUnionRings(withBlank, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+    expect(stats.escalated).toBe(true);
+    expect(stats.dropped).toBe(0);
+    expect(stats.keptUnrefined).toBe(0);
+    for (let i = 0; i < 256; i++) {
+      const p = holeCentre((i * 5449) % (N * N));
+      expect(pointInSilhouette(p, rings), `hole at ${p.x},${p.y}`).toBe(false);
+    }
   });
 
   it("escalates once, and registers every pocket where it actually is", () => {
