@@ -224,3 +224,46 @@ footer {
 a {
   color: var(--accent);
 }
+
+.or {
+  margin: 0.6rem 0;
+  color: var(--dim);
+}
+
+.try {
+  color: var(--accent);
+  border-color: var(--accent);
+  padding: 0.35rem 0.9rem;
+}
+
+.try:disabled {
+  color: var(--dim);
+  border-color: var(--line);
+  cursor: wait;
+}
+
+.doc {
+  margin-top: 2.5rem;
+}
+
+.doc p {
+  margin: 0 0 0.8rem;
+  max-width: 46rem;
+}
+
+.doc em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.fields td,
+.fields th {
+  white-space: normal;
+  padding: 0.35rem 1rem 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.fields td:first-child {
+  white-space: nowrap;
+  color: var(--accent);
+}

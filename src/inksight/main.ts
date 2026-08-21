@@ -218,3 +218,23 @@ fileInput.addEventListener("change", () => {
   const file = fileInput.files?.[0];
   if (file) load(file);
 });
+
+// The example is a public asset at the deploy base, so the same relative fetch
+// works on both hosts (/hatch3d/inksight/ and /inksight/). Absent in test DOMs.
+const exampleBtn = document.getElementById("example");
+exampleBtn?.addEventListener("click", () => {
+  exampleBtn.setAttribute("disabled", "");
+  fetch(`${import.meta.env.BASE_URL}inksight-sample.svg`)
+    .then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.text();
+    })
+    .then((text) => render("cellFlowRamp — four-pen example", text))
+    .catch((err: unknown) => {
+      out.hidden = false;
+      out.replaceChildren(
+        errorPanel(`could not fetch the example: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    })
+    .finally(() => exampleBtn.removeAttribute("disabled"));
+});

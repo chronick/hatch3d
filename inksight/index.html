@@ -6,23 +6,97 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+    <meta name="description" content="InkSight turns a pen-plotter SVG into a structured, machine-readable report: geometry, ink totals, per-layer stats, density grid, plottability warnings. Client-side, deterministic." />
     <title>InkSight</title>
   </head>
   <body>
     <main>
       <h1>InkSight</h1>
       <p class="sub">
-        What does an agent see in an SVG? Drop a hatch3d export to get the same structured report
-        <code>npm run stats</code> emits — measured here in your browser, nothing uploaded.
+        An SVG is text, but it isn't <em>legible</em> — an agent can read every
+        <code>&lt;path&gt;</code> and still not know how much ink is on the page, whether the
+        plot is balanced, or what each layer means. InkSight measures a
+        <a href="https://github.com/chronick/hatch3d">hatch3d</a> export into a structured
+        report built for that question. Everything runs in your browser; nothing is uploaded.
       </p>
       <div class="drop" id="drop">
         <p>Drop an SVG here</p>
         <input type="file" id="file" accept=".svg,image/svg+xml" />
+        <p class="or">or</p>
+        <button id="example" class="try">Try the example — a four-pen Voronoi flow ramp</button>
       </div>
       <div id="output" hidden></div>
+
+      <section class="doc">
+        <h2>What you get</h2>
+        <p>
+          One drop produces the page and drawable geometry, ink totals (arc length, pen-up
+          travel, bounding box, ink density), a per-layer table with pen colors, an 8×8
+          density heatmap with a spatial-balance verdict, plottability warnings (margin
+          violations, saturated cells, clumping), a rendered thumbnail as a multimodal
+          cross-check — and the full <code>StatsReport</code> JSON, which is the artifact the
+          rest of this page is about.
+        </p>
+      </section>
+
+      <section class="doc">
+        <h2>Made for agents</h2>
+        <p>
+          A human looks at the thumbnail; an agent needs the numbers. The copyable JSON is the
+          same report the CLI emits — deterministic, so two runs on the same file agree to the
+          digit, and an agent can diff reports across variants or gate a print queue on them.
+          The fields:
+        </p>
+        <div class="scroll">
+          <table class="fields">
+            <thead>
+              <tr><th>field</th><th>what it says</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>page</code>, <code>drawable</code></td><td>Physical page in mm, and the margin-clipped drawable rect inside it.</td></tr>
+              <tr><td><code>penWidthMm</code>, <code>penWidthSource</code></td><td>Effective pen width used for coverage math, and whether it came from a flag, the SVG, or the default.</td></tr>
+              <tr><td><code>scale</code></td><td>Path-space → mm factor recovered from the export's group transform.</td></tr>
+              <tr><td><code>totals</code></td><td>Layers, paths, vertices, segments; <code>arcLengthMm</code> (ink drawn), <code>penUpTravelMm</code> (travel between paths in file order — high ratios mean <code>vpype linesort</code> will pay off), bounding box, <code>bboxCoverageRatio</code>, <code>inkDensity</code> (arc length × pen width / drawable area).</td></tr>
+              <tr><td><code>layers[]</code></td><td>Per-layer paths, vertices, arc length, ink density, and the declared stroke color — the pen-change plan, in numbers.</td></tr>
+              <tr><td><code>densityGrid</code></td><td>Coverage per grid cell, plus <code>max</code>, <code>mean</code>, and <code>cv</code> — the coefficient of variation that scores spatial balance (≤0.5 even, ≥1.5 clumped).</td></tr>
+              <tr><td><code>warnings</code></td><td>Paths crossing the margin clip (they will be cut off), cells at solid-ink saturation for this pen width.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          A worked example of an agent consuming this: render N variants of a composition, run
+          the report on each, reject any with margin violations or <code>cv</code> ≥ 1.5, and
+          rank the rest by ink density against a target — no vision model in the loop until
+          the final pick.
+        </p>
+      </section>
+
+      <section class="doc">
+        <h2>Use it from the command line</h2>
+        <p>The measurement core ships in the hatch3d repo; the browser page and the CLI run the same <code>analyzeSvg</code>:</p>
+        <pre class="cmd">git clone https://github.com/chronick/hatch3d
+cd hatch3d &amp;&amp; npm install
+npx tsx cli/stats.ts --input plot.svg             # StatsReport JSON on stdout
+npx tsx cli/stats.ts --input plot.svg --grid 16   # finer density grid
+cat plot.svg | npx tsx cli/stats.ts               # or pipe it
+npx tsx cli/stats-diff.ts a.svg b.svg c.svg       # variability across variants</pre>
+      </section>
+
+      <section class="doc">
+        <h2>Scope, honestly</h2>
+        <p>
+          v1 measures hatch3d-exporter SVGs: absolute M/L polyline paths inside a
+          <code>translate(cx,cy) scale(S)</code> group with an mm-unit viewBox. Arbitrary SVGs
+          (curves, nested transforms, unitless pages) are rejected with a clear error rather
+          than mis-measured — you still get the thumbnail. Plot-time estimation and pen-travel
+          optimization modelling are deliberately deferred; that's vpype-grade work.
+        </p>
+      </section>
+
       <footer>
-        Measurement core: <code>src/stats/analyze.ts</code>. Plot-time estimation and pen-travel
-        modelling are deliberately out of scope for v1.
+        Measurement core: <code>src/stats/analyze.ts</code> in
+        <a href="https://github.com/chronick/hatch3d">chronick/hatch3d</a>. Part of an ongoing
+        series on making creative-tool output legible to agents.
       </footer>
     </main>
     <script type="module" src="/src/inksight/main.ts"></script>
