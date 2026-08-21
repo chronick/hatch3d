@@ -119,13 +119,14 @@ function buildCamera(cam: CameraParams): THREE.Camera {
  * the perspective divide and draws a multi-million-pixel diagonal.
  *
  * Each triangle goes in as a closed 4-point loop. Clipping splits a loop into
- * 0..N open runs, so paths come back keyed off `sourceIndices`, not 1:1 with
- * the triangle list. A triangle wholly in front of the near plane survives as
- * the lone 4-point output for its source and is emitted as the same closed
- * `M…L…L…Z` path as before — output for meshes fully in front of the camera
- * (and for orthographic cameras, which are never clipped) is unchanged.
+ * 0..N open runs, so the output is not 1:1 with the triangle list. A triangle
+ * wholly in front of the near plane survives as a 4-point run whose first and
+ * last points re-project the shared vertex identically, and is emitted as the
+ * same closed `M…L…L…Z` path as before — output for meshes fully in front of
+ * the camera (and for orthographic cameras, which are never clipped) is
+ * unchanged. Exported for the regression tests.
  */
-function meshOverlayPaths(
+export function meshOverlayPaths(
   geo: THREE.BufferGeometry,
   camera: THREE.Camera,
   width: number,
@@ -144,17 +145,21 @@ function meshOverlayPaths(
     loops.push([tri[0], tri[1], tri[2], tri[0]]);
   }
 
-  const { polylines, sourceIndices } = projectPolylinesClipped(loops, camera, width, height);
+  const { polylines } = projectPolylinesClipped(loops, camera, width, height);
   const xy = (p: { x: number; y: number }) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
 
   const paths: string[] = [];
-  for (let k = 0; k < polylines.length; k++) {
-    const pts = polylines[k];
+  for (const pts of polylines) {
     if (pts.length < 2) continue;
+    // An uncut loop re-projects its shared first/last vertex to identical
+    // points; a clipped 4-point run ends on a *different* near-plane crossing
+    // than it starts on (first-vertex-behind case), so shape alone can't tell
+    // them apart — point identity can.
     const whole =
       pts.length === 4 &&
-      sourceIndices[k] !== sourceIndices[k - 1] &&
-      sourceIndices[k] !== sourceIndices[k + 1];
+      pts[0].x === pts[3].x &&
+      pts[0].y === pts[3].y &&
+      pts[0].depth === pts[3].depth;
     paths.push(
       whole
         ? `M${xy(pts[0])}L${xy(pts[1])}L${xy(pts[2])}Z`

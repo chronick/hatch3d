@@ -16,7 +16,7 @@ import * as THREE from "three";
 import "../compositions"; // populate the registry (auto-discovery)
 import { SURFACES } from "../surfaces";
 import { buildSurfaceMesh } from "../projection";
-import { runPipeline } from "../workers/render-pipeline";
+import { meshOverlayPaths, runPipeline } from "../workers/render-pipeline";
 import type { RenderRequest } from "../workers/render-worker.types";
 import { parseDString } from "../utils/clip";
 
@@ -135,5 +135,38 @@ describe("showMesh overlay near-plane clipping (vault-21qrg)", () => {
 
   it("emits nothing when showMesh is off", () => {
     expect(runPipeline(req(OUTSIDE_DIST, SURFACES.torus.defaults, false)).meshPaths).toEqual([]);
+  });
+
+  // The one shape a clipped loop shares with an uncut one: first vertex behind
+  // the eye yields a single 4-point run (crossing, v1, v2, crossing). Closing
+  // it as a triangle would drop the second crossing and draw a wrong chord —
+  // whole-vs-clipped must be decided by point identity, not point count.
+  it("keeps a first-vertex-behind triangle open, with both crossings", () => {
+    const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
+    camera.position.set(0, 0, 10);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    camera.updateProjectionMatrix();
+
+    // v0 sits behind the camera (z=11 > eye z=10); v1, v2 well in front.
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute([0.3, 0.2, 11, -1, -1, 0, 1, -1, 0], 3),
+    );
+    geo.setIndex([0, 1, 2]);
+
+    const paths = meshOverlayPaths(geo, camera, W, H);
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).not.toContain("Z");
+    const pts = parseDString(paths[0]);
+    expect(pts).toHaveLength(4);
+    // Open run: the two near-plane crossings are distinct endpoints.
+    const [first, last] = [pts[0], pts[3]];
+    expect(Math.hypot(first.x - last.x, first.y - last.y)).toBeGreaterThan(1);
+    for (const p of pts) {
+      expect(Number.isFinite(p.x) && Number.isFinite(p.y)).toBe(true);
+      expect(Math.abs(p.x) + Math.abs(p.y)).toBeLessThan(10 * DIAGONAL);
+    }
   });
 });
