@@ -90,14 +90,13 @@ describe("All compositions have valid metadata", () => {
             values: getTestValues(comp),
           });
           expect(Array.isArray(result)).toBe(true);
-          // Each entry should be an array of {x, y} points
-          for (const polyline of result) {
-            expect(Array.isArray(polyline)).toBe(true);
-            for (const pt of polyline) {
-              expect(typeof pt.x).toBe("number");
-              expect(typeof pt.y).toBe("number");
-            }
-          }
+          // Cheap aggregate properties stay at full coverage: every entry is an
+          // array of points, and no entry is degenerate.
+          expect(
+            result.every((polyline) => Array.isArray(polyline)),
+            "every entry must be an array of {x, y} points",
+          ).toBe(true);
+          expect(firstInvalidSampledPoint(result)).toBeNull();
         }, GENERATE_TIMEOUT_MS);
       } else {
         it("3D composition has a layers function", () => {
@@ -160,6 +159,55 @@ const HEAVY_COMPOSITION_SCALE: Record<string, Record<string, unknown>> = {
  */
 const GENERATE_TIMEOUT_MS = 20000;
 
+/**
+ * Stride between sampled points inside a single polyline. Prime, so it can't
+ * fall into lockstep with a composition's own periodicity (grid pitch, ring
+ * count, cell size) and keep landing on the same phase of every path.
+ */
+const POINT_SAMPLE_STRIDE = 37;
+
+/**
+ * Scan a generate() result for the first point that isn't a finite {x, y} pair,
+ * returning a describable failure or null.
+ *
+ * Per-point validity is checked on a deterministic sample — both endpoints of
+ * every polyline plus every POINT_SAMPLE_STRIDE-th point between them — rather
+ * than on every point. flowField and flowRaster each emit >100k points, and an
+ * expect() per coordinate (~225k calls across the suite) cost seconds of pure
+ * harness overhead for what is only a shape check. Endpoints are always sampled
+ * because chaining and contour-extraction bugs surface at path boundaries first.
+ *
+ * The whole scan reports through one expect() at the call site, so a
+ * 100k-point composition costs a single assertion instead of 200k. Sampling is
+ * index-based, never Math.random, so a failure reproduces exactly.
+ *
+ * Note this is *stricter* per sampled point than the `typeof pt.x === "number"`
+ * check it replaces: NaN and Infinity are numbers and used to pass.
+ */
+function firstInvalidSampledPoint(result: { x: number; y: number }[][]): string | null {
+  for (let p = 0; p < result.length; p++) {
+    const polyline = result[p];
+    if (!Array.isArray(polyline) || polyline.length === 0) continue;
+    for (const i of sampleIndices(polyline.length)) {
+      const pt = polyline[i];
+      if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) {
+        return `polyline ${p} point ${i} is not a finite {x, y}: ${JSON.stringify(pt)}`;
+      }
+    }
+  }
+  return null;
+}
+
+/** Endpoint-anchored, stride-based sample of indices into a polyline. */
+function sampleIndices(length: number): number[] {
+  const indices = [0];
+  for (let i = POINT_SAMPLE_STRIDE; i < length - 1; i += POINT_SAMPLE_STRIDE) {
+    indices.push(i);
+  }
+  if (length > 1) indices.push(length - 1);
+  return indices;
+}
+
 /** Control values used to smoke-test a 2D composition's generate() */
 function getTestValues(comp: Composition2DDefinition): Record<string, unknown> {
   const values = getDefaults(comp);
@@ -175,6 +223,42 @@ function getTestValues(comp: Composition2DDefinition): Record<string, unknown> {
   }
   return values;
 }
+
+/**
+ * The sampled check above is only worth having if it still fails on bad output.
+ * A sampler that quietly accepts everything looks identical to a passing suite,
+ * so pin its behaviour directly.
+ */
+describe("firstInvalidSampledPoint", () => {
+  const cleanPolyline = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ x: i, y: i * 2 }));
+
+  it("accepts finite output", () => {
+    expect(firstInvalidSampledPoint([cleanPolyline(500), cleanPolyline(3)])).toBeNull();
+  });
+
+  it("catches NaN at a sampled interior index", () => {
+    const polyline = cleanPolyline(500);
+    polyline[POINT_SAMPLE_STRIDE] = { x: NaN, y: 0 };
+    expect(firstInvalidSampledPoint([polyline])).toContain(`point ${POINT_SAMPLE_STRIDE}`);
+  });
+
+  it("catches NaN at either endpoint", () => {
+    const first = cleanPolyline(500);
+    first[0] = { x: 0, y: NaN };
+    expect(firstInvalidSampledPoint([first])).toContain("point 0");
+
+    const last = cleanPolyline(500);
+    last[499] = { x: Infinity, y: 0 };
+    expect(firstInvalidSampledPoint([last])).toContain("point 499");
+  });
+
+  it("reports the offending polyline index", () => {
+    const polylines = [cleanPolyline(10), cleanPolyline(10), cleanPolyline(10)];
+    polylines[2][0] = { x: NaN, y: NaN };
+    expect(firstInvalidSampledPoint(polylines)).toContain("polyline 2");
+  });
+});
 
 describe("sentinelTerrain3D crossHatchShadow", () => {
   const comp = compositionRegistry.get("sentinelTerrain3D") as Composition3DDefinition;
