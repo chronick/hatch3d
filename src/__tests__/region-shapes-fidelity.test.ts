@@ -27,6 +27,7 @@ import {
   rasterUnionRings,
   CLUSTER_TOTAL_CELL_WALL,
   ESCALATE_FACTOR,
+  EXACT_MAX_CELLS,
   OUTLINE_BASE_RADIUS,
   RASTER_MAX_CELLS,
   RASTER_CAP_CELLS,
@@ -147,15 +148,22 @@ const freshStats = (): RasterRefineStats => ({
   escalated: false,
   trimmed: false,
   fineCandidates: 0,
+  radiusWidened: false,
 });
 
 /**
  * The stats of a call that stayed on the per-window path — every fixture in
  * this file except the dense 170 × 170 lattice at the bottom. Spelled as a
  * spread so the `toEqual`s below keep saying what they said before the
- * escalation fields existed: nothing escalated, and there was no fine grid.
+ * escalation fields existed: nothing escalated, there was no fine grid, and
+ * (since the exact tier) the buffer is the one that was asked for.
  */
-const SPARSE_PATH = { escalated: false, trimmed: false, fineCandidates: 0 } as const;
+const SPARSE_PATH = {
+  escalated: false,
+  trimmed: false,
+  fineCandidates: 0,
+  radiusWidened: false,
+} as const;
 
 /** Best of `reps` timed runs, after a warm-up call for JIT and allocation. */
 function timeBest(run: () => unknown, reps = 3): number {
@@ -861,9 +869,22 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
  * budget, and the one that forces escalation (review round-6).
  *
  * The fixture is the lattice above scaled up: pitch 20 over a 3 400px extent —
- * 342 crossing strokes, 28 900 pockets — outlined at radius 4. The default cap
- * gives 6.66px cells, so the widened effective radius is 6.66 and each pocket is
- * 6.69px across: one cell, and so a sub-cell candidate 28 899 times over.
+ * 342 crossing strokes, 28 900 pockets — outlined at radius 1. The default cap
+ * gives 6.64px cells, so the widened effective radius is 6.64 and each pocket is
+ * 6.71px across: one cell, and so a sub-cell candidate 28 896 times over.
+ *
+ * **Radius 1, not the reviewer's 4, and that is the exact tier's doing.** The
+ * density here has always come from the *widened* radius — which is the cell,
+ * and so is set by the extent and the cap rather than by what was asked for.
+ * Since `EXACT_MAX_CELLS` a default-cap call widens only when the exact grid is
+ * unaffordable, i.e. past ~2 066 radii of extent: at radius 4 this drawing is
+ * 852 radii wide, gets a 4px cell, and its pockets are 12px — three cells across
+ * and not a candidate for anything (pinned below: it resolves without escalating
+ * at all, 2.7× faster). At radius 1 it is 3 403 radii wide, past the ceiling, so
+ * the widening still governs and the fixture is the one the review measured,
+ * cell for cell — 6.64px against 6.66px. What it now additionally pins is the
+ * beyond-ceiling contract: `radiusWidened` true, said out loud rather than left
+ * for the caller to infer from a fatter region.
  *
  * The per-window path cannot carry that, and not by a tunable margin. A window
  * is the candidate's span plus two cells of padding on every side, sampled 16×
@@ -873,7 +894,7 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
  * before this change: 6 116 candidates refined, **22 783 preserved unrefined**,
  * and because an unrefined coarse ring is displaced by up to a cell — the whole
  * width of the feature here — **166 of 256 sampled pocket centres came back as
- * ink**, each one analytically 10px from the nearest stroke against a 6.66px
+ * ink**, each one analytically 10px from the nearest stroke against a 6.64px
  * radius. It took 10.1s to get that wrong.
  *
  * Raising the budget does not fix it: the windows *overlap*, so the same paper
@@ -886,7 +907,7 @@ describe("a spent refinement budget preserves rings, it does not delete them", (
 describe("a candidate field too dense to refine window-by-window escalates", () => {
   const PITCH = 20;
   const N = 170;
-  const RADIUS = 4;
+  const RADIUS = 1;
   const LATTICE: Polyline[] = Array.from({ length: 2 * (N + 1) }, (_, i) => {
     const k = Math.floor(i / 2) * PITCH;
     const end = N * PITCH;
@@ -912,9 +933,17 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
     const window = ((1 + 2 * REFINE_PAD_CELLS) * REFINE_FACTOR) ** 2;
     expect(N * N * window).toBeGreaterThan(fineCost);
 
+    // …and the radius really is still widened, which is what makes the pockets
+    // sub-cell in the first place: the grid that would hold a 1px radius over
+    // 3 403px of extent is 3 403 cells a side, and EXACT_MAX_CELLS affords
+    // 2 066, so this drawing is past the exact tier and stays widened.
+    expect(spec.effectiveRadius).toBeGreaterThan(RADIUS);
+    const exactSide = Math.ceil((spec.cell * spec.cells) / RADIUS);
+    expect((exactSide + 6) ** 2, `exact grid ${exactSide + 6}²`).toBeGreaterThan(EXACT_MAX_CELLS);
+
     // …and every pocket is unambiguously real: its centre is 10px from the
-    // nearest stroke against a 6.66px effective radius, and its walls are
-    // 6.66px of solid ink.
+    // nearest stroke against a 6.64px effective radius, and its walls are
+    // 6.64px of solid ink.
     expect(distToRings(holeCentre(0), LATTICE)).toBeCloseTo(PITCH / 2, 9);
     expect(spec.effectiveRadius).toBeLessThan(PITCH / 2);
     // …and about one *coarse* cell across, which is what makes it a candidate…
@@ -949,10 +978,13 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
     const rings = rasterUnionRings(LATTICE, RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
 
     // The coarse grid saw the density — one sub-cell candidate per pocket, bar
-    // the odd one whose contour came out a hair over a cell² and went straight
-    // through as an ordinary ring (28 899 of 28 900 here).
+    // the few whose contour came out a hair over a cell² and went straight
+    // through as an ordinary ring (28 896 of 28 900 here; which pockets those
+    // are is a matter of where the lattice falls against the grid's phase).
     expect(stats.escalated).toBe(true);
-    expect(stats.candidates).toBeGreaterThan(N * N - 4);
+    // …and the buffer they were found on is the widened one, said out loud.
+    expect(stats.radiusWidened).toBe(true);
+    expect(stats.candidates).toBeGreaterThan(N * N - 8);
     expect(stats.candidates).toBeLessThanOrEqual(N * N);
     // …and at 4× there is nothing sub-cell left to ask about, so no window is
     // opened at all: the escalated grid resolves the pockets outright.
@@ -985,7 +1017,10 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
     ]) {
       expect(pointInSilhouette(p, rings), `wall at ${p.x},${p.y}`).toBe(true);
     }
-    expect(pointInSilhouette({ x: -RADIUS - 2, y: -RADIUS - 2 }, rings)).toBe(false);
+    // …and outside the drawing is paper. Stated against the *widened* radius,
+    // which is what the corner is actually buffered by here (6.64px, against
+    // the 1px asked for) — a point 3px out would be inside it.
+    expect(pointInSilhouette({ x: -PITCH, y: -PITCH }, rings)).toBe(false);
   });
 
   it("costs less than the per-window path it replaces, not more", () => {
@@ -1006,9 +1041,9 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
    * Round-7 stopped a stray point from suppressing escalation. It could not
    * stop the stray from inflating the bounding box the grid is sized from: at
    * a stray 1 150px past the lattice's corner the 512-cap grid's cell grows
-   * from 6.66px to 8.90px, the widened effective radius grows with it, and the
-   * 20px pitch leaves pockets of only 2.20px — *thinner than the escalated fine
-   * grid's own 2.23px cell*. So escalation fired, correctly and expensively,
+   * from 6.64px to 8.89px, the widened effective radius grows with it, and the
+   * 20px pitch leaves pockets of only 2.22px — *thinner than the escalated fine
+   * grid's own 2.22px cell*. So escalation fired, correctly and expensively,
    * and still landed on a grid too coarse to register the pockets: 28 224 FINE
    * candidates, 21 828 of them past the inherited allowance and preserved
    * unrefined, and (measured on this fixture, four stray placements) 120–132 of
@@ -1093,8 +1128,9 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
       // …and the strays are present, each as its own ring, each buffered at the
       // radius that was actually asked for rather than at the lattice's widened
       // one. That is the honest half of per-cluster `effectiveRadius`: the disc
-      // came back with |area| ≈ 246 (r ≈ 8.9) when one grid served the whole
-      // drawing, and ≈ 50 (r = 4) now that the stray has a grid of its own.
+      // came back with |area| ≈ 248 (r ≈ 8.9) when one grid served the whole
+      // drawing, and ≈ 3.14 (r = 1) now that the stray has a grid of its own —
+      // in fact its own closed form, since a lone dot is a disc exactly.
       for (const q of pts) {
         const near = rings.filter((r) => {
           const c = ringCentre(r);
@@ -1185,12 +1221,12 @@ describe("a candidate field too dense to refine window-by-window escalates", () 
       );
 
       // …and the trim that allowance implied really did swallow the pitch: the
-      // cap falls from 512 to 343 cells, which puts the panel's own cell at
-      // 9.94px, widens the radius with it, and leaves 0.13px of pocket — a
+      // cap falls from 512 to 342 cells, which puts the panel's own cell at
+      // 9.95px, widens the radius with it, and leaves 0.11px of pocket — a
       // twentieth of even the *escalated* fine cell, so no amount of looking
       // harder gets it back.
       const trimmedCap = Math.floor(alone.cells * Math.sqrt(oldAllowance / demand));
-      expect(trimmedCap).toBe(343);
+      expect(trimmedCap).toBe(342);
       const trimmed = rasterGridSpec(panel(0), RADIUS, trimmedCap, trimmedCap)!;
       const pocket = PITCH - 2 * trimmed.effectiveRadius;
       expect(pocket / (trimmed.cell / ESCALATE_FACTOR), `pocket ${pocket.toFixed(3)}px`).toBeLessThan(
@@ -1387,7 +1423,12 @@ describe("cluster decomposition is a no-op on single-cluster drawings", () => {
     ["dropped cusp speck", [at(0, 0), at(19.9, 45)], 10, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 1, 865, 12146.473457],
     ["substituted pinhole", PINHOLE, OUTLINE_BASE_RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 2, 814, 10735.055055],
     ["56 × 56 lattice", lattice(56, 20), 8.8, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 3137, 61505, 68878121.369935],
-    ["170 × 170 lattice", lattice(170, 20), 4, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 28901, 501545, 1704867355.209918],
+    // Radius 1, matching the escalation block above: at radius 4 this drawing
+    // is inside the exact tier and no longer takes the escalating path this row
+    // exists to pin (the exact-tier ring set is pinned on its own terms in the
+    // `EXACT_MAX_CELLS` block below). Captured the same way as the rest — by
+    // running the case against the implementation before this change.
+    ["170 × 170 lattice", lattice(170, 20), 1, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 28901, 504281, 1714624300.788006],
     ["saturated canvas", hatch, OUTLINE_BASE_RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, 1, 2047, 2048821.75533],
   ];
 
@@ -1503,6 +1544,323 @@ describe("cost — the adaptive grid stays bounded on fine-detail geometry", () 
   });
 });
 
+/**
+ * A sub-cell radius is *bought a finer grid*, not widened into the one the cap
+ * happened to give — the exact tier (`EXACT_MAX_CELLS`).
+ *
+ * Widening keeps a hair-thin stroke from rasterising into a dotted line, and it
+ * has to exist, but it is not a resolution decision: it changes which region is
+ * drawn. Measured on the fixture below before this change — a 2 000px bent
+ * stroke through `occupied`, i.e. a 1px buffer plus `offsetPx`:
+ *
+ * ```text
+ * offsetPx   radius   band drawn   asked for
+ *    0.0      1.000     7.8203       2.0000
+ *   -0.5      0.500     7.8164       1.0000
+ *   -0.9      0.100     7.8133       0.2000
+ *   -0.999    0.001     7.8125       0.0020
+ *   -1.0      0        (no rings)    —
+ * ```
+ *
+ * The band never moves — it is `2 · cell`, and the cell is set by the extent and
+ * the cap — and then the region vanishes. `offsetPx` did nothing at all over its
+ * whole useful range and then did everything at once, which is not an
+ * approximation of the requested offset but a different function.
+ *
+ * The cap is the caller's to choose, and for a default-cap call the caller is
+ * this module, so it now names one that fits the radius: the band tracks the
+ * request continuously across the old cliff. Past `EXACT_MAX_CELLS` the widening
+ * is still there — it is the cheaper of two wrong answers against an unbounded
+ * allocation — and is reported rather than silent.
+ */
+describe("the exact tier — a sub-cell radius re-specs instead of widening", () => {
+  /** 2 000px of stroke with a bend, so the closed-form emitter cannot take it. */
+  const LONG: Polyline[] = [
+    [
+      { x: 0, y: 0 },
+      { x: 2000, y: 0 },
+      { x: 2000, y: 60 },
+    ],
+  ];
+  /** Where the horizontal arm is measured — 1 000px from either end of it. */
+  const PROBE_X = 1000;
+
+  /** Every y at which a ring crosses `x = xq`, in order. */
+  const crossingsAtX = (rings: Polyline[], xq: number): number[] => {
+    const ys: number[] = [];
+    for (const ring of rings) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[j];
+        const b = ring[i];
+        if (a.x === b.x) continue;
+        const t = (xq - a.x) / (b.x - a.x);
+        if (t < 0 || t >= 1) continue;
+        ys.push(a.y + t * (b.y - a.y));
+      }
+    }
+    return ys.sort((p, q) => p - q);
+  };
+  /** The width of the union across `x = xq` — the band the stroke was drawn at. */
+  const bandAt = (rings: Polyline[], xq: number): number => {
+    const ys = crossingsAtX(rings, xq);
+    expect(ys.length, `no band at x=${xq}`).toBeGreaterThanOrEqual(2);
+    return ys[ys.length - 1] - ys[0];
+  };
+
+  it("the fixture really does straddle the old cliff", () => {
+    // Guards the fixture: the default cap has to be too coarse for these radii,
+    // or there was never a widening here to remove. 3.92px cells against radii
+    // from 4 down to 1 — the whole sweep below bar its first point.
+    const spec = rasterGridSpec(LONG, OUTLINE_BASE_RADIUS)!;
+    expect(spec.cells).toBe(RASTER_CAP_CELLS);
+    expect(spec.cell).toBeGreaterThan(1);
+    expect(spec.cell).toBeLessThan(OUTLINE_BASE_RADIUS);
+    // …and the finest of them is still inside the ceiling, so the tier applies.
+    const finest = OUTLINE_BASE_RADIUS - 3;
+    expect((Math.ceil((spec.cell * spec.cells) / finest) + 6) ** 2).toBeLessThan(EXACT_MAX_CELLS);
+  });
+
+  it("tracks `offsetPx` continuously across the old cliff", () => {
+    // `outline` is a 4px buffer plus the offset, so this walks the radius from
+    // 4 down to 1 — through 3.92, where the default cap used to take over and
+    // pin the band at 7.84px for every offset below it.
+    const widths = new Map<number, number>();
+    for (const offsetPx of [0, -0.08, -0.1, -0.5, -1, -2, -2.9, -3]) {
+      const rings = derivedRegionRings(LONG, { of: "n", kind: "outline", offsetPx });
+      const want = 2 * (OUTLINE_BASE_RADIUS + offsetPx);
+      const band = bandAt(rings, PROBE_X);
+      widths.set(offsetPx, band);
+      // The band is a straight stroke's, so the field is exactly linear across
+      // it and the interpolated crossing is exact — this is not a tolerance on
+      // the raster, it is the raster being right.
+      expect(band, `offset ${offsetPx}: ${band.toFixed(4)} vs ${want.toFixed(4)}`).toBeCloseTo(
+        want,
+        3,
+      );
+    }
+    // …and stated as the cliff itself: two offsets 0.02px apart across the old
+    // step differ by 0.04px of band, not by the 3.9px they used to.
+    const step = Math.abs(widths.get(-0.08)! - widths.get(-0.1)!);
+    expect(step, `step across the old cliff: ${step.toFixed(4)}px`).toBeLessThan(0.05);
+  });
+
+  it("keeps the widened fallback past the ceiling, and says so", () => {
+    // Same fixture, a radius fine enough that the exact grid no longer fits:
+    // 2 002px of extent at radius 0.5 wants 4 002 cells a side against the
+    // 2 066 the ceiling affords. Nothing is lost — the region is still drawn,
+    // still connected — but it is drawn at 2 · cell, and `radiusWidened` is how
+    // the caller finds that out instead of measuring the rings.
+    const radius = 0.5;
+    const spec = rasterGridSpec(LONG, radius)!;
+    const exactSide = Math.ceil((spec.cell * spec.cells) / radius);
+    expect((exactSide + 6) ** 2, `exact grid ${exactSide + 6}²`).toBeGreaterThan(EXACT_MAX_CELLS);
+
+    const stats = freshStats();
+    const rings = rasterUnionRings(LONG, radius, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+    expect(stats.radiusWidened).toBe(true);
+    expect(rings.length).toBeGreaterThan(0);
+    expect(bandAt(rings, PROBE_X)).toBeCloseTo(2 * spec.effectiveRadius, 3);
+    // …and the stroke is still one connected band rather than a dotted line of
+    // specks, which is the whole reason widening exists.
+    for (const p of samplesAlong(LONG, 25)) expect(pointInSilhouette(p, rings)).toBe(true);
+  });
+
+  it("leaves an explicit `capCells` exactly as it was", () => {
+    // A caller that names a cap has priced that grid; the tier does not spend
+    // its money for it. Both directions: a deliberately cheap 8-cell grid, and
+    // a generous 700-cell one that is still too coarse for the radius.
+    for (const [cap, lines, radius] of [
+      [8, STAR, 1],
+      [700, LONG, 1],
+    ] as const) {
+      const stats = freshStats();
+      const spec = rasterGridSpec(lines, radius, RASTER_MAX_CELLS, cap)!;
+      const rings = rasterUnionRings(lines, radius, RASTER_MAX_CELLS, cap, stats);
+      expect(spec.cells, `cap ${cap}`).toBe(cap);
+      expect(spec.effectiveRadius, `cap ${cap}`).toBeGreaterThan(radius);
+      expect(stats.radiusWidened, `cap ${cap}`).toBe(true);
+      expect(rings.length, `cap ${cap}`).toBeGreaterThan(0);
+    }
+  });
+
+  it("holds the radius per cluster, on both sides of the ceiling", () => {
+    // Decomposition re-prices every cluster, so the tier has to hold there too,
+    // and the two ways it can fail are opposite:
+    //
+    //  - A raised *global* spec can have more cells a side than `capCells`, and
+    //    a cluster's floor is stated in those cells — so capping the cluster at
+    //    512 would render it coarser than the undecomposed grid and widen it
+    //    again. Here the drawing's exact grid is 1 402 cells and the long
+    //    cluster's floor is 1 002 of them.
+    //  - Past the ceiling the drawing keeps its widened spec, but a cluster
+    //    whose own extent fits can still be drawn exactly. Here the drawing
+    //    wants 2 262 cells (over) and the long cluster 1 802 (under).
+    //
+    // Both are two bent strokes far enough apart to be separate clusters, and
+    // in both the answer is the same: each band is the 2px that was asked for.
+    const bent = (x0: number, len: number): Polyline => [
+      { x: x0, y: 0 },
+      { x: x0 + len, y: 0 },
+      { x: x0 + len, y: 40 },
+    ];
+    for (const [label, long, far] of [
+      ["inside the ceiling", bent(0, 1000), bent(1300, 100)],
+      ["past the ceiling", bent(0, 1800), bent(2200, 60)],
+    ] as const) {
+      const lines = [long, far];
+      const spec = rasterGridSpec(lines, 1)!;
+      const exactSide = Math.ceil(spec.cell * spec.cells);
+      const fits = (exactSide + 6) ** 2 <= EXACT_MAX_CELLS;
+      expect(fits, `${label}: exact grid ${exactSide + 6}²`).toBe(label === "inside the ceiling");
+      // The long cluster's own extent is past the default cap either way, so a
+      // cluster held to `capCells` would come back widened on either branch.
+      expect(rasterGridSpec([long], 1)!.effectiveRadius, label).toBeGreaterThan(1);
+
+      const stats = freshStats();
+      const rings = rasterUnionRings(lines, 1, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+      expect(rings, label).toHaveLength(2);
+      expect(stats.radiusWidened, label).toBe(false);
+      expect(bandAt(rings, (long[0].x + long[1].x) / 2), label).toBeCloseTo(2, 3);
+      expect(bandAt(rings, far[0].x + 30), label).toBeCloseTo(2, 3);
+    }
+  });
+
+  it("resolves the plotter lattice at the radius asked for, without escalating", () => {
+    // The round-6 fixture at the radius it was found with: 342 crossing strokes
+    // over 3 400px, outlined at 4. The default cap gives 6.66px cells, which is
+    // where its 28 899 sub-cell candidates came from — but 852 cells fit the
+    // radius and fit the ceiling, so the pockets are now 12px across a 4px cell
+    // and there is nothing sub-cell to decide at all. Same 28 901 rings, and
+    // 222ms → 81ms because the escalated 2 068² pass is no longer needed.
+    const PITCH = 20;
+    const N = 170;
+    const LATTICE: Polyline[] = Array.from({ length: 2 * (N + 1) }, (_, i) => {
+      const k = Math.floor(i / 2) * PITCH;
+      const end = N * PITCH;
+      return i % 2 === 0
+        ? [{ x: 0, y: k }, { x: end, y: k }]
+        : [{ x: k, y: 0 }, { x: k, y: end }];
+    });
+    const stats = freshStats();
+    const rings = rasterUnionRings(LATTICE, OUTLINE_BASE_RADIUS, RASTER_MAX_CELLS, RASTER_CAP_CELLS, stats);
+    expect(rasterGridSpec(LATTICE, OUTLINE_BASE_RADIUS)!.effectiveRadius).toBeGreaterThan(
+      OUTLINE_BASE_RADIUS,
+    );
+    expect(stats).toEqual(freshStats());
+    expect(rings).toHaveLength(1 + N * N);
+
+    // Every pocket is the pocket, not a widened remnant of one: 12 × 12 at the
+    // radius asked for, against the 6.7 × 6.7 the widened buffer left.
+    const pocket = PITCH - 2 * OUTLINE_BASE_RADIUS;
+    const areas = rings.map((r) => Math.abs(polygonArea(r)));
+    const pockets = areas.filter((a) => Math.abs(a - pocket ** 2) < pocket ** 2 * 0.06);
+    expect(pockets).toHaveLength(N * N);
+    // …and identically so: every one of them comes back at 136.0 against the
+    // true 144, the four half-cell triangles the contour chamfers off the
+    // corners where two walls' distance fields meet. That is the raster's known
+    // corner behaviour, not a difference between pockets.
+    let lo = Infinity;
+    let hi = 0;
+    for (const a of pockets) {
+      lo = Math.min(lo, a);
+      hi = Math.max(hi, a);
+    }
+    expect(hi - lo, `pocket areas ${lo.toFixed(4)}…${hi.toFixed(4)}`).toBeLessThan(1e-6);
+    expect(lo).toBeCloseTo(pocket ** 2 - 4 * 2, 6);
+    for (let i = 0; i < 64; i++) {
+      const k = (i * 617) % (N * N);
+      const p = { x: (Math.floor(k / N) + 0.5) * PITCH, y: ((k % N) + 0.5) * PITCH };
+      expect(pointInSilhouette(p, rings), `pocket at ${p.x},${p.y}`).toBe(false);
+    }
+    expect(pointInSilhouette({ x: PITCH, y: PITCH }, rings)).toBe(true);
+  });
+});
+
+/**
+ * The step at the analytic emitter's isolation threshold was the widening error
+ * wearing a different hat, and the exact tier closes it too.
+ *
+ * A mark far enough from everything else is emitted in closed form at the
+ * radius asked for (`extractAnalyticStrokes`); one that is not is rastered at
+ * `effectiveRadius` along with its neighbours. Where those two radii differ, the
+ * threshold is a cliff: measured before this change, a radius-4 dot beside a
+ * 3 400px bent stroke kept its exact 8px disc down to a 13.4px gap and then, at
+ * 13.3px, welded into the stroke's 6.66px-radius band — its lower edge jumping
+ * **2.26px outward as the gap closed by 0.1px**, from −17.40 to −19.56.
+ *
+ * Nothing in the drawing crosses at 13.31px; `2 · effectiveRadius` does. On the
+ * exact grid the two radii are the same number, so the only threshold left is
+ * `2 · radius`, where the two buffers are genuinely tangent and one ring is the
+ * right answer — a transition of the geometry rather than of the bookkeeping.
+ */
+describe("the isolation threshold is continuous inside the exact tier", () => {
+  const RADIUS = OUTLINE_BASE_RADIUS;
+  /** Bent, so the stroke itself is rastered rather than emitted as a capsule. */
+  const STROKE: Polyline = [
+    { x: 0, y: 0 },
+    { x: 3400, y: 0 },
+    { x: 3400, y: 60 },
+  ];
+  const DOT_X = 1700;
+  const drawing = (gap: number): Polyline[] => [STROKE, [{ x: DOT_X, y: -gap }]];
+  /** The union's lowest point above `x = DOT_X` — the dot's outer edge. */
+  const lowestEdge = (rings: Polyline[]): number => {
+    let lo = Infinity;
+    for (const ring of rings) {
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const a = ring[j];
+        const b = ring[i];
+        if (a.x === b.x) continue;
+        const t = (DOT_X - a.x) / (b.x - a.x);
+        if (t < 0 || t >= 1) continue;
+        lo = Math.min(lo, a.y + t * (b.y - a.y));
+      }
+    }
+    return lo;
+  };
+
+  it("the fixture really does straddle the old threshold", () => {
+    // Guards the fixture: the default cap's widened radius is what put the
+    // threshold at 13.31px, and it is still what `rasterGridSpec` alone reports
+    // — the tier is applied by `rasterUnionRings`, over the top of it.
+    const spec = rasterGridSpec(drawing(13.3), RADIUS)!;
+    expect(spec.effectiveRadius).toBeGreaterThan(RADIUS);
+    expect(2 * spec.effectiveRadius).toBeGreaterThan(13.3);
+    expect(2 * spec.effectiveRadius).toBeLessThan(13.4);
+  });
+
+  it("sweeps the dot through the old threshold without a step", () => {
+    for (const gap of [13.5, 13.4, 13.35, 13.3, 13.2, 12, 10, 8.2, 8.05, 8.001]) {
+      const rings = rasterUnionRings(drawing(gap), RADIUS);
+      // Two rings throughout: the stroke's band and the dot's own disc. Before
+      // the change the dot merged into the band below 13.31px.
+      expect(rings, `gap ${gap}`).toHaveLength(2);
+      // …and the disc is the one that was asked for, to floating point, on both
+      // sides of where the threshold used to be.
+      expect(lowestEdge(rings), `gap ${gap}`).toBeCloseTo(-gap - RADIUS, 9);
+    }
+  });
+
+  it("still merges at `2 · radius`, where the buffers genuinely touch", () => {
+    // The threshold that is left is the geometric one, and one ring is the
+    // right answer at it. What the contour costs there is the raster's ordinary
+    // curvature error — ~cell²/8r, and the exact grid's cell is the radius, so
+    // ~0.66px on this fixture — rather than a change of buffer distance.
+    for (const gap of [8, 7.999, 6, 4]) {
+      const rings = rasterUnionRings(drawing(gap), RADIUS);
+      expect(rings, `gap ${gap}`).toHaveLength(1);
+      const err = lowestEdge(rings) - (-gap - RADIUS);
+      expect(err, `gap ${gap}: edge off by ${err.toFixed(4)}px`).toBeGreaterThan(0);
+      expect(err, `gap ${gap}: edge off by ${err.toFixed(4)}px`).toBeLessThan(1);
+    }
+    // …and it is a step of the *contour*, not of the region: the dot is still
+    // buffered at 4, so the merged blob reaches within a cell's curvature of
+    // where the two separate rings did.
+    const outside = lowestEdge(rasterUnionRings(drawing(8.001), RADIUS));
+    const inside = lowestEdge(rasterUnionRings(drawing(7.999), RADIUS));
+    expect(Math.abs(inside - outside), "step at the geometric threshold").toBeLessThan(1);
+  });
+});
 
 /**
  * A mark must not change shape because of where the *cluster boundary* fell.

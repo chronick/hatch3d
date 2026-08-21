@@ -96,6 +96,12 @@ export const RASTER_CELLS_PER_RADIUS = 4;
  * marching squares faithfully reports as dozens of specks instead of one band;
  * below this floor the radius is widened to the thinnest representable stroke
  * so the region stays connected and correctly-shaped, just fatter than asked.
+ *
+ * Fatter than asked is a real cost — it is the region's *offset*, not its
+ * resolution — so widening is the second choice, not the first:
+ * {@link rasterUnionRings} buys a grid fine enough to hold the radius wherever
+ * that fits {@link EXACT_MAX_CELLS}, and only past that ceiling does this floor
+ * bind (reported, as `radiusWidened`).
  */
 export const RASTER_MIN_RADIUS_CELLS = 1;
 /** Arc samples emitted per rounded corner. */
@@ -408,7 +414,9 @@ export interface RasterGridSpec {
  *    the true physical bound on `gw`/`gh`.
  *  - `capCells = 700` really does allow 700 cells: {@link RASTER_CAP_CELLS} is
  *    the *default* cost bound, not a law, and a caller who names a larger one
- *    has priced it themselves. Only the default is 512.
+ *    has priced it themselves. Only the default is 512. {@link rasterUnionRings}
+ *    is one such caller: rather than accept a widened `effectiveRadius` it names
+ *    the cap that makes the radius exact, priced against {@link EXACT_MAX_CELLS}.
  *  - `maxCells` above `capCells` does not raise the ceiling — the floor is
  *    clamped down to the cap. Ask for a finer grid by raising the cap
  *    (`rasterGridSpec(lines, r, 700, 700)`), not by raising the floor.
@@ -678,6 +686,27 @@ export const ESCALATE_FACTOR = 4;
  */
 export const ESCALATE_MAX_CELLS = (ESCALATE_FACTOR * (RASTER_CAP_CELLS + 6)) ** 2;
 /**
+ * Cells an **exact-tier** grid may allocate — the ceiling on buying a sub-cell
+ * radius the resolution it asked for instead of widening it.
+ *
+ * Widening (see {@link RASTER_MIN_RADIUS_CELLS}) exists only because the cell is
+ * larger than the radius at the capped grid, and that is a cap decision rather
+ * than a geometric one: a caller may always name a larger `capCells` and get a
+ * finer grid (see {@link rasterGridSpec}). So {@link rasterUnionRings} names one
+ * for itself — the smallest cap that puts a cell inside the radius — and the
+ * widening simply does not happen. The rest of the pipeline is untouched: it
+ * runs on the finer spec with `effectiveRadius === radius`.
+ *
+ * The ceiling is what keeps that from being unbounded, and it is
+ * {@link ESCALATE_MAX_CELLS}: the same ~4.3M-cell allocation the escalation path
+ * already takes in budget, reached by the same reasoning (a `Float32Array` plus
+ * the contouring pass's edge table, ~51 MB transient). Past it the call keeps
+ * the widened spec and says so — `radiusWidened` in {@link RasterRefineStats} —
+ * because a buffer wider than the one asked for is a reportable degradation, not
+ * a detail.
+ */
+export const EXACT_MAX_CELLS = ESCALATE_MAX_CELLS;
+/**
  * Coarse cells of slack when asking whether a refined flood's escape point has
  * reached the *global* exterior (see {@link escapeLeavesTheFeature}).
  *
@@ -761,6 +790,24 @@ export interface RasterRefineStats {
    * {@link ESCALATE_FACTOR}); 0 when nothing escalated.
    */
   fineCandidates: number;
+  /**
+   * Whether some part of the drawing was **buffered wider than asked for** —
+   * the widening of {@link RASTER_MIN_RADIUS_CELLS}, which changes what the
+   * returned rings mean rather than merely how well they are resolved.
+   *
+   * The second thing in the stats that says fidelity was cut, and the sharper
+   * of the two: `trimmed` says a grid is coarser than its ink justified,
+   * this says the *region itself* is fatter than the caller's radius. False
+   * whenever the exact tier engages (see {@link EXACT_MAX_CELLS}) — which is
+   * every default-cap call whose exact grid fits the ceiling — so what is left
+   * flagged is a drawing whose extent outruns even that, and an explicit-cap
+   * caller who priced a grid too coarse for its own radius.
+   *
+   * Set only when a widened spec is actually rasterised: a cluster drawn
+   * entirely in closed form takes its exact radius from the request (see
+   * {@link extractAnalyticStrokes}) and has nothing to report.
+   */
+  radiusWidened: boolean;
 }
 
 /**
@@ -1553,6 +1600,17 @@ interface AnalyticSplit {
  * cannot dot. Drawing a narrower buffer than the separation was proved against
  * only ever helps.
  *
+ * That gap between the two radii is also the one step this path leaves behind,
+ * and the exact tier closes it. Crossing the threshold from outside, a mark
+ * stops being a `radius` disc and becomes part of a union buffered at
+ * `effectiveRadius` — a visible pop of `effectiveRadius − radius` wherever the
+ * two differ (measured: a radius-4 dot beside a 3 400px stroke jumped its lower
+ * edge 2.26px outward as the gap *closed* by 0.1px). Where the grid is exact the
+ * two radii are the same number, the threshold sits at `2 · radius`, and the
+ * two buffers are touching exactly when the closed form stops applying — which
+ * is continuity rather than a smaller step. Past {@link EXACT_MAX_CELLS} the
+ * step survives, flagged by `radiusWidened`.
+ *
  * **There is deliberately no size threshold.** The obvious one — "only when the
  * stroke is sub-cell on the grid it would have used" — reintroduces the very
  * discontinuity being removed: the dot above is one sample across on the merged
@@ -1603,6 +1661,42 @@ function extractAnalyticStrokes(
 }
 
 /**
+ * The same grid re-specified fine enough to buffer at the radius that was
+ * *asked for*, or null when there is nothing to buy or the bill is too large.
+ *
+ * `spec` widens only when its cap binds — widening means `cell > radius`, and
+ * `cell = span / cells` with `cells = min(cap, max(floor, span · 4 / radius))`,
+ * whose middle term is four times what exactness needs, so a spec that widened
+ * is a spec at its ceiling. Raising that ceiling is therefore the whole fix, and
+ * `rasterGridSpec` already sanctions it: an explicit `capCells` wins outright.
+ * The cap named here is the smallest that puts a cell inside the radius, so the
+ * finer grid is the *coarsest* exact one — nothing is bought beyond exactness.
+ *
+ * Two guards. The grid must fit {@link EXACT_MAX_CELLS} at its true physical
+ * size (`cap + 6` per side — see {@link rasterGridSpec}), and the returned spec
+ * must actually *be* exact: `span` is recovered here as `cell · cells`, a
+ * division and a multiplication apart from the value `rasterGridSpec` measured,
+ * so the derived cap can land one cell short. Confirming on the spec rather than
+ * on the reconstruction costs one extra call in that case and makes the
+ * post-condition — `effectiveRadius === radius` — hold by construction.
+ */
+function exactSpec(
+  lines: Polyline[],
+  radius: number,
+  maxCells: number,
+  spec: RasterGridSpec,
+): RasterGridSpec | null {
+  if (spec.effectiveRadius <= radius) return null;
+  const want = Math.ceil((spec.cell * spec.cells * RASTER_MIN_RADIUS_CELLS) / radius);
+  for (const cap of [want, want + 1]) {
+    if (!Number.isFinite(cap) || (cap + 6) ** 2 > EXACT_MAX_CELLS) return null;
+    const next = rasterGridSpec(lines, radius, maxCells, cap);
+    if (next && next.effectiveRadius <= radius) return next;
+  }
+  return null;
+}
+
+/**
  * Rasterise the geometry's strokes buffered by `radius` and recover the union's
  * boundary as rings (marching squares, via `ringsFromThreshold`).
  *
@@ -1627,6 +1721,17 @@ function extractAnalyticStrokes(
  * `pointInSilhouette` composes for free), and its cost is bounded by
  * `capCells` (see {@link rasterGridSpec}) — or, on a drawing dense enough to
  * escalate, by {@link ESCALATE_MAX_CELLS}.
+ *
+ * **A sub-cell radius buys resolution rather than being widened into one that
+ * fits.** The grid is chosen for the caller here, so `RASTER_CAP_CELLS` is this
+ * function's own default and not a bound it is under: where the default cap
+ * would leave a cell wider than the radius, the spec is taken again at a cap
+ * that does not (see {@link EXACT_MAX_CELLS}), and the rings come back standing
+ * for the distance that was asked for. That matters because the widened radius
+ * is not an approximation of the requested region but a *different* region —
+ * `offsetPx: -0.999` on a 1px buffer used to draw the same 9.8px band as
+ * `offsetPx: 0` and then vanish at `-1`. Only a drawing past the ceiling, or a
+ * caller who named its own cap, still meets the widening (`radiusWidened`).
  *
  * Features finer than one cell are not guessed at from their size but looked at
  * — see {@link refineSubCellRing} — and a confirmed one is re-drawn at the
@@ -1657,14 +1762,15 @@ function extractAnalyticStrokes(
  *
  * Two consequences worth stating plainly:
  *
- *  - **`effectiveRadius` is per cluster, and clusters may differ.** A cluster
- *    small enough to be resolved exactly is buffered at `radius`; one whose own
- *    extent still outruns the cap is buffered at its own widened radius. Each
- *    part of the drawing is rendered at the fidelity its own extent affords,
- *    which is the whole point — but it does mean the returned rings are not all
- *    guaranteed to stand for the same buffer distance. They were not before
- *    either; the difference is that the widening is now driven by the ink near
- *    each ring instead of by the drawing's furthest corner.
+ *  - **`effectiveRadius` is per cluster, and clusters may differ.** Each part of
+ *    the drawing is rendered at the fidelity its own extent affords, which is
+ *    the whole point — but it does mean the returned rings are not all
+ *    guaranteed to be *resolved* to the same accuracy. What they no longer
+ *    differ in, past this call's exact tier, is the distance they stand for:
+ *    a cluster whose exact grid fits {@link EXACT_MAX_CELLS} is buffered at
+ *    `radius`, and that is every cluster of every drawing whose extent is under
+ *    ~2 066 radii. Only past that ceiling — or under an explicit `capCells` —
+ *    does a ring stand for a widened buffer, and then `radiusWidened` says so.
  *  - **Every cluster prices its grid alone.** No cluster's cap is cut to pay
  *    for another's, because a cap below what registration needs is not a
  *    cheaper answer but a wrong one (see {@link CLUSTER_TOTAL_CELL_WALL}, and
@@ -1690,8 +1796,16 @@ export function rasterUnionRings(
   capCells = RASTER_CAP_CELLS,
   stats?: RasterRefineStats,
 ): Polyline[] {
-  const spec = rasterGridSpec(lines, radius, maxCells, capCells);
-  if (!spec) return [];
+  const base = rasterGridSpec(lines, radius, maxCells, capCells);
+  if (!base) return [];
+  // The exact tier, and the one thing it turns on: **only a default-cap call
+  // re-specs**. `capCells` is a caller's own cost decision (see
+  // `rasterGridSpec`), and a caller who named one has priced that grid — cap 8
+  // means an 8-cell grid, widened radius included. It is the default that is
+  // this function's to choose, and choosing to widen when a finer grid is
+  // affordable was never the intent behind it.
+  const exactTier = capCells === RASTER_CAP_CELLS;
+  const spec = (exactTier ? exactSpec(lines, radius, maxCells, base) : null) ?? base;
 
   // `effectiveRadius` is the widest any cluster will be buffered by, so it is
   // the separation the decomposition has to prove (see `strokeClusters`).
@@ -1710,7 +1824,24 @@ export function rasterUnionRings(
   // already produced a spec above, so `rasterGridSpec` cannot be null here.
   const gridFor = (i: number, cap: number) =>
     rasterGridSpec(clusters[i].lines, radius, floors[i], cap)!;
-  let specs = clusters.map((_, i) => gridFor(i, capCells));
+  // Two things keep a cluster from being drawn *wider* than the separation
+  // `strokeClusters` was just given — which is the one property decomposition
+  // cannot be allowed to lose (see `clusterFloorCells`):
+  //
+  //  - **The floor bounds the cap, not just `maxCells`.** A cluster capped below
+  //    its floor would be rendered coarser than the undecomposed grid, and its
+  //    widened radius would grow past the drawing's. Until the exact tier this
+  //    could not arise — `floors` is stated in whole-drawing cells and the whole
+  //    drawing was itself capped at `capCells` — but a raised global spec can
+  //    have more cells a side than the cap, and then it can.
+  //  - **A cluster may raise its own cap too.** Where the whole drawing is past
+  //    the ceiling but one cluster's own extent is not, that cluster is buffered
+  //    at `radius` while the rest of the drawing is widened; the raise only ever
+  //    lowers a cluster's `effectiveRadius`, never lifts it.
+  let specs = clusters.map((_, i) => {
+    const s = gridFor(i, Math.max(capCells, floors[i]));
+    return (exactTier ? exactSpec(clusters[i].lines, radius, floors[i], s) : null) ?? s;
+  });
 
   // Nothing is trimmed to pay for anything else. The only bound is the absolute
   // wall, and reaching it is pathology rather than density — see
@@ -1725,6 +1856,12 @@ export function rasterUnionRings(
     // resolved as the undecomposed grid would have left it, so the total can
     // land a little over the wall rather than any cluster landing under its
     // floor. And it is reported — the caller can see that fidelity was cut.
+    //
+    // The wall governs the exact tier too, and outranks it: `wanted` carries the
+    // raised caps, so an exact cluster is scaled down with the rest and may come
+    // back widened. That is the conservative direction — degrade to coarser
+    // under an absolute allocation bound — and `radiusWidened` reports it
+    // alongside `trimmed`.
     const scale = Math.sqrt(CLUSTER_TOTAL_CELL_WALL / total);
     const wanted = specs.map((s) => s.cells);
     specs = clusters.map((_, i) =>
@@ -1768,6 +1905,11 @@ function unionRingsOnGrid(
   const exact = extractAnalyticStrokes(lines, radius, r);
   const ink = exact.rastered;
   if (ink.length === 0) return exact.rings;
+  // Something is about to be buffered at `r`, so a widened `r` is now a property
+  // of the output rather than of a spec that might not have been used — which is
+  // why the flag is set here and not where the spec was chosen (see
+  // `RasterRefineStats.radiusWidened`).
+  if (stats && r > radius) stats.radiusWidened = true;
   // Rastered rings first, then the exact ones — so ring order still follows the
   // contouring pass, with the closed-form marks appended per cluster.
   const withExact = (rings: Polyline[]) =>
