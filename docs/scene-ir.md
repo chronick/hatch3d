@@ -32,9 +32,9 @@ npm run render -- --scene examples/scenes/guilloche-single.scene.json -o out.svg
 npm run stats  -- --input out.svg
 ```
 
-The core is importable — `src/scene/{schema,compile,convert}.ts` and
-`src/stats/analyze.ts` — so the browser UI and the InkSight tool consume the
-same functions the CLI does.
+The core is importable — `src/scene/{schema,compile,convert}.ts` — so the
+browser UI consumes the same functions the CLI does. Measurement comes from the
+`@endonny/inksight` package (`analyzeSvg`), shared with the InkSight tool.
 
 ## Document shape
 

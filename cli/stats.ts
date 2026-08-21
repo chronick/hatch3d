@@ -2,21 +2,24 @@
 /**
  * hatch3d stats CLI — deterministic SVG measurement.
  *
- * Emits a structured JSON report (see src/stats/analyze.ts) for a hatch3d SVG:
- * path/vertex counts, physical arc length, per-layer breakdown, ink-density
- * grid, pen-travel estimate, and plottability warnings. No rendering, no model
- * calls — this is the measurement half of the agent loop.
+ * Thin shim over the `@endonny/inksight` package (the measurement core used to
+ * be vendored here as src/stats/analyze.ts). Emits a structured StatsReport for
+ * a hatch3d SVG: path/vertex counts, physical arc length, per-layer breakdown,
+ * ink-density grid, pen-travel estimate, and plottability warnings. No
+ * rendering, no model calls — this is the measurement half of the agent loop.
  *
  * Usage:
  *   npx tsx cli/stats.ts --input render.svg
  *   npx tsx cli/stats.ts --input render.svg --pen-width 0.3 --grid 12
  *   npm run render -- -c flow-field | npx tsx cli/stats.ts   # read SVG from stdin
+ *
+ * Standalone (no hatch3d checkout): npx @endonny/inksight --input render.svg
  */
 
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { analyzeSvg } from "../src/stats/analyze.js";
+import { analyzeSvg } from "@endonny/inksight";
 
 const { values: args } = parseArgs({
   options: {
