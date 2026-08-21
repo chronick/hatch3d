@@ -4,7 +4,7 @@ import {
   classifyVariability,
   computeVariability,
   VARIABILITY_THRESHOLDS,
-} from "../stats/variability.js";
+} from "@endonny/inksight/variability";
 
 /** Minimal valid SVG with a given set of straight paths. */
 function svgWith(paths: string[]): string {

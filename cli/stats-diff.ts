@@ -15,7 +15,7 @@
 import { parseArgs } from "node:util";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { computeVariability } from "../src/stats/variability.js";
+import { computeVariability } from "@endonny/inksight/variability";
 
 const { values: args, positionals } = parseArgs({
   options: {
