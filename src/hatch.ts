@@ -101,10 +101,12 @@ export interface HatchParams {
  * surface can never leak a NaN vertex or an over-long segment downstream.
  *
  * Note that a bounded *world* length is not by itself a bounded *screen*
- * length: `projectPolylines` does no near-plane clipping, so a mark straddling
- * the camera's eye plane still projects to an unbounded segment. Keeping a
- * composition's geometry inside the camera orbit is the caller's job — see the
- * scene-scale note in `compositions/3d/studies/stipple-scene.ts`.
+ * length: a mark straddling the camera's eye plane goes through a sign-flipped
+ * perspective divide. `projectPolylines` clips such marks to the near plane
+ * (vault-1y2l2), but a mark behind the eye is dropped rather than drawn, so
+ * keeping a composition's geometry inside the camera orbit is still the
+ * caller's job — see the scene-scale note in
+ * `compositions/3d/studies/stipple-scene.ts`.
  */
 export function generateStippleDots(
   surfaceFn: SurfaceFn,

@@ -10,6 +10,7 @@ import { SURFACES } from "../surfaces";
 import { generateUVHatchLines, type HatchParams } from "../hatch";
 import {
   projectPolylines,
+  projectPolylinesClipped,
   polylinesToSVGPaths,
   buildSurfaceMesh,
 } from "../projection";
@@ -433,10 +434,19 @@ export function runPipeline(req: RenderRequest): RenderResult {
           layer.hatch
         );
 
-    const projected = projectPolylines(polylines3D, threeCamera, req.width, req.height);
+    // Near-plane clipping means one 3D polyline can yield 0..N projected ones,
+    // so bands come off the source index, not the loop position.
+    const { polylines: projected, sourceIndices } = projectPolylinesClipped(
+      polylines3D,
+      threeCamera,
+      req.width,
+      req.height
+    );
     allPolylines2D.push(...projected);
     if (depthWidthEnabled) {
-      for (const pl of polylines3D) polyBands.push(depthWidthBand(pl, camPos, refDist));
+      for (const si of sourceIndices) {
+        polyBands.push(depthWidthBand(polylines3D[si], camPos, refDist));
+      }
     }
 
     if (req.showMesh) {
@@ -566,11 +576,16 @@ export function runPipeline(req: RenderRequest): RenderResult {
               layer.hatch
             );
 
-        const projected = projectPolylines(polylines3D, extCamera, depthW, depthH);
+        const { polylines: projected, sourceIndices } = projectPolylinesClipped(
+          polylines3D,
+          extCamera,
+          depthW,
+          depthH
+        );
 
         for (let pi = 0; pi < projected.length; pi++) {
           const band = depthWidthEnabled
-            ? depthWidthBand(polylines3D[pi], camPos, refDist)
+            ? depthWidthBand(polylines3D[sourceIndices[pi]], camPos, refDist)
             : 0;
           const { visible, hidden } = splitPolylineByDepth(
             projected[pi],
