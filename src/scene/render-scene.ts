@@ -8,17 +8,20 @@
 
 import { parseSceneDoc } from "./schema.js";
 import { sceneToPatch } from "./to-patch.js";
-import { evalPatch } from "../patch/graph.js";
+import { evalPatch, type ImageResolver } from "../patch/graph.js";
 import { polylinesToSVGPaths } from "../projection.js";
 import { buildLayeredSVGContent, computeExportLayout } from "./svg-output.js";
 import type { LayerGroupResult } from "../workers/render-worker.types.js";
 
 /** Render a scene document string to an SVG string via the CLI-identical path. */
-export function renderSceneToSVG(sceneJson: string): { svg: string; layers: number; paths: number } {
+export function renderSceneToSVG(
+  sceneJson: string,
+  opts: { resolveImage?: ImageResolver } = {},
+): { svg: string; layers: number; paths: number } {
   const raw: unknown = JSON.parse(sceneJson);
   const doc = parseSceneDoc(raw);
   const patch = sceneToPatch(doc);
-  const { layers, page } = evalPatch(patch);
+  const { layers, page } = evalPatch(patch, { resolveImage: opts.resolveImage });
   const layout = computeExportLayout(page.size, page.orientation, page.marginMm, page.widthPx, page.heightPx);
   const groups: LayerGroupResult[] = layers.map((l) => ({
     id: l.id,
