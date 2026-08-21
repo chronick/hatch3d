@@ -8,13 +8,21 @@
  * to `npm run render -- --scene <doc>` (the acceptance gate). Kept out of the main
  * App component so it adds no state or risk to that 1400-line file.
  *
- * Note: `luminance` nodes need an image resolver the CLI supplies by decoding a
- * PNG; in-browser that would be an uploaded image (a follow-up). A scene using
- * `luminance` renders a clear error here rather than silently mis-rendering.
+ * `luminance` nodes need an image resolver the CLI supplies by decoding a PNG;
+ * here the images are uploaded and decoded through a canvas (see image-grid.ts),
+ * keyed by the exact reference the scene uses. Until an image arrives the view
+ * renders a clear error plus the file input for the reference it is waiting on.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { renderSceneToSVG } from "./render-scene.js";
+import { parseSceneDoc } from "./schema.js";
+import {
+  decodeImageFile,
+  gridImageResolver,
+  sceneImageRefs,
+  type LuminanceGrid,
+} from "./image-grid.js";
 
 const EXAMPLE_SCENE = `{
   "version": 1,
@@ -51,19 +59,52 @@ export function SceneView() {
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [images, setImages] = useState<Record<string, LuminanceGrid>>({});
 
-  const render = useCallback(() => {
+  // Image references the current source needs, read from the doc rather than
+  // from an eval failure, so the inputs appear before the first render attempt.
+  const imageRefs = useMemo(() => {
     try {
-      const { svg, layers, paths } = renderSceneToSVG(source);
-      setSvg(svg);
-      setError(null);
-      setInfo(`${layers} layer${layers === 1 ? "" : "s"}, ${paths} paths`);
-    } catch (e) {
-      setSvg(null);
-      setInfo(null);
-      setError(e instanceof Error ? e.message : String(e));
+      return sceneImageRefs(parseSceneDoc(JSON.parse(source)));
+    } catch {
+      return [];
     }
   }, [source]);
+  const missingImages = imageRefs.filter((ref) => !images[ref]);
+
+  const renderWith = useCallback(
+    (grids: Record<string, LuminanceGrid>) => {
+      try {
+        const { svg, layers, paths } = renderSceneToSVG(source, {
+          resolveImage: gridImageResolver(grids),
+        });
+        setSvg(svg);
+        setError(null);
+        setInfo(`${layers} layer${layers === 1 ? "" : "s"}, ${paths} paths`);
+      } catch (e) {
+        setSvg(null);
+        setInfo(null);
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [source],
+  );
+
+  const render = useCallback(() => renderWith(images), [renderWith, images]);
+
+  const loadImage = useCallback(
+    (ref: string, file: File) => {
+      decodeImageFile(file).then(
+        (grid) => {
+          const next = { ...images, [ref]: grid };
+          setImages(next);
+          renderWith(next);
+        },
+        (e: unknown) => setError(`could not decode "${file.name}": ${e instanceof Error ? e.message : String(e)}`),
+      );
+    },
+    [images, renderWith],
+  );
 
   const loadFile = useCallback((file: File) => {
     const reader = new FileReader();
@@ -114,6 +155,27 @@ export function SceneView() {
           onChange={(e) => setSource(e.target.value)}
         />
         {error && <pre data-testid="scene-error" style={S.error}>{error}</pre>}
+        {missingImages.length > 0 && (
+          <div data-testid="scene-image-inputs" style={S.images}>
+            <span style={S.imagesHint}>
+              {missingImages.length === 1
+                ? "This scene needs an image for its luminance node — upload it to render."
+                : `This scene needs ${missingImages.length} images — upload each one under its own reference below.`}
+            </span>
+            {missingImages.map((ref) => (
+              <label key={ref} style={{ ...S.btn, ...S.fileBtn }}>
+                Upload <code style={S.imageRef}>{ref}</code>
+                <input
+                  data-testid={`scene-image-input-${ref}`}
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) loadImage(ref, f); }}
+                />
+              </label>
+            ))}
+          </div>
+        )}
       </div>
       <div style={S.preview}>
         {svg ? (
@@ -146,6 +208,9 @@ const S: Record<string, React.CSSProperties> = {
   fileBtn: { display: "inline-flex", alignItems: "center" },
   info: { fontSize: 12, color: "#166534" },
   textarea: { flex: 1, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.4, padding: 10, border: "1px solid #ddd", borderRadius: 6, resize: "none", whiteSpace: "pre", overflow: "auto" },
+  images: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, padding: 10, border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 6 },
+  imagesHint: { fontSize: 12, color: "#92400e" },
+  imageRef: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", marginLeft: 4 },
   error: { color: "#b91c1c", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: 10, fontSize: 12, whiteSpace: "pre-wrap", margin: 0, maxHeight: 180, overflow: "auto" },
   preview: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, boxSizing: "border-box", background: "#fafafa", overflow: "auto" },
   svgHost: { maxWidth: "100%", maxHeight: "100%" },
