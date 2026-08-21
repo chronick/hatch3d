@@ -113,6 +113,58 @@ function buildCamera(cam: CameraParams): THREE.Camera {
 }
 
 /**
+ * Project a mesh's triangles into SVG path strings for the `showMesh` debug
+ * overlay, near-plane clipped like every other projection pass (vault-1y2l2,
+ * vault-21qrg) — unclipped, an edge straddling the eye plane flips sign under
+ * the perspective divide and draws a multi-million-pixel diagonal.
+ *
+ * Each triangle goes in as a closed 4-point loop. Clipping splits a loop into
+ * 0..N open runs, so paths come back keyed off `sourceIndices`, not 1:1 with
+ * the triangle list. A triangle wholly in front of the near plane survives as
+ * the lone 4-point output for its source and is emitted as the same closed
+ * `M…L…L…Z` path as before — output for meshes fully in front of the camera
+ * (and for orthographic cameras, which are never clipped) is unchanged.
+ */
+function meshOverlayPaths(
+  geo: THREE.BufferGeometry,
+  camera: THREE.Camera,
+  width: number,
+  height: number,
+): string[] {
+  const idx = geo.getIndex();
+  if (!idx) return [];
+  const pos = geo.getAttribute("position");
+
+  const loops: THREE.Vector3[][] = [];
+  for (let i = 0; i < idx.count; i += 3) {
+    const tri = [0, 1, 2].map((j) => {
+      const vi = idx.getX(i + j);
+      return new THREE.Vector3(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+    });
+    loops.push([tri[0], tri[1], tri[2], tri[0]]);
+  }
+
+  const { polylines, sourceIndices } = projectPolylinesClipped(loops, camera, width, height);
+  const xy = (p: { x: number; y: number }) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
+
+  const paths: string[] = [];
+  for (let k = 0; k < polylines.length; k++) {
+    const pts = polylines[k];
+    if (pts.length < 2) continue;
+    const whole =
+      pts.length === 4 &&
+      sourceIndices[k] !== sourceIndices[k - 1] &&
+      sourceIndices[k] !== sourceIndices[k + 1];
+    paths.push(
+      whole
+        ? `M${xy(pts[0])}L${xy(pts[1])}L${xy(pts[2])}Z`
+        : "M" + pts.map(xy).join("L"),
+    );
+  }
+  return paths;
+}
+
+/**
  * Apply a layer's 2D transform (pan/zoom/rotate around canvas center)
  * to a list of polylines. No-op when the transform is identity.
  */
@@ -450,28 +502,7 @@ export function runPipeline(req: RenderRequest): RenderResult {
     }
 
     if (req.showMesh) {
-      const pos = meshGeo.getAttribute("position");
-      const idx = meshGeo.getIndex();
-      if (idx) {
-        for (let i = 0; i < idx.count; i += 3) {
-          const tri = [0, 1, 2].map((j) => {
-            const vi = idx.getX(i + j);
-            const v3 = new THREE.Vector3(
-              pos.getX(vi),
-              pos.getY(vi),
-              pos.getZ(vi)
-            );
-            const p = v3.project(threeCamera);
-            return {
-              x: (p.x * 0.5 + 0.5) * req.width,
-              y: (-p.y * 0.5 + 0.5) * req.height,
-            };
-          });
-          allMeshPaths.push(
-            `M${tri[0].x.toFixed(1)},${tri[0].y.toFixed(1)}L${tri[1].x.toFixed(1)},${tri[1].y.toFixed(1)}L${tri[2].x.toFixed(1)},${tri[2].y.toFixed(1)}Z`
-          );
-        }
-      }
+      allMeshPaths.push(...meshOverlayPaths(meshGeo, threeCamera, req.width, req.height));
     }
   }
 
