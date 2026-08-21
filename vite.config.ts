@@ -14,8 +14,9 @@ export default defineConfig({
   build: {
     target: "esnext",
     rollupOptions: {
-      // Two pages: the main app, and the standalone InkSight report tool
-      // (served at /hatch3d/inksight/).
+      // Two pages: the main app, and a redirect stub at /hatch3d/inksight/
+      // keeping the old InkSight URL alive now that the tool ships as
+      // @endonny/inksight and is hosted at chronick.github.io/inksight/.
       input: {
         main: entry("./index.html"),
         inksight: entry("./inksight/index.html"),

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { analyzeSvg, parsePolyline, parseSvg } from "../stats/analyze.js";
+import { analyzeSvg, parsePolyline, parseSvg } from "@endonny/inksight";
 
 /**
  * A hand-built fixture with exactly-known geometry so every reported field can

@@ -18,7 +18,7 @@
  * constants because the research explicitly deferred empirical calibration.
  */
 
-import { analyzeSvg } from "./analyze.js";
+import { analyzeSvg } from "@endonny/inksight";
 
 /**
  * Threshold bands (from the research doc — qualitative, pending calibration).

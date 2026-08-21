@@ -17,14 +17,28 @@ Emits a structured JSON report for a hatch3d-emitted SVG: path/vertex counts,
 physical arc length, per-layer breakdown, an ink-density grid, a pen-travel
 estimate, and plottability warnings. No rendering, no model calls — this is the
 measurement half of the agent loop (see the vault design pod
-`active/plotter-art-workflow`). The core lives in `src/stats/analyze.ts` and is
-importable directly (the InkSight browser tool consumes the same functions).
+`active/plotter-art-workflow`).
+
+The measurement core is no longer vendored here: it ships as the
+[`@endonny/inksight`](https://www.npmjs.com/package/@endonny/inksight) package
+(source: [chronick/inksight](https://github.com/chronick/inksight)), a regular
+dependency of this repo. `cli/stats.ts` is a thin shim that parses flags and
+calls the package's `analyzeSvg`, so `npm run stats` keeps working unchanged.
 
 ```bash
 npm run stats -- --input render.svg
 npm run stats -- --input render.svg --pen-width 0.3 --grid 12
 npm run render -- -c flowField | npm run stats          # SVG from stdin
 ```
+
+Outside a hatch3d checkout, the package has its own CLI with the same flags:
+
+```bash
+npx @endonny/inksight --input plot.svg
+```
+
+To use the core in code: `import { analyzeSvg } from "@endonny/inksight";` (the
+report view-model the browser tool renders is at `@endonny/inksight/report`).
 
 ### Options
 
@@ -39,8 +53,9 @@ npm run render -- -c flowField | npm run stats          # SVG from stdin
 ### Scope
 
 Targets SVG produced by hatch3d's exporter: absolute `M`/`L` polyline paths
-inside a `translate(cx,cy) scale(S)` group, with an mm-unit `viewBox` and a
-margin clip rect. Curves (`C`/`Q`/`A`/…), relative commands, and closepath are
+inside a `translate(cx,cy) scale(S)` group, sized by a `viewBox` plus
+`width`/`height` in `mm`, `cm`, `in` or `px` (unitless is read as px at 96dpi),
+with a margin clip rect. Curves (`C`/`Q`/`A`/…), relative commands, and closepath are
 **rejected with a clear error** rather than silently mis-measured. Both
 single-group and layered (per-pen `<g>`) exports are supported.
 
@@ -99,17 +114,17 @@ width).
 
 ### InkSight — the same report, in a browser
 
-InkSight is the drag-and-drop face of `stats`: drop a hatch3d SVG and get the
+InkSight is the drag-and-drop face of `stats`: drop an SVG and get the
 page/drawable summary, totals, a per-layer table, the density grid as a
 heatmap, the plottability warnings, the full `StatsReport` JSON (copyable — the
 form an agent consumes), and a rendered thumbnail as a multimodal cross-check.
 Everything runs client-side; nothing is uploaded.
 
-It is a second Vite page in this repo (`inksight/index.html` +
-`src/inksight/`), so the deployed site serves it at **`/hatch3d/inksight/`**
-(locally: `npm run dev` → `/hatch3d/inksight/`). It imports `analyzeSvg` from
-`src/stats/analyze.ts` directly — identical numbers to `npm run stats`, same
-scope limits, same errors on non-hatch3d SVGs. Plot-time estimation and
+It now lives at **<https://chronick.github.io/inksight/>** and is built from the
+[chronick/inksight](https://github.com/chronick/inksight) repo, not this one.
+`inksight/index.html` here is a redirect stub that keeps the old
+`/hatch3d/inksight/` URL working. Same `analyzeSvg`, so identical numbers to
+`npm run stats`, same scope limits, same errors. Plot-time estimation and
 pen-travel (vpype-grade) modelling stay deferred.
 
 ## `stats:diff` — variability across variants
