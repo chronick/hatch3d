@@ -12,17 +12,26 @@
  * here the images are uploaded and decoded through a canvas (see image-grid.ts),
  * keyed by the exact reference the scene uses. Until an image arrives the view
  * renders a clear error plus the file input for the reference it is waiting on.
+ *
+ * The doc's layer stack is editable through the app's own LayerPanel, bound via
+ * sceneToLayers / applyLayersToScene (vault-2p7d). The scene JSON stays the
+ * single source of truth: the panel is derived from it and every edit is
+ * written straight back, so what renders is always what the textarea shows.
  */
 
 import { useCallback, useMemo, useState } from "react";
 import { renderSceneToSVG } from "./render-scene.js";
-import { parseSceneDoc } from "./schema.js";
+import { parseSceneDoc, type SceneDoc } from "./schema.js";
+import { applyLayersToScene, sceneToLayers } from "./convert.js";
 import {
   decodeImageFile,
   gridImageResolver,
   sceneImageRefs,
   type LuminanceGrid,
 } from "./image-grid.js";
+import { LayerPanel } from "../components/LayerPanel.js";
+import { compositionRegistry } from "../compositions/registry.js";
+import type { LayeredLayer } from "../compositions/types.js";
 
 const EXAMPLE_SCENE = `{
   "version": 1,
@@ -60,22 +69,35 @@ export function SceneView() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [images, setImages] = useState<Record<string, LuminanceGrid>>({});
+  const [layerNote, setLayerNote] = useState<string | null>(null);
 
-  // Image references the current source needs, read from the doc rather than
-  // from an eval failure, so the inputs appear before the first render attempt.
-  const imageRefs = useMemo(() => {
+  // The parsed doc drives both the image inputs and the layer panel, so both
+  // reflect the textarea without waiting for a render attempt to fail.
+  const doc = useMemo<SceneDoc | null>(() => {
     try {
-      return sceneImageRefs(parseSceneDoc(JSON.parse(source)));
+      return parseSceneDoc(JSON.parse(source));
     } catch {
-      return [];
+      return null;
     }
   }, [source]);
-  const missingImages = imageRefs.filter((ref) => !images[ref]);
 
-  const renderWith = useCallback(
-    (grids: Record<string, LuminanceGrid>) => {
+  const missingImages = (doc ? sceneImageRefs(doc) : []).filter((ref) => !images[ref]);
+
+  // sceneToLayers only describes layers built around a generator; an operator-
+  // only layer has no panel representation, so the panel stays hidden for it.
+  const layers = useMemo<LayeredLayer[] | null>(() => {
+    if (!doc) return null;
+    try {
+      return sceneToLayers(doc);
+    } catch {
+      return null;
+    }
+  }, [doc]);
+
+  const renderSource = useCallback(
+    (src: string, grids: Record<string, LuminanceGrid>) => {
       try {
-        const { svg, layers, paths } = renderSceneToSVG(source, {
+        const { svg, layers, paths } = renderSceneToSVG(src, {
           resolveImage: gridImageResolver(grids),
         });
         setSvg(svg);
@@ -87,10 +109,10 @@ export function SceneView() {
         setError(e instanceof Error ? e.message : String(e));
       }
     },
-    [source],
+    [],
   );
 
-  const render = useCallback(() => renderWith(images), [renderWith, images]);
+  const render = useCallback(() => renderSource(source, images), [renderSource, source, images]);
 
   const loadImage = useCallback(
     (ref: string, file: File) => {
@@ -98,12 +120,29 @@ export function SceneView() {
         (grid) => {
           const next = { ...images, [ref]: grid };
           setImages(next);
-          renderWith(next);
+          renderSource(source, next);
         },
         (e: unknown) => setError(`could not decode "${file.name}": ${e instanceof Error ? e.message : String(e)}`),
       );
     },
-    [images, renderWith],
+    [images, renderSource, source],
+  );
+
+  const onLayersChange = useCallback(
+    (next: LayeredLayer[]) => {
+      if (!doc) return;
+      if (!next.length) {
+        setLayerNote("A scene needs at least one layer — the last one can't be removed here.");
+        return;
+      }
+      setLayerNote(describeUnrepresented(next));
+      const updated = applyLayersToScene(doc, next);
+      if (updated === doc) return;
+      const json = JSON.stringify(updated, null, 2);
+      setSource(json);
+      if (svg) renderSource(json, images);
+    },
+    [doc, svg, images, renderSource],
   );
 
   const loadFile = useCallback((file: File) => {
@@ -147,6 +186,16 @@ export function SceneView() {
           <button style={S.btn} onClick={download} disabled={!svg}>Download SVG</button>
           {info && <span data-testid="scene-info" style={S.info}>{info}</span>}
         </div>
+        {layers && (
+          <div data-testid="scene-layers" style={S.layers}>
+            <LayerPanel
+              layers={layers}
+              onChange={onLayersChange}
+              availableCompositions={Array.from(compositionRegistry.getAll().values())}
+            />
+            {layerNote && <div data-testid="scene-layer-note" style={S.layerNote}>{layerNote}</div>}
+          </div>
+        )}
         <textarea
           data-testid="scene-source"
           style={S.textarea}
@@ -197,6 +246,22 @@ export function SceneView() {
   );
 }
 
+/**
+ * LayerPanel edits per-layer transform, camera and pass count; the scene IR has
+ * no field for any of them, so they don't survive the write-back. Name them
+ * rather than dropping them silently.
+ */
+function describeUnrepresented(layers: LayeredLayer[]): string | null {
+  const fields = new Set<string>();
+  for (const l of layers) {
+    if (l.transform) fields.add("transform");
+    if (l.camera) fields.add("camera");
+    if (l.passes !== undefined) fields.add("passes");
+  }
+  if (!fields.size) return null;
+  return `Not stored in the scene doc — dropped on write-back: ${[...fields].join(", ")}.`;
+}
+
 const S: Record<string, React.CSSProperties> = {
   wrap: { display: "flex", height: "100vh", width: "100vw", fontFamily: "system-ui, sans-serif", color: "#111", background: "#fff" },
   panel: { display: "flex", flexDirection: "column", width: "min(46%, 640px)", borderRight: "1px solid #ddd", padding: 16, boxSizing: "border-box", gap: 10 },
@@ -208,6 +273,8 @@ const S: Record<string, React.CSSProperties> = {
   fileBtn: { display: "inline-flex", alignItems: "center" },
   info: { fontSize: 12, color: "#166534" },
   textarea: { flex: 1, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, lineHeight: 1.4, padding: 10, border: "1px solid #ddd", borderRadius: 6, resize: "none", whiteSpace: "pre", overflow: "auto" },
+  layers: { maxHeight: "40%", overflow: "auto", border: "1px solid #ddd", borderRadius: 6, padding: 8, fontFamily: "inherit" },
+  layerNote: { marginTop: 6, fontSize: 11, color: "#92400e" },
   images: { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 6, padding: 10, border: "1px solid #fde68a", background: "#fffbeb", borderRadius: 6 },
   imagesHint: { fontSize: 12, color: "#92400e" },
   imageRef: { fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", marginLeft: 4 },
