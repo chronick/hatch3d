@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+    <title>InkSight</title>
+  </head>
+  <body>
+    <main>
+      <h1>InkSight</h1>
+      <p class="sub">
+        What does an agent see in an SVG? Drop a hatch3d export to get the same structured report
+        <code>npm run stats</code> emits — measured here in your browser, nothing uploaded.
+      </p>
+      <div class="drop" id="drop">
+        <p>Drop an SVG here</p>
+        <input type="file" id="file" accept=".svg,image/svg+xml" />
+      </div>
+      <div id="output" hidden></div>
+      <footer>
+        Measurement core: <code>src/stats/analyze.ts</code>. Plot-time estimation and pen-travel
+        modelling are deliberately out of scope for v1.
+      </footer>
+    </main>
+    <script type="module" src="/src/inksight/main.ts"></script>
+  </body>
+</html>

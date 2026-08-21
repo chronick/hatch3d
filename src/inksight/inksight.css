@@ -1,0 +1,226 @@
+/* InkSight — standalone dark/monospace report page. Scoped to inksight/index.html; shares nothing with the main app's src/index.css. */
+
+:root {
+  --bg: #0b0e11;
+  --panel: #11161b;
+  --line: #232c35;
+  --fg: #d8e2ea;
+  --dim: #7d8c99;
+  --accent: #4fd1e0;
+  --warn: #f0a35e;
+  --ok: #6fce8f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 2rem 1.25rem 4rem;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.sub {
+  margin: 0.35rem 0 1.5rem;
+  color: var(--dim);
+}
+
+.drop {
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  padding: 1.75rem 1rem;
+  text-align: center;
+  color: var(--dim);
+  transition: border-color 120ms, background 120ms;
+}
+
+.drop.over {
+  border-color: var(--accent);
+  background: #0f181c;
+}
+
+.drop p {
+  margin: 0 0 0.6rem;
+}
+
+.drop input[type="file"] {
+  font: inherit;
+  color: var(--dim);
+}
+
+.panel {
+  margin-top: 1.5rem;
+  padding: 1rem 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.grid-2 {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.2rem 0.6rem 0.2rem 0;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+thead th {
+  color: var(--dim);
+  font-weight: 400;
+  border-bottom: 1px solid var(--line);
+}
+
+td.label,
+td.num {
+  color: var(--dim);
+}
+
+td.value {
+  color: var(--fg);
+}
+
+.scroll {
+  overflow-x: auto;
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.4rem;
+  border: 1px solid var(--line);
+  vertical-align: -1px;
+}
+
+.heat {
+  display: grid;
+  gap: 1px;
+  width: min(18rem, 100%);
+  aspect-ratio: 1;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.heat div {
+  min-width: 0;
+}
+
+.legend {
+  margin-top: 0.6rem;
+  color: var(--dim);
+}
+
+.warnings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.warnings li {
+  padding-left: 1.4rem;
+  text-indent: -1.4rem;
+}
+
+.warnings li.ok::before {
+  content: "ok  ";
+  color: var(--ok);
+}
+
+.warnings li.warn::before {
+  content: "!!  ";
+  color: var(--warn);
+}
+
+.thumb {
+  max-width: 100%;
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+pre {
+  margin: 0;
+  padding: 0.75rem;
+  max-height: 26rem;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--fg);
+  font-size: 12px;
+}
+
+button {
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.15rem 0.7rem;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.head-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.error {
+  color: var(--warn);
+}
+
+.note {
+  color: var(--dim);
+}
+
+footer {
+  margin-top: 2.5rem;
+  color: var(--dim);
+}
+
+a {
+  color: var(--accent);
+}
