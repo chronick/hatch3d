@@ -237,6 +237,7 @@ export function collectFromPrintQueue(vaultDir: string): number {
         "accepted", // In print queue = definitively accepted
         new Date().toISOString(),
         config.seedRef ?? null,
+        config.parentId ?? null,
       );
 
       if (obs) {
