@@ -505,6 +505,35 @@ async function pushItem(config: { url: string; token: string }, item: Record<str
   return data.items[0].id;
 }
 
+/** The slice of a preset the queued `config` payload is built from. */
+export type PrintQueuePreset = Pick<
+  FeedPreset,
+  "composition" | "name" | "values" | "camera" | "tags" | "seedRef"
+>;
+
+/**
+ * Build the `config` JSON stored with a queued print. collectFromPrintQueue()
+ * rebuilds an observation from exactly this payload, so every lineage field the
+ * pushed feed metadata carries has to be written here as well — otherwise a
+ * piece re-collected from the print queue comes back with its ancestry erased.
+ */
+export function buildPrintQueueConfig(
+  preset: PrintQueuePreset,
+  svgKey: string,
+  parentId?: string,
+): Record<string, unknown> {
+  return {
+    composition: preset.composition,
+    presetName: preset.name,
+    values: preset.values,
+    camera: preset.camera ?? null,
+    svg_key: svgKey,
+    tags: preset.tags,
+    ...(preset.seedRef ? { seedRef: preset.seedRef } : {}),
+    ...(parentId ? { parentId } : {}),
+  };
+}
+
 // ── Rendering ──
 
 /** The slice of a pipeline result that decides how the SVG gets serialized. */
@@ -855,15 +884,9 @@ async function main(): Promise<void> {
             composition: preset.composition,
             svg_key: svgKey,
             png_key: imageKey,
-            config: JSON.stringify({
-              composition: preset.composition,
-              presetName: preset.name,
-              values: preset.values,
-              camera: preset.camera ?? null,
-              svg_key: svgKey,
-              tags: preset.tags,
-              ...(preset.seedRef ? { seedRef: preset.seedRef } : {}),
-            }),
+            config: JSON.stringify(
+              buildPrintQueueConfig(preset, svgKey, generatedPresets?.[i]?.parentId),
+            ),
             source: "hatch3d",
             feed_item_id: itemId,
           }),

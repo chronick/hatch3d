@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 import { compositionRegistry } from "../compositions/registry";
 import type { Composition2DDefinition } from "../compositions/types";
 
@@ -17,8 +17,8 @@ vi.mock("node:fs", () => {
   return { ...mockFs, default: mockFs };
 });
 
-import { appendFileSync } from "node:fs";
-import { collectFromFeedAPI, logGeneration } from "../preferences/collector";
+import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { collectFromFeedAPI, collectFromPrintQueue, logGeneration } from "../preferences/collector";
 
 function makeTestComposition(): Composition2DDefinition {
   return {
@@ -129,5 +129,69 @@ describe("collectFromFeedAPI — parentId round trip", () => {
     await collectFromFeedAPI({ url: "https://fake.example", token: "tok" });
 
     expect(lastObservation().parentId).toBe(parentId);
+  });
+});
+
+describe("collectFromPrintQueue — parentId round trip", () => {
+  const VAULT_DIR = "/fake/vault";
+  const QUEUE_ITEM_ID = "hatch3d-2026-08-14-parentRoundTripComp-0";
+
+  // cli/feed-push.ts is a CLI entry point; import it dynamically, behind a fetch
+  // spy, so module-load side effects can never reach the feed API.
+  let buildPrintQueueConfig: typeof import("../../cli/feed-push").buildPrintQueueConfig;
+
+  beforeAll(async () => {
+    vi.stubGlobal("fetch", () => {
+      throw new Error("network access is forbidden in this test");
+    });
+    ({ buildPrintQueueConfig } = await import("../../cli/feed-push"));
+  });
+
+  /**
+   * Point the mocked fs at a one-entry print queue holding `config`, and nothing
+   * else — every other path (observations.jsonl, sync-state.json,
+   * correlations.json) stays absent so the collector takes its empty-store path.
+   */
+  function stubPrintQueue(config: unknown) {
+    const configPath = `${VAULT_DIR}/print-queue/${QUEUE_ITEM_ID}/config.json`;
+    vi.mocked(existsSync).mockImplementation((p) =>
+      String(p) === `${VAULT_DIR}/print-queue` || String(p) === configPath,
+    );
+    vi.mocked(readdirSync).mockImplementation(
+      () => [{ name: QUEUE_ITEM_ID, isDirectory: () => true }] as never,
+    );
+    vi.mocked(readFileSync).mockImplementation((p) =>
+      String(p) === configPath ? JSON.stringify(config) : "",
+    );
+  }
+
+  beforeEach(() => {
+    vi.mocked(appendFileSync).mockClear();
+    compositionRegistry.register(makeTestComposition());
+  });
+
+  it("reads parentId out of the queued config into the stored observation", () => {
+    stubPrintQueue(
+      buildPrintQueueConfig(
+        { composition: "parentRoundTripComp", name: "Parent Test", values: {}, tags: [] },
+        `plotter/${QUEUE_ITEM_ID}.svg`,
+        "hatch3d-2026-08-01-parentRoundTripComp-3",
+      ),
+    );
+
+    expect(collectFromPrintQueue(VAULT_DIR)).toBe(1);
+    expect(lastObservation().parentId).toBe("hatch3d-2026-08-01-parentRoundTripComp-3");
+  });
+
+  it("leaves parentId undefined when the queued config carries none", () => {
+    stubPrintQueue(
+      buildPrintQueueConfig(
+        { composition: "parentRoundTripComp", name: "No Parent", values: {}, tags: [] },
+        `plotter/${QUEUE_ITEM_ID}.svg`,
+      ),
+    );
+
+    expect(collectFromPrintQueue(VAULT_DIR)).toBe(1);
+    expect(lastObservation().parentId).toBeUndefined();
   });
 });
